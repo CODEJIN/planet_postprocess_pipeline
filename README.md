@@ -157,7 +157,3 @@ SER files
 6. *(Optional)* Run **Steps 08–10** for time-series animation and summary
 
 ---
-
-## License
-
-MIT
