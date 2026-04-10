@@ -131,6 +131,9 @@ def quality_metrics(
         noise gate: coherent planetary detail (belt/zone edges) survives because it
         spans many pixels; random noise is killed.
     """
+    if image.ndim == 3:
+        image = image.mean(axis=2)
+
     mask = planet_mask(image)
 
     if denoise_sigma > 0:

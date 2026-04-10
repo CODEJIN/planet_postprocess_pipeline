@@ -274,6 +274,55 @@ def _derotate_frame(
     return warped
 
 
+def _derotate_frame_color(
+    frame_path: Path,
+    frame_time: datetime,
+    t_reference: datetime,
+    period_hours: float,
+    warp_scale: float,
+    ref_cx: Optional[float] = None,
+    ref_cy: Optional[float] = None,
+    ref_semi_a: Optional[float] = None,
+    polar_equatorial_ratio: float = 1.0,
+) -> np.ndarray:
+    """Load a color TIF and apply de-rotation to each RGB channel.
+
+    The same warp parameters (disk centre + rotation) are applied to all
+    three channels so relative channel alignment is preserved.
+
+    Returns float32 [0, 1] array of shape (H, W, 3).
+    """
+    img = image_io.read_tif(frame_path)
+    if img.ndim == 2:
+        img = np.stack([img] * 3, axis=2)
+    img = img.astype(np.float32)
+
+    dt_sec = (frame_time - t_reference).total_seconds()
+    if abs(dt_sec) < 1.0:
+        return img
+
+    lum = img.mean(axis=2)
+    if ref_cx is not None and ref_cy is not None and ref_semi_a is not None:
+        cx, cy, semi_a = ref_cx, ref_cy, ref_semi_a
+        per = polar_equatorial_ratio
+    else:
+        try:
+            cx, cy, semi_a, semi_b, _ = find_disk_center(lum)
+            per = float(np.clip(semi_b / max(semi_a, 1.0), 0.85, 1.0))
+        except Exception:
+            return img   # Can't detect disk — return unwarped
+
+    out = np.zeros_like(img)
+    for c in range(3):
+        out[:, :, c] = spherical_derotation_warp(
+            img[:, :, c], dt_sec, cx, cy, semi_a,
+            period_hours=period_hours,
+            scale=warp_scale,
+            polar_equatorial_ratio=per,
+        )
+    return out
+
+
 _CENTER_PREF_ORDER = ["IR", "R", "G", "CH4", "B"]
 
 
@@ -524,6 +573,188 @@ def _stack_window_frames(
     return stacked, log
 
 
+# ── Color camera series ────────────────────────────────────────────────────────
+
+def _run_color_series(
+    config: PipelineConfig,
+    results_03: Dict[str, List[Tuple[Optional[Path], dict]]],
+    progress_callback=None,
+) -> Dict[str, List[Tuple[Optional[Path], str]]]:
+    """Step 8 for color camera: group → stack → sharpen → auto-correct → save.
+
+    Unlike the mono path (which composites multiple filter channels), the color
+    path receives a single color (Bayer or RGB) stream per time bin.  Each output
+    frame is produced by:
+      1. Grouping color TIFs into time bins of cycle_seconds width.
+      2. Collecting N consecutive bins (sliding window).
+      3. De-rotating each frame to the bin centre time.
+      4. Mean-stacking all de-rotated frames (SNR ∝ √N).
+      5. Wavelet sharpening (color-aware, same series_amounts as mono).
+      6. Auto white balance + chromatic aberration correction per frame.
+      7. Brightness scaling by series_scale.
+    """
+    from pipeline.steps.step07_rgb_composite import _auto_color_correct
+
+    print("  [Color] Loading color TIF files from input_dir...")
+    all_frames: List[Tuple[Path, dict]] = []
+    for tif_path in sorted(config.input_dir.rglob("*.tif")):
+        meta = image_io.parse_filename(tif_path)
+        if meta is None:
+            continue
+        all_frames.append((tif_path, meta))
+    all_frames.sort(key=lambda x: x[1]["timestamp"])
+
+    if not all_frames:
+        print("  [WARNING] No TIF files found — Step 8 (color) skipped.")
+        return {}
+
+    # ── Group into time bins ───────────────────────────────────────────────────
+    cycle_sec = config.composite.cycle_seconds
+    t_start = all_frames[0][1]["timestamp"]
+    t_end   = all_frames[-1][1]["timestamp"]
+
+    bins: List[List[Tuple[Path, dict]]] = []
+    t = t_start
+    while t <= t_end + timedelta(seconds=cycle_sec / 2.0):
+        t_bin_end = t + timedelta(seconds=cycle_sec)
+        group = [(p, m) for p, m in all_frames if t <= m["timestamp"] < t_bin_end]
+        if group:
+            bins.append(group)
+        t = t_bin_end
+
+    if not bins:
+        print("  [WARNING] No time bins formed — Step 8 (color) skipped.")
+        return {}
+
+    window_n  = max(1, config.composite.stack_window_n)
+    period    = config.derotation.rotation_period_hours
+    warp_sc   = config.derotation.warp_scale
+
+    print(f"  Found {len(all_frames)} color frames → {len(bins)} bins "
+          f"(cycle={cycle_sec:.0f}s, window={window_n})")
+
+    # ── Output directory ───────────────────────────────────────────────────────
+    out_base: Optional[Path] = None
+    if config.save_step08:
+        out_base = config.step_dir(8, "series")
+        out_base.mkdir(parents=True, exist_ok=True)
+        print(f"  Output → {out_base}")
+    else:
+        print("  save_step08=False: results not written to disk")
+
+    all_results: Dict[str, List[Tuple[Optional[Path], str]]] = {}
+    total_written = 0
+
+    for frame_idx, center_bin in enumerate(bins, start=1):
+        mid = len(center_bin) // 2
+        t_center   = center_bin[mid][1]["timestamp"]
+        t_str      = t_center.strftime("%Y-%m-%d_%H-%M")
+        frame_label = f"frame_{frame_idx:03d}_{t_str}"
+
+        # Collect sliding-window frames
+        half = window_n // 2
+        lo   = max(0, frame_idx - 1 - half)
+        hi   = min(len(bins), frame_idx - 1 + half + 1)
+        window_frames: List[Tuple[Path, dict]] = [
+            fr for b in bins[lo:hi] for fr in b
+        ]
+
+        if not window_frames:
+            all_results[frame_label] = [(None, "COLOR")]
+            continue
+
+        # ── Shared disk centre from centre bin ────────────────────────────────
+        ref_path    = center_bin[0][0]
+        ref_raw     = image_io.read_tif(ref_path)
+        ref_lum     = (ref_raw.mean(axis=2) if ref_raw.ndim == 3 else ref_raw).astype(np.float32)
+        ref_cx = ref_cy = ref_semi_a = None
+        per = 1.0
+        try:
+            cx, cy, semi_a, semi_b, _ = find_disk_center(ref_lum)
+            if semi_a >= 5:
+                ref_cx, ref_cy, ref_semi_a = cx, cy, semi_a
+                per = float(np.clip(semi_b / max(semi_a, 1.0), 0.85, 1.0))
+        except Exception:
+            pass
+
+        # ── De-rotate and stack ────────────────────────────────────────────────
+        stacked_frames: List[np.ndarray] = []
+        for tif_path, meta in window_frames:
+            warped = _derotate_frame_color(
+                tif_path, meta["timestamp"], t_center, period, warp_sc,
+                ref_cx=ref_cx, ref_cy=ref_cy, ref_semi_a=ref_semi_a,
+                polar_equatorial_ratio=per,
+            )
+            stacked_frames.append(warped)
+
+        stacked = np.mean(stacked_frames, axis=0).astype(np.float32)
+
+        # Centre the disk
+        if ref_cx is not None and ref_semi_a is not None and ref_semi_a >= 5:
+            h, w = stacked.shape[:2]
+            dx = w * 0.5 - ref_cx
+            dy = h * 0.5 - ref_cy
+            for c in range(3):
+                stacked[:, :, c] = apply_shift(stacked[:, :, c], dx, dy)
+
+        # ── Wavelet sharpening (color-aware) ───────────────────────────────────
+        lum2 = stacked.mean(axis=2)
+        has_disk = False
+        cx2 = cy2 = sr2 = 0.0
+        try:
+            cx2, cy2, sr2, *_ = find_disk_center(lum2)
+            has_disk = sr2 >= 5
+        except Exception:
+            pass
+
+        if has_disk:
+            sharpened = wavelet_module.sharpen_color_disk_aware(
+                stacked, cx2, cy2, sr2,
+                levels=config.wavelet.levels,
+                amounts=config.wavelet.series_amounts,
+                power=config.wavelet.series_power,
+                sharpen_filter=config.wavelet.series_sharpen_filter,
+                edge_feather_factor=config.wavelet.series_edge_feather_factor,
+            )
+        else:
+            sharpened = wavelet_module.sharpen_color(
+                stacked,
+                levels=config.wavelet.levels,
+                amounts=config.wavelet.series_amounts,
+                power=config.wavelet.series_power,
+                sharpen_filter=config.wavelet.series_sharpen_filter,
+            )
+
+        # ── Auto WB + CA correction ────────────────────────────────────────────
+        corrected, params = _auto_color_correct(sharpened)
+
+        # ── Brightness scale ───────────────────────────────────────────────────
+        corrected = np.clip(
+            corrected * config.composite.series_scale, 0.0, 1.0
+        ).astype(np.float32)
+
+        # ── Save ───────────────────────────────────────────────────────────────
+        out_path: Optional[Path] = None
+        if out_base is not None:
+            frame_out_dir = out_base / frame_label
+            frame_out_dir.mkdir(exist_ok=True)
+            out_path = frame_out_dir / "COLOR_composite.png"
+            image_io.write_png_color_16bit(corrected, out_path)
+            total_written += 1
+
+        all_results[frame_label] = [(out_path, "COLOR")]
+
+        if frame_idx % 5 == 0 or frame_idx == len(bins):
+            print(f"  [{frame_idx:>3}/{len(bins)}] {t_str}  "
+                  f"stack={len(stacked_frames)}  "
+                  f"R×{params['r_gain']:.3f} B×{params['b_gain']:.3f}")
+        if progress_callback is not None:
+            progress_callback(frame_idx, len(bins))
+
+    print(f"\n  Step 8 (color) complete: {total_written} color PNGs written")
+    return all_results
+
+
 # ── Main step ─────────────────────────────────────────────────────────────────
 
 def run(
@@ -541,6 +772,11 @@ def run(
     Returns:
         ``{frame_label: [(composite_path_or_None, composite_name), ...]}``
     """
+    # Color camera: single-stream stacking + auto WB/CA correction
+    if config.camera_mode == "color":
+        print("  Color camera mode: stack → sharpen → auto-correct per frame")
+        return _run_color_series(config, results_03, progress_callback)
+
     # Step 8 now reads raw TIFs directly, applying wavelet sharpening AFTER
     # stacking (stack → sharpen → composite).  This is physically correct:
     # stacking first improves SNR, then sharpening acts on the high-SNR stack.
@@ -555,7 +791,19 @@ def run(
     # ── Group into filter cycles ───────────────────────────────────────────────
     # Use step-8-specific cycle_seconds (CompositeConfig), not step-4's QualityConfig.
     cycle_minutes = config.composite.cycle_seconds / 60.0
-    required_rgb = [f for f in ["R", "G", "B"] if f in raw_tif_frames]
+    # Determine which filters are required for compositing.  When series_specs
+    # are configured, derive required channels from those specs; otherwise fall
+    # back to the classic R/G/B set so that existing sessions are unaffected.
+    active_specs = config.composite.series_specs or config.composite.specs
+    if config.composite.series_specs:
+        required_rgb = list({
+            ch
+            for spec in active_specs
+            for ch in (spec.R, spec.G, spec.B, spec.L or "")
+            if ch
+        } & raw_tif_frames.keys())
+    else:
+        required_rgb = [f for f in ["R", "G", "B"] if f in raw_tif_frames]
     cycles = _group_into_cycles(raw_tif_frames, cycle_minutes, required_rgb)
 
     if not cycles:
@@ -581,7 +829,8 @@ def run(
     else:
         print("  save_step08=False: results not written to disk")
 
-    specs  = config.composite.specs
+    # Use series-specific specs when set (Step 8 GUI), else fall back to Step 7 specs.
+    specs  = config.composite.series_specs or config.composite.specs
     align  = config.composite.align_channels
     plow   = config.composite.stretch_plow
     phigh  = config.composite.stretch_phigh
@@ -695,6 +944,7 @@ def run(
                     amounts=config.wavelet.series_amounts,
                     power=config.wavelet.series_power,
                     sharpen_filter=config.wavelet.series_sharpen_filter,
+                    edge_feather_factor=config.wavelet.series_edge_feather_factor,
                 )
             else:
                 _sharpened = wavelet_module.sharpen(

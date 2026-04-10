@@ -84,17 +84,20 @@ def run(
         if before != after:
             print(f"  Filtered {before - after} frame(s) below threshold {min_q:.2f}")
 
+    cycle_min  = config.quality.cycle_minutes
+    window_min = config.quality.window_minutes
+
     overlap_note = " [겹침허용]" if config.quality.allow_overlap else ""
     print(f"\n  Searching for top de-rotation windows "
-          f"(window={config.quality.window_minutes:.1f} min, "
-          f"cycle={config.quality.cycle_minutes:.2f} min, "
+          f"(window={window_min:.1f} min, "
+          f"cycle={cycle_min:.2f} min, "
           f"n={config.quality.n_windows}, "
           f"σ={config.quality.outlier_sigma}{overlap_note})…")
     windows = quality.find_best_windows(
         scores,
-        required_filters=config.filters,
-        window_minutes=config.quality.window_minutes,
-        cycle_minutes=config.quality.cycle_minutes,
+        required_filters=list(scores.keys()) if config.camera_mode == "color" else config.filters,
+        window_minutes=window_min,
+        cycle_minutes=cycle_min,
         n_windows=config.quality.n_windows,
         outlier_sigma=config.quality.outlier_sigma,
         allow_overlap=config.quality.allow_overlap,

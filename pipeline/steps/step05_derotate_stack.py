@@ -107,7 +107,7 @@ def run(
         # De-rotate all filters in this window
         filter_results = derotation.derotate_window(
             window=window,
-            required_filters=config.filters,
+            required_filters=list(window["per_filter"].keys()) if config.camera_mode == "color" else config.filters,
             period_hours=config.derotation.rotation_period_hours,
             warp_scale=config.derotation.warp_scale,
             align=True,
@@ -132,7 +132,8 @@ def run(
             f"quality={window['window_quality']:.4f}  "
             f"rotation_span={window['rotation_degrees']:.1f}°"
         )
-        for filt in config.filters:
+        summary_filters = list(filter_results.keys()) if config.camera_mode == "color" else config.filters
+        for filt in summary_filters:
             if filt in filter_results:
                 out_path, flog = filter_results[filt]
                 n = flog.get("n_stacked", 0)

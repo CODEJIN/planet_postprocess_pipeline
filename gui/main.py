@@ -12,7 +12,12 @@ from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QPalette
 from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QComboBox,
                                 QLineEdit, QSlider, QToolTip, QWidget)
 
-_ICONS_DIR = Path(__file__).parent / "icons"
+# In a PyInstaller onefile frozen app, __file__ points into the .pyz archive
+# (not a real filesystem path). Use sys._MEIPASS to get the extraction dir.
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    _ICONS_DIR = Path(sys._MEIPASS) / "gui" / "icons"
+else:
+    _ICONS_DIR = Path(__file__).parent / "icons"
 
 from gui import session
 from gui import i18n
@@ -94,6 +99,18 @@ class AstroApp(QApplication):
 
 
 def main() -> None:
+    # Windows: AppUserModelID 를 Python 인터프리터와 분리해야
+    # 작업표시줄·타이틀바 아이콘이 Python 기본 아이콘 대신 앱 아이콘으로 표시됨.
+    # QApplication 생성 전에 호출해야 효과가 있음.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "AstroImaging.AstroPipeline"
+            )
+        except Exception:
+            pass
+
     # Load session to get language preference
     sess = session.load()
     lang = sess.get("language", "ko")
@@ -108,9 +125,20 @@ def main() -> None:
     app.setStyle("Fusion")   # Fusion base style lets our dark palette take full effect
 
     # Set application icon
-    _icon_path = _ICONS_DIR / "app_icon.svg"
-    if _icon_path.exists():
-        app.setWindowIcon(QIcon(str(_icon_path)))
+    # Windows: ICO 우선 (타이틀바·작업표시줄에 미리 렌더된 크기 제공)
+    # Linux/macOS: SVG 우선 (Qt가 필요한 크기로 렌더)
+    _icon_candidates = (
+        [_ICONS_DIR / "app_icon.ico", _ICONS_DIR / "app_icon.svg"]
+        if sys.platform == "win32"
+        else [_ICONS_DIR / "app_icon.svg", _ICONS_DIR / "app_icon.ico"]
+    )
+    _app_icon = QIcon()
+    for _icon_path in _icon_candidates:
+        if _icon_path.exists():
+            _app_icon = QIcon(str(_icon_path))
+            break
+    if not _app_icon.isNull():
+        app.setWindowIcon(_app_icon)
 
     # Set QToolTip stylesheet at the *application* level.
     # QToolTip is a top-level popup window — widget-level stylesheets (set on
@@ -132,6 +160,8 @@ def main() -> None:
     QToolTip.setFont(tip_font)
 
     window = MainWindow()
+    if not _app_icon.isNull():
+        window.setWindowIcon(_app_icon)
     window.show()
 
     sys.exit(app.exec())

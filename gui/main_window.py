@@ -169,8 +169,8 @@ DARK_STYLE = _build_dark_style()
 
 _STEP_DEFS = [
     # (step_id, sidebar_label, optional)
-    ("01", "01 — PIPP 전처리",         True),
-    ("02", "02 — AutoStakkert 4",       True),
+    ("01", "01 — PIPP 전처리",         False),
+    ("02", "02 — AutoStakkert 4",       False),
     ("03", "03 — Wavelet 미리보기",     False),
     ("04", "04 — 품질 평가",            False),
     ("05", "05 — De-rotation 스태킹",   False),
@@ -192,7 +192,7 @@ class MainWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(S("app.title"))
-        self.resize(1440, 980)
+        self.resize(1440, 1080)
         self.setStyleSheet(DARK_STYLE)
 
         self._session_data: dict[str, Any] = {}
@@ -498,6 +498,14 @@ class MainWindow(QMainWindow):
                     item09.set_checkbox_enabled(False)
                     item09.set_enabled_visual(False)
                     self._enabled_steps["09"] = False
+                else:
+                    # Step 08 re-enabled → restore Step 09 to checked/enabled
+                    if item09._check is not None:
+                        item09._check.blockSignals(True)
+                        item09._check.setChecked(True)
+                        item09._check.blockSignals(False)
+                    item09.set_enabled_visual(True)
+                    self._enabled_steps["09"] = True
         elif step_id == "09" and enabled:
             # Step 09 enabled → cascade: also enable Step 08 if it was off
             if not self._enabled_steps.get("08", False):
@@ -547,14 +555,23 @@ class MainWindow(QMainWindow):
                 dep.load_session(self._session_data)
 
     def _on_settings_saved(self) -> None:
-        self.save_session()
-        output_dir = self._session_data.get("output_dir", "")
-        self._output_dir_label.setText(f"출력: {output_dir}" if output_dir else "")
-        # Refresh derived folder labels in dependent panels
+        # 1. Apply new settings values to session data first (camera_mode etc.)
+        data = self._session_data.copy()
+        data.update(self._settings_panel.get_session_values())
+        data["enabled_steps"] = dict(self._enabled_steps)
+        self._session_data = data
+
+        # 2. Refresh panels with the updated session (updates _is_color in step07/08)
         for sid in ("01", "04", "05", "06", "07", "08", "09", "10"):
             panel = self._step_panels.get(sid)
             if panel and hasattr(panel, "load_session"):
                 panel.load_session(self._session_data)
+
+        # 3. Now collect all panel values (panels are in the correct camera mode)
+        self.save_session()
+
+        output_dir = self._session_data.get("output_dir", "")
+        self._output_dir_label.setText(f"출력: {output_dir}" if output_dir else "")
         QMessageBox.information(self, "설정", S("msg.settings_saved"))
 
     def _on_run_step(self, step_id: str) -> None:
@@ -684,6 +701,8 @@ class MainWindow(QMainWindow):
         output_dir = Path(d.get("output_dir", "") or ".")
         step01_out_raw = d.get("step01_output_dir", "")
         step01_out = Path(step01_out_raw) if step01_out_raw else None
+        step03_out_raw = d.get("step03_output_dir", "")
+        step03_out = Path(step03_out_raw) if step03_out_raw else None
 
         pipp = PippConfig(
             roi_size     = int(d.get("roi_size", 448)),
@@ -691,9 +710,11 @@ class MainWindow(QMainWindow):
         )
 
         wavelet = WaveletConfig(
-            preview_amounts = list(d.get("preview_amounts", [200.0, 200.0, 200.0, 0.0, 0.0, 0.0])),
-            master_amounts  = list(d.get("master_amounts",  [200.0, 200.0, 200.0, 0.0, 0.0, 0.0])),
-            border_taper_px = int(d.get("border_taper_px", 0)),
+            preview_amounts             = list(d.get("preview_amounts", [200.0, 200.0, 200.0, 0.0, 0.0, 0.0])),
+            master_amounts              = list(d.get("master_amounts",  [200.0, 200.0, 200.0, 0.0, 0.0, 0.0])),
+            border_taper_px             = int(d.get("border_taper_px", 0)),
+            edge_feather_factor         = float(d.get("edge_feather_factor", 2.0)),
+            series_edge_feather_factor  = float(d.get("series_edge_feather_factor", 2.0)),
         )
 
         # window_frames: number of filter cycles (= time-series frames) per window.
@@ -723,10 +744,11 @@ class MainWindow(QMainWindow):
             min_quality_threshold = float(d.get("min_quality_threshold", 0.3)),
         )
 
-        # Build CompositeSpec list from session data (set by step07 panel)
-        raw_specs = d.get("composite_specs")
-        if raw_specs:
-            specs = [
+        def _parse_specs(raw: list | None):
+            """Convert a list of spec dicts to CompositeSpec objects, or None."""
+            if not raw:
+                return None
+            return [
                 CompositeSpec(
                     name = s.get("name", "RGB"),
                     R    = s.get("R", "R"),
@@ -734,10 +756,12 @@ class MainWindow(QMainWindow):
                     B    = s.get("B", "B"),
                     L    = s.get("L") or None,
                 )
-                for s in raw_specs if s.get("name")
-            ]
-        else:
-            specs = None  # use CompositeConfig default
+                for s in raw if s.get("name")
+            ] or None
+
+        # Build CompositeSpec lists from session data
+        specs        = _parse_specs(d.get("composite_specs"))         # step07 specs
+        series_specs = _parse_specs(d.get("series_composite_specs"))  # step08 series specs
 
         # series_cycle_seconds: step8-specific; fall back to step4's cycle_seconds
         _series_cyc = float(d.get("series_cycle_seconds",
@@ -751,6 +775,7 @@ class MainWindow(QMainWindow):
             stack_min_quality       = float(d.get("stack_min_quality", 0.05)),
             save_mono_frames        = bool(d.get("save_mono_frames", False)),
             **({"specs": specs} if specs else {}),
+            **({"series_specs": series_specs} if series_specs else {}),
         )
 
         gif = GifConfig(
@@ -783,18 +808,22 @@ class MainWindow(QMainWindow):
         # For color camera, default filter list is a single "COLOR" entry
         if camera_mode == "color" and filters == ["IR", "R", "G", "B", "CH4"]:
             filters = ["COLOR"]
+        # For mono camera, restore full filter list if session still has "COLOR"
+        elif camera_mode == "mono" and filters == ["COLOR"]:
+            filters = ["IR", "R", "G", "B", "CH4"]
 
         return PipelineConfig(
             ser_input_dir     = ser_dir,
             input_dir         = input_dir,
             output_base_dir   = output_dir,
             step01_output_dir = step01_out,
+            step03_output_dir = step03_out,
             pipp            = pipp,
             wavelet         = wavelet,
             quality         = quality,
             derotation      = derotation,
-            composite       = composite,
-            gif             = gif,
+            composite        = composite,
+            gif              = gif,
             grid            = grid,
             target          = str(d.get("target", "Jup")),
             filters         = filters,

@@ -27,7 +27,6 @@ else
     echo "  PyInstaller OK"
 fi
 
-# pyinstaller-hooks-contrib 확인 (PySide6 hooks 제공)
 if ! python3 -c "import _pyinstaller_hooks_contrib" 2>/dev/null; then
     echo "  pyinstaller-hooks-contrib 설치 중..."
     pip install pyinstaller-hooks-contrib
@@ -42,7 +41,7 @@ echo "  완료"
 # ── 3. 빌드 ──────────────────────────────────────────────────
 echo ""
 echo "[3/4] PyInstaller 빌드 시작..."
-echo "  (scipy/astropy 수집에 수 분 소요될 수 있습니다)"
+echo "  (첫 빌드 시 PySide6 수집에 수 분 소요될 수 있습니다)"
 echo ""
 
 python3 -m PyInstaller --clean astro_pipeline.spec
@@ -54,11 +53,12 @@ echo "[4/4] 빌드 결과 확인..."
 EXE_PATH="$DIST_DIR/$APP_NAME"
 if [ -f "$EXE_PATH" ]; then
     SIZE=$(du -sh "$EXE_PATH" | cut -f1)
+    SIZE_BYTES=$(stat -c%s "$EXE_PATH")
     echo ""
     echo "======================================================"
     echo "  빌드 성공!"
     echo "  경로: $EXE_PATH"
-    echo "  크기: $SIZE"
+    echo "  크기: $SIZE (${SIZE_BYTES} bytes)"
     echo "======================================================"
     echo ""
     echo "실행 방법:"

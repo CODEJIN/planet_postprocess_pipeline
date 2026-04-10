@@ -61,16 +61,16 @@ def _float_to_pil(img: np.ndarray, target_px: int) -> Image.Image:
 
 
 def _get_font(size: int) -> ImageFont.ImageFont:
-    """Load a TrueType font with broad Unicode coverage (incl. CJK/Korean)."""
+    """Load a TrueType font with broad Unicode coverage (incl. CJK/Korean).
+
+    NotoSansCJK is tried first so that target names containing non-Latin
+    characters (e.g. Korean) render correctly instead of showing boxes.
+    """
     candidates = [
-        # --- 윈도우(Windows)용 맑은 고딕 ---
-        "C:/Windows/Fonts/malgun.ttf",
-        # --- 맥(macOS)용 애플 SD 산돌고딕 Neo ---
-        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
-        
-        # 기존 리눅스용 경로들...
+        # Noto CJK — full Unicode coverage including Korean, Chinese, Japanese
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        # DejaVu — good Latin/Greek/Cyrillic coverage
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
@@ -266,11 +266,10 @@ def run(
         print(f"  {n_missing} cell(s) missing (shown as black)")
 
     # ── Build title string ────────────────────────────────────────────────────
-    # Format: "Jupiter · 2026-04-02 · KST"
+    # Format: "Jupiter · 2026-04-02 · UTC+0900"
+    # UTC offset is used instead of tz_name to avoid font issues on Windows
+    # (tz_name can be a locale-specific string like "KST" requiring extra fonts).
     # Date is extracted from the first window's UTC center time.
-    # tz_name = datetime.now(timezone.utc).astimezone().tzname() or "Local"
-    offset_hours = local_offset.total_seconds() / 3600
-    tz_name = f"UTC{offset_sign}{offset_h:02d}:{offset_m:02d}"
     obs_date = ""
     first_iso = window_times.get(sorted_labels[0], "") if sorted_labels else ""
     if first_iso:
@@ -278,10 +277,11 @@ def run(
             obs_date = datetime.strptime(first_iso[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
         except ValueError:
             pass
+    tz_label = f"UTC{offset_sign}{offset_h:02d}{offset_m:02d}"
     title_parts = [config.target]
     if obs_date:
         title_parts.append(obs_date)
-    title_parts.append(tz_name)
+    title_parts.append(tz_label)
     title_str = "  ·  ".join(title_parts)
 
     has_title = cfg.title_font_size > 0

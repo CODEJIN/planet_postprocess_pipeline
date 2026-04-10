@@ -44,7 +44,10 @@ def run(config: PipelineConfig, progress_callback=None) -> StepResult:
     # ── Resolve output directory ───────────────────────────────────────────────
     out_dir: Optional[Path]
     if config.save_step03:
-        out_dir = config.step_dir(3, "wavelet_preview")
+        if config.step03_output_dir is not None:
+            out_dir = Path(config.step03_output_dir)
+        else:
+            out_dir = config.step_dir(3, "wavelet_preview")
         out_dir.mkdir(parents=True, exist_ok=True)
         print(f"  Output → {out_dir}")
     else:

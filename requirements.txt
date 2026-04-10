@@ -3,8 +3,4 @@ scipy
 opencv-python
 tifffile
 Pillow
-imageio[ffmpeg]
-astropy
-astroquery
-scikit-image
 PySide6

@@ -1,10 +1,27 @@
-"""Step 7 — RGB composite (master) panel."""
+"""Step 7 — RGB composite (mono) / Color correction (color camera) panel.
+
+Architecture: Step07Panel is a wrapper (BasePanel) that contains a QStackedWidget
+with two sub-widgets:
+  - _Step07MonoWidget   : mono camera composite spec UI (filter → R/G/B/L mapping)
+  - _Step07ColorWidget  : color camera auto-correction preview UI
+
+Color camera mode:
+  Per-window automatic white balance + CA correction runs entirely inside the
+  pipeline (_auto_color_correct in step07_rgb_composite.py).  The GUI panel
+  shows a before/after preview using the same algorithm so the user can verify
+  the correction quality before running the full pipeline.
+
+load_session() detects camera_mode and switches the internal stack accordingly.
+main_window.py needs no changes.
+"""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
-from PySide6.QtCore import Qt
+import numpy as np
+from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -17,6 +34,7 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QSizePolicy,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -24,6 +42,8 @@ from PySide6.QtWidgets import (
 from gui.i18n import S
 from gui.panels.base_panel import BasePanel
 from gui.widgets.rgb_composite_preview import RgbCompositePreviewWidget
+
+# ── Shared styles ──────────────────────────────────────────────────────────────
 
 _SPINBOX_STYLE = (
     "QDoubleSpinBox { background: #3c3c3c; color: #d4d4d4; border: 1px solid #555;"
@@ -56,14 +76,29 @@ _BTN_ADD = (
     " border-radius: 3px; padding: 3px 10px; font-size: 11px; }"
     "QPushButton:hover { background: #40916c; }"
 )
+_BTN_REFRESH = (
+    "QPushButton { background: #1e4a7a; color: #7ec8f0; border: 1px solid #2d6aaa;"
+    " border-radius: 4px; padding: 5px 14px; font-size: 11px; }"
+    "QPushButton:hover { background: #2558a0; color: #b0d8f8; }"
+    "QPushButton:disabled { background: #2a2a2a; color: #555; border-color: #3a3a3a; }"
+)
+_SECTION_STYLE = "color: #4da6ff; font-size: 11px; font-weight: bold;"
+_INFO_STYLE    = "color: #888; font-size: 10px;"
+_STATUS_STYLE  = "color: #666; font-size: 10px; font-style: italic;"
+_PANEL_STYLE   = "QLabel { background: #1a1a1a; border: 1px solid #444; border-radius: 4px; }"
+_CAP_STYLE     = "color: #888; font-size: 10px;"
 
-# Default specs shown when no session data is present
+_PANEL_SIZE = 200   # px per preview panel
+
+# Default composite specs shown for mono mode
 _DEFAULT_SPECS = [
     {"name": "RGB",      "R": "R",   "G": "G", "B": "B",  "L": ""},
-    {"name": "IR-RGB",   "R": "R",   "G": "G", "B": "B",  "L": "IR"},   # LRGB: IR as luminance
+    {"name": "IR-RGB",   "R": "R",   "G": "G", "B": "B",  "L": "IR"},
     {"name": "CH4-G-IR", "R": "CH4", "G": "G", "B": "IR", "L": ""},
 ]
 
+
+# ── Mono sub-widget helpers ────────────────────────────────────────────────────
 
 class _SpecRow(QWidget):
     """A single composite spec row: name + R/G/B/L dropdowns + delete button."""
@@ -83,13 +118,13 @@ class _SpecRow(QWidget):
 
         self._radio = QRadioButton()
         self._radio.setFixedWidth(20)
-        self._radio.setToolTip("이 합성을 미리보기에 표시")
+        self._radio.setToolTip(S("spec.tooltip.preview"))
         row.addWidget(self._radio)
 
         self._name = QLineEdit()
         self._name.setStyleSheet(_NAME_STYLE)
         self._name.setFixedWidth(90)
-        self._name.setPlaceholderText("이름")
+        self._name.setPlaceholderText(S("spec.col.name"))
         row.addWidget(self._name)
 
         self._combos: dict[str, QComboBox] = {}
@@ -102,7 +137,6 @@ class _SpecRow(QWidget):
             cb = QComboBox()
             cb.setStyleSheet(_COMBO_STYLE)
             cb.setFixedWidth(70)
-            # L channel can be empty (None)
             options = (["──"] if ch_key == "L" else []) + filters
             for opt in options:
                 cb.addItem(opt)
@@ -112,7 +146,7 @@ class _SpecRow(QWidget):
         self._btn_del = QPushButton("✕")
         self._btn_del.setStyleSheet(_BTN_SMALL)
         self._btn_del.setFixedWidth(24)
-        self._btn_del.setToolTip("이 합성 설정 삭제")
+        self._btn_del.setToolTip(S("spec.tooltip.delete"))
         row.addWidget(self._btn_del)
 
         if spec:
@@ -128,16 +162,20 @@ class _SpecRow(QWidget):
                 cb.setCurrentIndex(idx)
 
     def update_filters(self, filters: list[str]) -> None:
-        """Rebuild combo items when the global filter list changes."""
         self._filters = filters
         for ch, cb in self._combos.items():
             current = cb.currentText()
+            cb.blockSignals(True)
             cb.clear()
             options = (["──"] if ch == "L" else []) + filters
             for opt in options:
                 cb.addItem(opt)
             idx = cb.findText(current)
-            cb.setCurrentIndex(max(0, idx))
+            # max(0, idx) would silently fall back to index-0 ("IR") when the
+            # previous value is not found in the new filter list.  Instead keep
+            # the previous text if it exists; only fall back to 0 as last resort.
+            cb.setCurrentIndex(idx if idx >= 0 else 0)
+            cb.blockSignals(False)
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -149,29 +187,23 @@ class _SpecRow(QWidget):
         }
 
 
-class Step07Panel(BasePanel):
-    STEP_ID   = "07"
-    TITLE_KEY = "step07.title"
-    DESC_KEY  = "step07.desc"
-    OPTIONAL  = False
+# ── Mono sub-widget ────────────────────────────────────────────────────────────
+
+class _Step07MonoWidget(QWidget):
+    """Mono composite spec UI: filter-to-channel mapping table + preview."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
         self._output_dir: Path | None = None
         self._spec_rows: list[_SpecRow] = []
         self._available_filters: list[str] = ["R", "G", "B", "IR", "CH4", "UV"]
-        super().__init__(parent)
+        self._build_ui()
 
-    # ── BasePanel interface ───────────────────────────────────────────────────
-
-    def build_form(self) -> None:
-        # ── Horizontal split: controls (left) | preview (right) ────────────
-        main_widget = QWidget()
-        main_widget.setStyleSheet("background: transparent;")
-        main_hlayout = QHBoxLayout(main_widget)
+    def _build_ui(self) -> None:
+        main_hlayout = QHBoxLayout(self)
         main_hlayout.setSpacing(16)
         main_hlayout.setContentsMargins(0, 0, 0, 0)
 
-        # ── Left: controls ──────────────────────────────────────────────────
         left_widget = QWidget()
         left_widget.setStyleSheet("background: transparent;")
         left_layout = QVBoxLayout(left_widget)
@@ -185,23 +217,19 @@ class Step07Panel(BasePanel):
         fl.setContentsMargins(0, 0, 0, 0)
         fl.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        # Auto-derived folder display
         self._input_lbl = QLineEdit()
         self._input_lbl.setReadOnly(True)
         self._input_lbl.setStyleSheet(_READONLY_STYLE)
         self._input_lbl.setToolTip("Step 6 마스터 이미지가 있는 폴더 (자동)")
         lbl_in = QLabel(S("step07.input_dir"))
-        lbl_in.setToolTip("Step 6에서 출력된 마스터 PNG 파일이 있는 폴더입니다.")
         fl.addRow(lbl_in, self._input_lbl)
 
         self._output_lbl = QLineEdit()
         self._output_lbl.setReadOnly(True)
         self._output_lbl.setStyleSheet(_READONLY_STYLE)
         lbl_out = QLabel(S("step07.output_dir"))
-        lbl_out.setToolTip("RGB 합성 결과물이 저장될 폴더입니다.")
         fl.addRow(lbl_out, self._output_lbl)
 
-        # Max shift px
         _tip_shift = (
             "채널 간 정렬 시 허용되는 최대 이동량(px)입니다.\n"
             "너무 크면 잘못된 채널이 정렬될 수 있습니다."
@@ -219,43 +247,33 @@ class Step07Panel(BasePanel):
 
         left_layout.addWidget(form_widget)
 
-        # ── Composite spec table ──────────────────────────────────────────────
         spec_header = QWidget()
         spec_header.setStyleSheet("background: transparent;")
         hdr_layout = QHBoxLayout(spec_header)
         hdr_layout.setContentsMargins(0, 8, 0, 4)
         hdr_layout.setSpacing(0)
-        hdr_lbl = QLabel("합성 설정 (Composite Specs)")
+        hdr_lbl = QLabel(S("step07.spec_header"))
         hdr_lbl.setStyleSheet("color: #aaa; font-size: 11px; font-weight: bold;")
-        hdr_lbl.setToolTip(
-            "각 합성 이미지의 이름과 채널 매핑을 정의합니다.\n"
-            "R/G/B: 각 색 채널에 할당할 필터\n"
-            "L: 루마(밝기) 채널 (LRGB 합성 시 사용, 선택적)"
-        )
         hdr_layout.addWidget(hdr_lbl)
         hdr_layout.addStretch()
-        self._btn_add_spec = QPushButton("+ 추가")
+        self._btn_add_spec = QPushButton(S("btn.add_spec"))
         self._btn_add_spec.setStyleSheet(_BTN_ADD)
-        self._btn_add_spec.setToolTip("새 합성 설정 추가")
         self._btn_add_spec.clicked.connect(self._add_spec_row)
         hdr_layout.addWidget(self._btn_add_spec)
-
         left_layout.addWidget(spec_header)
 
-        # Scrollable container for spec rows
         self._spec_container = QWidget()
         self._spec_container.setStyleSheet("background: #252525; border-radius: 4px;")
         self._spec_vbox = QVBoxLayout(self._spec_container)
         self._spec_vbox.setContentsMargins(6, 6, 6, 6)
         self._spec_vbox.setSpacing(2)
 
-        # Column header
         col_hdr = QWidget()
         col_hdr.setStyleSheet("background: transparent;")
         col_hdr_layout = QHBoxLayout(col_hdr)
         col_hdr_layout.setContentsMargins(0, 0, 0, 2)
         col_hdr_layout.setSpacing(4)
-        for txt, w in [("👁", 20), ("이름", 90), ("R채널", 84), ("G채널", 84), ("B채널", 84), ("L채널", 84), ("", 24)]:
+        for txt, w in [("👁", 20), (S("spec.col.name"), 90), (S("spec.col.r_channel"), 84), (S("spec.col.g_channel"), 84), (S("spec.col.b_channel"), 84), (S("spec.col.l_channel"), 84), ("", 24)]:
             lbl = QLabel(txt)
             lbl.setFixedWidth(w)
             lbl.setStyleSheet("color: #666; font-size: 10px;")
@@ -274,25 +292,77 @@ class Step07Panel(BasePanel):
         left_layout.addStretch()
         main_hlayout.addWidget(left_widget, 1)
 
-        # Radio button group — controls which spec is previewed
         self._spec_radio_group = QButtonGroup(self)
         self._spec_radio_group.buttonClicked.connect(self._on_params_changed)
 
-        # Populate defaults (before preview, so _preview not yet set)
         for spec in _DEFAULT_SPECS:
             self._add_spec_row(spec)
 
-        # ── Right: preview ──────────────────────────────────────────────────
         self._preview = RgbCompositePreviewWidget(parent=self)
         main_hlayout.addWidget(self._preview, 0)
 
-        # Connect existing spec rows' combos to preview updates
         for row in self._spec_rows:
             for cb in row._combos.values():
                 cb.currentIndexChanged.connect(self._on_params_changed)
 
-        idx = self._form_layout.count() - 1
-        self._form_layout.insertWidget(idx, main_widget)
+    def load_session(self, data: dict[str, Any]) -> None:
+        out = data.get("output_dir", "")
+        if out:
+            p = Path(out)
+            self._input_lbl.setText(str(p / "step06_wavelet_master"))
+            self._output_lbl.setText(str(p / "step07_rgb_composite"))
+            if hasattr(self, "_preview"):
+                self._preview.set_input_dir(p / "step06_wavelet_master")
+        self._max_shift.setValue(float(data.get("max_shift_px", 15.0)))
+
+        raw = data.get("filters", "")
+        if raw:
+            filters = [f.strip() for f in raw.split(",") if f.strip()]
+            mono_filters = [f for f in filters if f not in ("COLOR", "RGB")]
+            if mono_filters:
+                self._refresh_filter_options(mono_filters)
+
+        saved_specs = data.get("composite_specs")
+        if saved_specs:
+            for row in list(self._spec_rows):
+                if hasattr(self, "_spec_radio_group"):
+                    self._spec_radio_group.removeButton(row._radio)
+                row.setParent(None)
+                row.deleteLater()
+            self._spec_rows.clear()
+            for spec in saved_specs:
+                self._add_spec_row(spec)
+
+        self._sync_preview_spec()
+
+    def get_config_updates(self) -> dict[str, Any]:
+        specs = [r.to_dict() for r in self._spec_rows if r.to_dict()["name"]]
+        return {
+            "max_shift_px":    self._max_shift.value(),
+            "composite_specs": specs,
+        }
+
+    def output_paths(self) -> list[Path]:
+        if self._output_dir is None:
+            return []
+        step_dir = self._output_dir / "step07_rgb_composite"
+        if not step_dir.exists():
+            return []
+        return sorted(step_dir.rglob("*.png"))
+
+    def set_output_dir(self, path: Path | str | None) -> None:
+        self._output_dir = Path(path) if path else None
+        step06_dir = self._output_dir / "step06_wavelet_master" if self._output_dir else None
+        if hasattr(self, "_preview"):
+            self._preview.set_input_dir(step06_dir)
+
+    def on_show(self) -> None:
+        if hasattr(self, "_preview"):
+            self._preview.schedule_update(150)
+
+    def refresh_after_run(self) -> None:
+        if hasattr(self, "_preview"):
+            self._preview.schedule_update(500)
 
     def _add_spec_row(self, spec: dict[str, str] | None = None) -> None:
         row = _SpecRow(self._available_filters, spec, parent=self._spec_container)
@@ -300,12 +370,10 @@ class Step07Panel(BasePanel):
         row._btn_del.clicked.connect(lambda _, r=row: self._remove_spec_row(r))
         self._spec_rows.append(row)
         self._spec_vbox.addWidget(row)
-        # Register radio button in the group; first row is always selected
         if hasattr(self, "_spec_radio_group"):
             self._spec_radio_group.addButton(row._radio)
             if len(self._spec_rows) == 1:
                 row._radio.setChecked(True)
-        # Connect combos to preview update (only when preview already exists)
         if hasattr(self, "_preview"):
             for cb in row._combos.values():
                 cb.currentIndexChanged.connect(self._on_params_changed)
@@ -318,7 +386,6 @@ class Step07Panel(BasePanel):
             self._spec_rows.remove(row)
         row.setParent(None)
         row.deleteLater()
-        # If the removed row was the active preview, switch to first remaining
         if was_checked and self._spec_rows:
             self._spec_rows[0]._radio.setChecked(True)
             self._on_params_changed()
@@ -328,74 +395,6 @@ class Step07Panel(BasePanel):
         for row in self._spec_rows:
             row.update_filters(filters)
 
-    def get_config_updates(self) -> dict[str, Any]:
-        specs = [r.to_dict() for r in self._spec_rows if r.to_dict()["name"]]
-        return {
-            "max_shift_px": self._max_shift.value(),
-            "composite_specs": specs,
-        }
-
-    def load_session(self, data: dict[str, Any]) -> None:
-        out = data.get("output_dir", "")
-        if out:
-            p = Path(out)
-            self._input_lbl.setText(str(p / "step06_wavelet_master"))
-            self._output_lbl.setText(str(p / "step07_rgb_composite"))
-            if hasattr(self, "_preview"):
-                self._preview.set_input_dir(p / "step06_wavelet_master")
-        self._max_shift.setValue(float(data.get("max_shift_px", 15.0)))
-
-        # Update filter list from settings
-        raw = data.get("filters", "")
-        if raw:
-            filters = [f.strip() for f in raw.split(",") if f.strip()]
-            if filters:
-                self._refresh_filter_options(filters)
-
-        # Reload specs if saved
-        saved_specs = data.get("composite_specs")
-        if saved_specs:
-            # Clear existing rows
-            for row in list(self._spec_rows):
-                if hasattr(self, "_spec_radio_group"):
-                    self._spec_radio_group.removeButton(row._radio)
-                row.setParent(None)
-                row.deleteLater()
-            self._spec_rows.clear()
-            for spec in saved_specs:
-                self._add_spec_row(spec)
-
-        # Sync preview spec from first row
-        self._sync_preview_spec()
-
-    def output_paths(self) -> list[Path]:
-        if self._output_dir is None:
-            return []
-        step_dir = self._output_dir / "step07_rgb_composite"
-        if not step_dir.exists():
-            return []
-        return sorted(step_dir.rglob("*.png"))
-
-    def set_output_dir(self, path: Path | str) -> None:
-        self._output_dir = Path(path) if path else None
-        step06_dir = self._output_dir / "step06_wavelet_master" if self._output_dir else None
-        if hasattr(self, "_preview"):
-            self._preview.set_input_dir(step06_dir)
-
-    # ── Qt events ─────────────────────────────────────────────────────────────
-
-    def showEvent(self, event) -> None:
-        super().showEvent(event)
-        if hasattr(self, "_preview"):
-            self._preview.schedule_update(150)
-
-    def refresh_after_run(self) -> None:
-        super().refresh_after_run()
-        if hasattr(self, "_preview"):
-            self._preview.schedule_update(500)
-
-    # ── Slots ─────────────────────────────────────────────────────────────────
-
     def _on_params_changed(self) -> None:
         if not hasattr(self, "_preview"):
             return
@@ -403,7 +402,6 @@ class Step07Panel(BasePanel):
         self._preview.schedule_update()
 
     def _sync_preview_spec(self) -> None:
-        """Push the radio-selected spec row's channel mapping into the preview widget."""
         if not hasattr(self, "_preview") or not self._spec_rows:
             return
         active = next(
@@ -417,3 +415,523 @@ class Step07Panel(BasePanel):
             b_filter=spec.get("B", "B"),
             l_filter=spec.get("L", ""),
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Color correction sub-widget
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Image helpers ──────────────────────────────────────────────────────────────
+
+def _find_color_png(step06_dir: Path) -> Optional[Path]:
+    for pattern in ("COLOR_master.png", "RGB_master.png"):
+        hits = sorted(step06_dir.rglob(pattern))
+        if hits:
+            return hits[0]
+    hits = sorted(step06_dir.rglob("*.png"))
+    return hits[0] if hits else None
+
+
+def _img_to_uint8_rgb(img: np.ndarray) -> np.ndarray:
+    lo = float(np.percentile(img, 0.5))
+    hi = float(np.percentile(img, 99.5))
+    if hi <= lo:
+        hi = lo + 1e-6
+    return (np.clip((img - lo) / (hi - lo), 0.0, 1.0) * 255).astype(np.uint8)
+
+
+def _numpy_to_pixmap(arr_u8: np.ndarray, size: int = _PANEL_SIZE) -> QPixmap:
+    h, w = arr_u8.shape[:2]
+    from PySide6.QtGui import QImage
+    rgb = np.ascontiguousarray(arr_u8[:, :, :3])
+    qimg = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
+    px = QPixmap.fromImage(qimg.copy())
+    if max(w, h) > size:
+        px = px.scaled(
+            size, size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+    return px
+
+
+def _make_img_label_cc() -> QLabel:
+    lbl = QLabel()
+    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lbl.setStyleSheet(_PANEL_STYLE)
+    lbl.setFixedSize(_PANEL_SIZE, _PANEL_SIZE)
+    lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    return lbl
+
+
+# ── Preview worker ─────────────────────────────────────────────────────────────
+
+class _CCPreviewWorker(QObject):
+    """Background: load Step 6 PNG → auto_color_correct → emit before/after + params."""
+
+    # orig_bytes, corr_bytes, h, w, r_gain, b_gain, r_sx, r_sy, b_sx, b_sy
+    done  = Signal(bytes, bytes, int, int, float, float, float, float, float, float)
+    error = Signal(str)
+
+    def __init__(self, png_path: Path) -> None:
+        super().__init__()
+        self._path = png_path
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from pipeline.modules import image_io
+            from pipeline.steps.step07_rgb_composite import _auto_color_correct
+
+            orig = image_io.read_png(self._path)
+            if orig.ndim == 2:
+                orig = np.stack([orig] * 3, axis=2)
+
+            corrected, params = _auto_color_correct(orig)
+
+            orig_u8 = _img_to_uint8_rgb(orig)
+            corr_u8 = _img_to_uint8_rgb(corrected)
+            h, w = orig_u8.shape[:2]
+
+            self.done.emit(
+                bytes(np.ascontiguousarray(orig_u8)),
+                bytes(np.ascontiguousarray(corr_u8)),
+                h, w,
+                params["r_gain"], params["b_gain"],
+                params["r_shift_x"], params["r_shift_y"],
+                params["b_shift_x"], params["b_shift_y"],
+            )
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+# ── Graph ──────────────────────────────────────────────────────────────────────
+
+class _CCGraphWidget(QWidget):
+    """QPainter graph: left = R/G/B gain bars, right = CA shift arrows.
+
+    Updated only after the preview worker completes (auto-calc results).
+    """
+
+    _H = 150
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedHeight(self._H)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMinimumWidth(200)
+
+        self._r_gain  = 1.0
+        self._b_gain  = 1.0
+        self._r_sx    = 0.0
+        self._r_sy    = 0.0
+        self._b_sx    = 0.0
+        self._b_sy    = 0.0
+        self._has_data = False
+
+    def update_data(
+        self,
+        r_gain: float, b_gain: float,
+        r_sx: float, r_sy: float,
+        b_sx: float, b_sy: float,
+    ) -> None:
+        self._r_gain = r_gain
+        self._b_gain = b_gain
+        self._r_sx = r_sx
+        self._r_sy = r_sy
+        self._b_sx = b_sx
+        self._b_sy = b_sy
+        self._has_data = True
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        W = self.width()
+        H = self._H
+
+        painter.fillRect(0, 0, W, H, QColor("#1a1a1a"))
+        painter.setPen(QPen(QColor("#444"), 1))
+        painter.drawRect(0, 0, W - 1, H - 1)
+
+        if not self._has_data:
+            painter.setPen(QColor("#555"))
+            painter.setFont(QFont("Arial", 9))
+            painter.drawText(
+                0, 0, W, H,
+                Qt.AlignmentFlag.AlignCenter,
+                "미리보기 후 자동 계산값이 표시됩니다",
+            )
+            return
+
+        mid = W // 2
+        self._draw_gain_bars(painter, 8, 6, mid - 16, H - 12)
+        self._draw_shift_diagram(painter, mid + 4, 6, W - mid - 12, H - 12)
+
+    def _draw_gain_bars(self, painter: QPainter, ax: int, ay: int, aw: int, ah: int) -> None:
+        painter.setPen(QColor("#888"))
+        painter.setFont(QFont("Arial", 8))
+        painter.drawText(ax, ay, aw, 14, Qt.AlignmentFlag.AlignLeft, "채널 이득 (G 기준)")
+
+        chart_y = ay + 16
+        chart_h = ah - 36
+        mx = max(self._r_gain, 1.0, self._b_gain, 1e-6)
+
+        bars = [
+            (self._r_gain, QColor("#e05555"), "R"),
+            (1.0,          QColor("#55c055"), "G"),
+            (self._b_gain, QColor("#5588e0"), "B"),
+        ]
+        bar_w = (aw - 4 * 4) // 3
+
+        for i, (val, clr, lbl) in enumerate(bars):
+            bar_h = max(1, int((val / mx) * chart_h))
+            bx = ax + 4 + i * (bar_w + 4)
+            by = chart_y + chart_h - bar_h
+            painter.fillRect(bx, by, bar_w, bar_h, clr)
+
+            painter.setPen(QColor("#ccc"))
+            painter.setFont(QFont("Arial", 7))
+            painter.drawText(bx, chart_y + chart_h + 2, bar_w, 12,
+                             Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, lbl)
+            painter.drawText(bx, chart_y + chart_h + 12, bar_w, 12,
+                             Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+                             f"{val:.2f}")
+
+        # G reference line
+        g_line_y = chart_y + chart_h - int((1.0 / mx) * chart_h)
+        painter.setPen(QPen(QColor("#4da6ff"), 1, Qt.PenStyle.DashLine))
+        painter.drawLine(ax + 2, g_line_y, ax + aw - 2, g_line_y)
+
+    def _draw_shift_diagram(self, painter: QPainter, ax: int, ay: int, aw: int, ah: int) -> None:
+        painter.setPen(QColor("#888"))
+        painter.setFont(QFont("Arial", 8))
+        painter.drawText(ax, ay, aw, 14, Qt.AlignmentFlag.AlignLeft, "색수차 이동 (G 기준)")
+
+        cx = ax + aw // 2
+        cy = ay + 16 + (ah - 36) // 2
+        r  = min(aw, ah - 36) // 3
+
+        # G reference circle
+        painter.setPen(QPen(QColor("#55c055"), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(cx - r, cy - r, r * 2, r * 2)
+        painter.setPen(QColor("#55c055"))
+        painter.setFont(QFont("Arial", 8, QFont.Weight.Bold))
+        painter.drawText(cx - 4, cy + 4, "G")
+
+        scale = min(r * 0.8 / 3.0, 12.0)
+
+        def _arrow(dx: float, dy: float, clr: QColor, label: str) -> None:
+            tx = int(cx + dx * scale)
+            ty = int(cy + dy * scale)
+            painter.setPen(QPen(clr, 2))
+            painter.drawLine(cx, cy, tx, ty)
+            painter.setBrush(clr)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(tx - 4, ty - 4, 8, 8)
+            painter.setPen(clr)
+            painter.setFont(QFont("Arial", 7))
+            painter.drawText(tx + (6 if dx >= 0 else -14), ty + (4 if dy >= 0 else -4), label)
+
+        # Arrows show displacement of R/B relative to G (opposite of correction)
+        _arrow(-self._r_sx, -self._r_sy, QColor("#e05555"), "R")
+        _arrow(-self._b_sx, -self._b_sy, QColor("#5588e0"), "B")
+
+        # Numeric values
+        painter.setPen(QColor("#888"))
+        painter.setFont(QFont("Arial", 7))
+        painter.drawText(
+            ax, ay + ah - 20, aw, 20,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            f"R({self._r_sx:+.2f},{self._r_sy:+.2f})  B({self._b_sx:+.2f},{self._b_sy:+.2f})",
+        )
+
+
+# ── Color sub-widget ───────────────────────────────────────────────────────────
+
+class _Step07ColorWidget(QWidget):
+    """Color camera Step 7 panel.
+
+    Shows a before/after preview using the same auto WB + CA algorithm that
+    the pipeline will apply per window.  No manual parameter entry — the
+    pipeline handles each window independently.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._output_dir: Path | None = None
+        self._step06_dir: Path | None = None
+
+        self._running = False
+        self._pending = False
+        self._thread: Optional[QThread] = None
+        self._worker: Optional[_CCPreviewWorker] = None
+
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._do_preview_update)
+
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+        root.setContentsMargins(0, 0, 0, 0)
+
+        # ── Folder labels ──────────────────────────────────────────────────
+        folder_form = QWidget()
+        folder_form.setStyleSheet("background: transparent;")
+        fl = QFormLayout(folder_form)
+        fl.setSpacing(6)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        self._input_lbl = QLineEdit()
+        self._input_lbl.setReadOnly(True)
+        self._input_lbl.setStyleSheet(_READONLY_STYLE)
+        fl.addRow(QLabel(S("step07.input_dir")), self._input_lbl)
+
+        self._output_lbl = QLineEdit()
+        self._output_lbl.setReadOnly(True)
+        self._output_lbl.setStyleSheet(_READONLY_STYLE)
+        fl.addRow(QLabel(S("step07.output_dir")), self._output_lbl)
+
+        root.addWidget(folder_form)
+
+        # ── Info + refresh button ──────────────────────────────────────────
+        info = QLabel(
+            "윈도우마다 자동으로 화이트밸런스와 색수차 보정이 적용됩니다.\n"
+            "아래 미리보기에서 첫 번째 윈도우의 보정 결과를 확인할 수 있습니다."
+        )
+        info.setStyleSheet(_INFO_STYLE)
+        info.setWordWrap(True)
+        root.addWidget(info)
+
+        btn_row = QHBoxLayout()
+        self._btn_refresh = QPushButton("미리보기 갱신")
+        self._btn_refresh.setStyleSheet(_BTN_REFRESH)
+        self._btn_refresh.setToolTip("Step 6 PNG에서 자동 보정 결과를 미리봅니다.")
+        self._btn_refresh.clicked.connect(lambda: self.schedule_update(0))
+        btn_row.addWidget(self._btn_refresh)
+        btn_row.addStretch()
+        root.addLayout(btn_row)
+
+        # Status
+        self._status_lbl = QLabel("Step 6 출력 폴더가 설정되면 미리보기가 활성화됩니다.")
+        self._status_lbl.setStyleSheet(_STATUS_STYLE)
+        self._status_lbl.setWordWrap(True)
+        root.addWidget(self._status_lbl)
+
+        # ── Before / After preview panels ──────────────────────────────────
+        panels_row = QHBoxLayout()
+        panels_row.setSpacing(8)
+        panels_row.setContentsMargins(0, 0, 0, 0)
+
+        self._before_lbl = _make_img_label_cc()
+        self._after_lbl  = _make_img_label_cc()
+
+        for img_lbl, cap in ((self._before_lbl, "보정 전"), (self._after_lbl, "보정 후")):
+            col = QVBoxLayout()
+            col.setSpacing(2)
+            col.addWidget(img_lbl)
+            c = QLabel(cap)
+            c.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            c.setStyleSheet(_CAP_STYLE)
+            col.addWidget(c)
+            panels_row.addLayout(col)
+
+        panels_row.addStretch()
+        root.addLayout(panels_row)
+
+        # ── Graph (fills width of two preview panels) ──────────────────────
+        self._graph = _CCGraphWidget()
+        root.addWidget(self._graph)
+
+        root.addStretch()
+
+    # ── Public interface ──────────────────────────────────────────────────────
+
+    def load_session(self, data: dict[str, Any]) -> None:
+        out = data.get("output_dir", "")
+        if out:
+            p = Path(out)
+            self._input_lbl.setText(str(p / "step06_wavelet_master"))
+            self._output_lbl.setText(str(p / "step07_rgb_composite"))
+            self._step06_dir = p / "step06_wavelet_master"
+
+    def get_config_updates(self) -> dict[str, Any]:
+        # Auto-correction has no user-configurable params
+        return {}
+
+    def output_paths(self) -> list[Path]:
+        if self._output_dir is None:
+            return []
+        step_dir = self._output_dir / "step07_rgb_composite"
+        if not step_dir.exists():
+            return []
+        return sorted(step_dir.rglob("*.png"))
+
+    def set_output_dir(self, path: Path | str | None) -> None:
+        self._output_dir = Path(path) if path else None
+        if self._output_dir:
+            self._step06_dir = self._output_dir / "step06_wavelet_master"
+        else:
+            self._step06_dir = None
+
+    def on_show(self) -> None:
+        self.schedule_update(150)
+
+    def refresh_after_run(self) -> None:
+        self.schedule_update(500)
+
+    def schedule_update(self, delay: int = 400) -> None:
+        if self._step06_dir is None:
+            return
+        self._timer.start(delay)
+
+    # ── Qt events ─────────────────────────────────────────────────────────────
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._step06_dir is not None and not self._running:
+            self.schedule_update(150)
+
+    # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _do_preview_update(self) -> None:
+        if self._step06_dir is None:
+            return
+        if self._running:
+            self._pending = True
+            return
+
+        png = _find_color_png(self._step06_dir)
+        if png is None:
+            self._status_lbl.setText(f"PNG 없음: {self._step06_dir}")
+            return
+
+        self._running = True
+        self._pending = False
+        self._btn_refresh.setEnabled(False)
+        self._status_lbl.setText(f"자동 보정 계산 중…  {png.name}")
+
+        worker = _CCPreviewWorker(png)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_done)
+        worker.error.connect(self._on_error)
+        worker.done.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(thread.deleteLater)
+
+        self._thread = thread
+        self._worker = worker
+        thread.start()
+
+    @Slot(bytes, bytes, int, int, float, float, float, float, float, float)
+    def _on_done(
+        self,
+        orig_bytes: bytes,
+        corr_bytes: bytes,
+        h: int, w: int,
+        r_gain: float, b_gain: float,
+        r_sx: float, r_sy: float,
+        b_sx: float, b_sy: float,
+    ) -> None:
+        self._running = False
+        self._thread  = None
+        self._worker  = None
+        self._btn_refresh.setEnabled(True)
+
+        orig_u8 = np.frombuffer(orig_bytes, dtype=np.uint8).reshape(h, w, 3)
+        corr_u8 = np.frombuffer(corr_bytes, dtype=np.uint8).reshape(h, w, 3)
+
+        self._before_lbl.setPixmap(_numpy_to_pixmap(orig_u8))
+        self._after_lbl.setPixmap(_numpy_to_pixmap(corr_u8))
+
+        self._status_lbl.setText(
+            f"자동 계산 완료  ({w}×{h})  "
+            f"R×{r_gain:.3f}  G×1.000  B×{b_gain:.3f}  "
+            f"R_shift=({r_sx:+.2f},{r_sy:+.2f})  B_shift=({b_sx:+.2f},{b_sy:+.2f})"
+        )
+        self._graph.update_data(r_gain, b_gain, r_sx, r_sy, b_sx, b_sy)
+
+        if self._pending:
+            self._pending = False
+            self.schedule_update(200)
+
+    @Slot(str)
+    def _on_error(self, msg: str) -> None:
+        self._running = False
+        self._thread  = None
+        self._worker  = None
+        self._btn_refresh.setEnabled(True)
+        self._status_lbl.setText(f"오류: {msg}")
+        if self._pending:
+            self._pending = False
+
+
+# ── Wrapper panel ──────────────────────────────────────────────────────────────
+
+class Step07Panel(BasePanel):
+    STEP_ID   = "07"
+    TITLE_KEY = "step07.title"
+    DESC_KEY  = "step07.desc"
+    OPTIONAL  = False
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        self._output_dir: Path | None = None
+        self._is_color: bool = False
+        super().__init__(parent)
+
+    def build_form(self) -> None:
+        self._sub_stack = QStackedWidget()
+        self._mono_widget  = _Step07MonoWidget()
+        self._color_widget = _Step07ColorWidget()
+        self._sub_stack.addWidget(self._mono_widget)   # 0
+        self._sub_stack.addWidget(self._color_widget)  # 1
+
+        idx = self._form_layout.count() - 1
+        self._form_layout.insertWidget(idx, self._sub_stack)
+
+    def get_config_updates(self) -> dict[str, Any]:
+        if self._is_color:
+            return self._color_widget.get_config_updates()
+        return self._mono_widget.get_config_updates()
+
+    def load_session(self, data: dict[str, Any]) -> None:
+        self._is_color = data.get("camera_mode", "mono") == "color"
+        self._sub_stack.setCurrentIndex(1 if self._is_color else 0)
+        if self._is_color:
+            self._color_widget.load_session(data)
+        else:
+            self._mono_widget.load_session(data)
+
+    def output_paths(self) -> list[Path]:
+        if self._is_color:
+            return self._color_widget.output_paths()
+        return self._mono_widget.output_paths()
+
+    def set_output_dir(self, path: Path | str) -> None:
+        self._output_dir = Path(path) if path else None
+        if not self._is_color:
+            self._mono_widget.set_output_dir(self._output_dir)
+        self._color_widget.set_output_dir(self._output_dir)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._is_color:
+            self._color_widget.on_show()
+        else:
+            self._mono_widget.on_show()
+
+    def refresh_after_run(self) -> None:
+        super().refresh_after_run()
+        if self._is_color:
+            self._color_widget.refresh_after_run()
+        else:
+            self._mono_widget.refresh_after_run()

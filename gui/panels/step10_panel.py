@@ -115,10 +115,10 @@ class Step10Panel(BasePanel):
         lbl_gamma.setToolTip(_tip_gamma)
         fl.addRow(lbl_gamma, self._gamma)
 
-        _tip_cell = "요약 그리드에서 각 이미지 셀의 크기(px)입니다. (100~600px 범위)"
+        _tip_cell = "요약 그리드에서 각 이미지 셀의 크기(px)입니다. (100~1024px 범위)"
         self._cell_size = QSpinBox()
         self._cell_size.setStyleSheet(_INT_SPINBOX_STYLE)
-        self._cell_size.setRange(100, 600)
+        self._cell_size.setRange(100, 1024)
         self._cell_size.setSingleStep(50)
         self._cell_size.setValue(300)
         self._cell_size.setToolTip(_tip_cell)

@@ -74,6 +74,7 @@ def _dir_row(parent: QWidget, line_edit: QLineEdit) -> QHBoxLayout:
         )
         if folder:
             line_edit.setText(folder)
+            line_edit.editingFinished.emit()
 
     btn.clicked.connect(_browse)
     row.addWidget(btn)
@@ -184,6 +185,7 @@ class Step03Panel(BasePanel):
         self._input_dir.setStyleSheet(_INPUT_EMPTY_STYLE)
         self._input_dir.setPlaceholderText(S("step03.input_dir.placeholder"))
         self._input_dir.textChanged.connect(self._on_input_changed)
+        self._input_dir.editingFinished.connect(self._on_input_editing_finished)
         self._input_dir.editingFinished.connect(self.dirs_changed)
         lbl_in = QLabel(S("step03.input_dir"))
         lbl_in.setToolTip(
@@ -323,10 +325,15 @@ class Step03Panel(BasePanel):
 
     def _on_input_changed(self, text: str) -> None:
         self._update_input_style(text)
-        if not self._output_manually_edited:
-            self._auto_set_output(text)
         if hasattr(self, "_preview"):
             self._preview.set_input_dir(text.strip() or None)
+
+    def _on_input_editing_finished(self) -> None:
+        """Auto-set step03 output to a sub-folder of the TIF directory on focus-out.
+
+        Always updates — changing the input directory drives the output path.
+        """
+        self._auto_set_output(self._input_dir.text())
 
     def _on_output_manually_edited(self, _text: str) -> None:
         self._output_manually_edited = True
@@ -352,6 +359,6 @@ class Step03Panel(BasePanel):
         if not t:
             return
         p = Path(t)
-        derived = str(p.parent / "step03_wavelet_preview")
+        derived = str(p / "step03_wavelet_preview")
         self._output_step3.setText(derived)
-        self._output_dir = p.parent
+        self._output_dir = p

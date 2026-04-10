@@ -59,6 +59,19 @@ class WaveletConfig:
     # 0 = disabled.  For 280×280 images (background ~44 px), 30 is safe.
     border_taper_px: int = 0
 
+    # Disk-edge feathering factor for sharpen_disk_aware (Steps 6 & 8).
+    # Per-level feather width = 2^L × edge_feather_factor pixels.
+    # Finer levels (small L) sharpen close to the limb; coarser levels fade
+    # further inward to suppress overshoot rings.
+    # 0.0 = no feathering (full wavelet at limb, ringing visible).
+    # 2.0 = default (balanced).  8.0 = very wide feather zone.
+    # Applies to both mono (sharpen_disk_aware) and colour (sharpen_color_disk_aware).
+    edge_feather_factor: float = 2.0
+
+    # Same as edge_feather_factor but applied only to Step 8 time-series frames.
+    # Allows independent tuning of limb feathering for series vs. master sharpening.
+    series_edge_feather_factor: float = 2.0
+
 
 # ── Step 4: Quality assessment ─────────────────────────────────────────────────
 
@@ -213,6 +226,11 @@ class CompositeConfig:
     # produce {filter}_animation.gif / .apng for each filter.
     save_mono_frames: bool = False
 
+    # Series-specific composite specs (Step 8).  When set, these override
+    # `specs` for Step 8 time-series compositing, allowing different channel
+    # mappings from the Step 7 master composites.  None = use `specs`.
+    series_specs: Optional[List[CompositeSpec]] = None
+
 
 
 # ── Step 11: Summary contact sheet ────────────────────────────────────────────
@@ -290,6 +308,8 @@ class PipelineConfig:
     output_base_dir: Path = field(default_factory=lambda: Path("/data/astro_test/output"))
     # When set, step01_pipp writes here instead of output_base_dir/step01_pipp/
     step01_output_dir: Optional[Path] = None
+    # When set, step03 writes here instead of output_base_dir/step03_wavelet_preview/
+    step03_output_dir: Optional[Path] = None
 
     # ── Step save flags ────────────────────────────────────────────────────────
     save_step01: bool = True   # PIPP-processed SER files
@@ -308,6 +328,7 @@ class PipelineConfig:
     quality: QualityConfig = field(default_factory=QualityConfig)
     derotation: DerotationConfig = field(default_factory=DerotationConfig)
     composite: CompositeConfig = field(default_factory=CompositeConfig)
+
     gif: GifConfig = field(default_factory=GifConfig)
     grid: SummaryGridConfig = field(default_factory=SummaryGridConfig)
 

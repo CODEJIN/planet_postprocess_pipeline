@@ -400,6 +400,9 @@ def spherical_derotation_warp(
     w_cubic = np.clip(
         (disk_radius_px - dist_from_center) / _interp_feather_px, 0.0, 1.0
     )
+    # For 3-channel (H, W, 3) images, expand weight map so broadcasting works.
+    if warped_cubic.ndim == 3:
+        w_cubic = w_cubic[:, :, np.newaxis]
     warped = warped_cubic * w_cubic + warped_linear * (1.0 - w_cubic)
 
     return np.clip(warped, 0.0, 1.0)

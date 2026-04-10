@@ -29,7 +29,6 @@ from __future__ import annotations
 from typing import List, Optional
 
 import numpy as np
-from scipy.ndimage import convolve1d
 
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -62,11 +61,25 @@ def _build_atrous_kernel(level: int) -> np.ndarray:
     return kernel
 
 
+def _convolve1d_reflect(arr: np.ndarray, kernel: np.ndarray, axis: int) -> np.ndarray:
+    """numpy drop-in for scipy.ndimage.convolve1d(arr, kernel, axis, mode='reflect')."""
+    pad = len(kernel) // 2
+    pad_width = [(0, 0)] * arr.ndim
+    pad_width[axis] = (pad, pad)
+    padded = np.pad(arr, pad_width, mode="reflect")
+    result = np.zeros_like(arr, dtype=np.float64)
+    for i, k in enumerate(kernel):
+        sl = [slice(None)] * arr.ndim
+        sl[axis] = slice(i, i + arr.shape[axis])
+        result += k * padded[tuple(sl)]
+    return result
+
+
 def _smooth(image: np.ndarray, level: int) -> np.ndarray:
     """Apply separable B3-spline smoothing at the given à trous level."""
     kernel = _build_atrous_kernel(level)
-    out = convolve1d(image, kernel, axis=0, mode="reflect")
-    out = convolve1d(out,   kernel, axis=1, mode="reflect")
+    out = _convolve1d_reflect(image, kernel, axis=0)
+    out = _convolve1d_reflect(out,   kernel, axis=1)
     return out
 
 

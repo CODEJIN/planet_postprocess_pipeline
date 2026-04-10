@@ -115,9 +115,9 @@ class Step04Panel(BasePanel):
         self._cycle_seconds.setSingleStep(15)
         self._cycle_seconds.setValue(225)
         self._cycle_seconds.setToolTip(_tip_cyc)
-        lbl_cyc = QLabel(S("step04.cycle_seconds"))
-        lbl_cyc.setToolTip(_tip_cyc)
-        fl.addRow(lbl_cyc, self._cycle_seconds)
+        self._lbl_cyc = QLabel(S("step04.cycle_seconds"))
+        self._lbl_cyc.setToolTip(_tip_cyc)
+        fl.addRow(self._lbl_cyc, self._cycle_seconds)
 
         # n_windows
         _tip_nwin = (
@@ -189,6 +189,26 @@ class Step04Panel(BasePanel):
             self._input_lbl.setText(inp)
         if out:
             self._output_lbl.setText(str(Path(out) / "step04_quality"))
+
+        is_color = data.get("camera_mode", "mono") == "color"
+        if is_color:
+            self._lbl_cyc.setText(S("step04.cycle_seconds_color"))
+            self._cycle_seconds.setToolTip(
+                "RGB 프레임 한 장 촬영에 걸리는 시간(초)입니다.\n"
+                "윈도우 길이 = 프레임 수 × 이 값\n"
+                "예: 프레임 수 3 × 45초 = 135초(약 2.25분)"
+            )
+            if not data.get("cycle_seconds"):
+                self._cycle_seconds.setValue(45)
+        else:
+            self._lbl_cyc.setText(S("step04.cycle_seconds"))
+            self._cycle_seconds.setToolTip(
+                "필터 한 사이클(IR→R→G→B→CH4→IR)에 걸리는 시간(초)입니다.\n"
+                "실제 촬영 패턴에 맞춰 입력하세요.\n"
+                "예: 45초 × 5필터 = 225초\n\n"
+                "이 값은 Step 4의 de-rotation 윈도우 길이 계산에만 사용됩니다.\n"
+                "Step 8의 사이클 시간은 Step 8 패널에서 별도로 설정합니다."
+            )
         # New key: window_frames. Old keys: window_cycles, window_seconds (convert on load).
         if "window_frames" in data:
             self._window_frames.setValue(int(data["window_frames"]))

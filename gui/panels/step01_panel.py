@@ -54,6 +54,7 @@ def _dir_row(parent: QWidget, line_edit: QLineEdit) -> QHBoxLayout:
         )
         if folder:
             line_edit.setText(folder)
+            line_edit.editingFinished.emit()
 
     btn.clicked.connect(_browse)
     row.addWidget(btn)
@@ -110,6 +111,7 @@ class Step01Panel(BasePanel):
         self._ser_dir.setPlaceholderText(S("step01.ser_dir.placeholder"))
         self._ser_dir.setToolTip(_tip_ser)
         self._ser_dir.textChanged.connect(self._on_ser_dir_changed)
+        self._ser_dir.editingFinished.connect(self._auto_set_step1_output)
         lbl_ser = QLabel(S("step01.ser_dir"))
         lbl_ser.setToolTip(_tip_ser)
         fl.addRow(lbl_ser, _dir_row(self, self._ser_dir))
@@ -249,6 +251,20 @@ class Step01Panel(BasePanel):
     def _on_ser_dir_changed(self, text: str) -> None:
         if hasattr(self, "_preview"):
             self._preview.set_input_dir(text.strip() or None)
+
+    def _auto_set_step1_output(self) -> None:
+        """Auto-set step01 output to a sub-folder of the SER directory on focus-out.
+
+        Always updates regardless of _output_manually_edited — changing the input
+        directory is an explicit user action that should drive the output path.
+        """
+        t = self._ser_dir.text().strip()
+        if not t:
+            return
+        derived = str(Path(t) / "step01_pipp")
+        self._output_step1.setText(derived)
+        self._output_dir = Path(t)
+        self.dirs_changed.emit()
 
     def _on_params_changed(self) -> None:
         if not hasattr(self, "_preview"):

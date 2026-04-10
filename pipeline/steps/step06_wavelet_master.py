@@ -82,7 +82,10 @@ def run(
 
         win_results: List[Tuple[Optional[Path], str]] = []
 
-        for filt in config.filters:
+        # For color mode the outputs key is the actual filter name from the
+        # file ("RGB"), not config.filters ("COLOR").  Use the actual keys.
+        iter_filters = list(outputs.keys()) if config.camera_mode == "color" else config.filters
+        for filt in iter_filters:
             tif_path = outputs.get(filt)
             if tif_path is None or not tif_path.exists():
                 print(f"    [{filt}] No input TIF — skipped")
@@ -134,6 +137,7 @@ def run(
                         amounts=config.wavelet.master_amounts,
                         power=config.wavelet.master_power,
                         sharpen_filter=config.wavelet.master_sharpen_filter,
+                        edge_feather_factor=config.wavelet.edge_feather_factor,
                     )
                 else:
                     sharpened = wavelet.sharpen_disk_aware(
@@ -142,6 +146,7 @@ def run(
                         amounts=config.wavelet.master_amounts,
                         power=config.wavelet.master_power,
                         sharpen_filter=config.wavelet.master_sharpen_filter,
+                        edge_feather_factor=config.wavelet.edge_feather_factor,
                     )
                 print(f"    [{filt}] Otsu_r={_sr:.1f}px  (disk-aware, Otsu boundary)")
             else:
