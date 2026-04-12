@@ -50,6 +50,7 @@ class _Worker(QObject):
         power: float,
         sharpen_filter: float,
         edge_feather_factor: float = 0.0,
+        auto_params: bool = False,
     ) -> None:
         super().__init__()
         self._path                = tif_path
@@ -58,6 +59,7 @@ class _Worker(QObject):
         self._power               = power
         self._sharpen_filter      = sharpen_filter
         self._edge_feather_factor = edge_feather_factor
+        self._auto_params         = auto_params
 
     @Slot()
     def run(self) -> None:
@@ -66,23 +68,33 @@ class _Worker(QObject):
 
             orig = image_io.read_tif(self._path)          # float32 [0,1]
 
-            if self._edge_feather_factor > 0.0:
+            if self._auto_params or self._edge_feather_factor > 0.0:
                 from pipeline.modules.derotation import find_disk_center
                 _lum = orig.mean(axis=2) if orig.ndim == 3 else orig
                 try:
-                    _cx, _cy, _sr, _, _ = find_disk_center(_lum)
-                    _has_disk = _sr >= 5
+                    _cx, _cy, _rx, _ry, _angle = find_disk_center(_lum)
+                    _has_disk = _rx >= 5
                 except Exception:
                     _has_disk = False
 
                 if _has_disk:
+                    _angle_rad = np.radians(_angle)
+                    if self._auto_params:
+                        _eff, _expand = wavelet.auto_wavelet_params(
+                            _lum, _cx, _cy, _rx, _ry, _angle_rad
+                        )
+                    else:
+                        _eff    = self._edge_feather_factor
+                        _expand = 0.0
                     sharp = wavelet.sharpen_disk_aware(
-                        orig, _cx, _cy, _sr,
+                        orig, _cx, _cy, _rx,
                         levels=self._levels,
                         amounts=self._amounts,
                         power=self._power,
                         sharpen_filter=self._sharpen_filter,
-                        edge_feather_factor=self._edge_feather_factor,
+                        edge_feather_factor=_eff,
+                        ry=_ry, angle=_angle_rad,
+                        expand_px=_expand,
                     )
                 else:
                     sharp = wavelet.sharpen(
@@ -184,6 +196,7 @@ class WaveletPreviewWidget(QWidget):
         self._levels:    int            = 6
         self._power:     float          = 1.0
         self._edge_feather_factor: float = 0.0
+        self._auto_params: bool         = False
 
         # State flags — more reliable than thread.isRunning()
         self._running = False
@@ -271,11 +284,13 @@ class WaveletPreviewWidget(QWidget):
         levels: int = 6,
         power: float = 1.0,
         edge_feather_factor: float = 0.0,
+        auto_params: bool = False,
     ) -> None:
         self._amounts             = list(amounts)
         self._levels              = levels
         self._power               = power
         self._edge_feather_factor = edge_feather_factor
+        self._auto_params         = auto_params
 
     def schedule_update(self, delay: int = 400) -> None:
         """Debounced update — restarts timer on every call."""
@@ -323,6 +338,7 @@ class WaveletPreviewWidget(QWidget):
             self._power,
             self._sharpen_filter,
             self._edge_feather_factor,
+            self._auto_params,
         )
         # QThread(self): Qt parent keeps C++ object alive so Python ref-drops
         # in _on_done/_on_error are safe even if the OS thread is still quitting.

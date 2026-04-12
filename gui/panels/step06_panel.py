@@ -180,37 +180,6 @@ class Step06Panel(BasePanel):
             wav_layout.addLayout(pair)
         left_layout.addWidget(wavelet_widget)
 
-        # Edge feather + border taper controls
-        extra_widget = QWidget()
-        extra_widget.setStyleSheet("background: transparent;")
-        extra_form = QFormLayout(extra_widget)
-        extra_form.setContentsMargins(0, 4, 0, 0)
-        extra_form.setSpacing(8)
-        extra_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-        _tip_feather = (
-            "디스크 림브(가장자리) 부근의 웨이블릿 감쇠 폭을 결정합니다.\n"
-            "레벨 L의 페더 폭 = 2^L × factor (px)\n\n"
-            "  0.0  = 페더링 없음 (림브까지 풀 선명화, 링잉 발생 위험)\n"
-            "  2.0  = 기본값 (권장)\n"
-            "  8.0  = 광폭 페더 (행성 내부도 일부 감쇠됨)\n\n"
-            "Step 6 마스터 샤프닝에만 적용됩니다.\n"
-            "Step 8 시계열 페더링은 Step 8 패널에서 별도로 조절합니다."
-        )
-        self._edge_feather = QDoubleSpinBox()
-        self._edge_feather.setStyleSheet(_SPINBOX_STYLE)
-        self._edge_feather.setRange(0.0, 8.0)
-        self._edge_feather.setDecimals(1)
-        self._edge_feather.setSingleStep(0.5)
-        self._edge_feather.setValue(2.0)
-        self._edge_feather.setFixedWidth(72)
-        self._edge_feather.setToolTip(_tip_feather)
-        lbl_feather = QLabel(S("step06.edge_feather"))
-        lbl_feather.setToolTip(_tip_feather)
-        extra_form.addRow(lbl_feather, self._edge_feather)
-        self._edge_feather.valueChanged.connect(self._on_params_changed)
-
-        left_layout.addWidget(extra_widget)
         left_layout.addStretch()
 
         main_hlayout.addWidget(left_widget, 1)
@@ -227,8 +196,7 @@ class Step06Panel(BasePanel):
 
     def get_config_updates(self) -> dict[str, Any]:
         return {
-            "master_amounts":      [s.value() for s in self._wavelet_spins],
-            "edge_feather_factor": self._edge_feather.value(),
+            "master_amounts": [s.value() for s in self._wavelet_spins],
         }
 
     def load_session(self, data: dict[str, Any]) -> None:
@@ -242,11 +210,10 @@ class Step06Panel(BasePanel):
         amounts = data.get("master_amounts", _WAVELET_DEFAULTS)
         for spin, val in zip(self._wavelet_spins, amounts):
             spin.setValue(float(val))
-        self._edge_feather.setValue(float(data.get("edge_feather_factor", 2.0)))
         if hasattr(self, "_preview"):
             self._preview.set_params(
                 amounts=amounts, levels=6, power=1.0,
-                edge_feather_factor=self._edge_feather.value(),
+                auto_params=True,
             )
 
     def output_paths(self) -> list[Path]:
@@ -272,6 +239,6 @@ class Step06Panel(BasePanel):
             amounts=[s.value() for s in self._wavelet_spins],
             levels=6,
             power=1.0,
-            edge_feather_factor=self._edge_feather.value(),
+            auto_params=True,
         )
         self._preview.schedule_update()

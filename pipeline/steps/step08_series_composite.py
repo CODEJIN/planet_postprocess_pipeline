@@ -700,21 +700,31 @@ def _run_color_series(
         # ── Wavelet sharpening (color-aware) ───────────────────────────────────
         lum2 = stacked.mean(axis=2)
         has_disk = False
-        cx2 = cy2 = sr2 = 0.0
+        cx2 = cy2 = sr2 = ry2 = angle2 = 0.0
         try:
-            cx2, cy2, sr2, *_ = find_disk_center(lum2)
+            cx2, cy2, sr2, ry2, angle2 = find_disk_center(lum2)
             has_disk = sr2 >= 5
         except Exception:
             pass
 
         if has_disk:
+            _angle2_rad = np.radians(angle2)
+            if config.wavelet.auto_params:
+                _s8c_eff, _s8c_expand = wavelet_module.auto_wavelet_params(
+                    lum2, cx2, cy2, sr2, ry2, _angle2_rad
+                )
+            else:
+                _s8c_eff    = config.wavelet.series_edge_feather_factor
+                _s8c_expand = config.wavelet.disk_expand_px
             sharpened = wavelet_module.sharpen_color_disk_aware(
                 stacked, cx2, cy2, sr2,
                 levels=config.wavelet.levels,
                 amounts=config.wavelet.series_amounts,
                 power=config.wavelet.series_power,
                 sharpen_filter=config.wavelet.series_sharpen_filter,
-                edge_feather_factor=config.wavelet.series_edge_feather_factor,
+                edge_feather_factor=_s8c_eff,
+                ry=ry2, angle=_angle2_rad,
+                expand_px=_s8c_expand,
             )
         else:
             sharpened = wavelet_module.sharpen_color(
@@ -916,15 +926,18 @@ def run(
         # Applied after stacking so sharpening acts on the high-SNR stack,
         # not on noisy individual frames.  Uses master_amounts/power settings.
 
-        # Detect disk center and Otsu semi-major radius for sharpen_disk_aware.
-        # Use Otsu_r (not visual_r) — see step06 for detailed rationale.
-        _disk_cx = _disk_cy = _disk_sr = None
+        # Elliptical disk-aware sharpening: detect disk ellipse from a reference
+        # filter and use it for all filters in this window.  Feather zone follows
+        # Jupiter's actual oblate shape, preventing over-blur at the equatorial
+        # limb while still suppressing de-rotation coverage gradient ringing.
+        _disk_cx = _disk_cy = _disk_rx = _disk_ry = _disk_angle = None
         for _ref_filt in _CENTER_PREF_ORDER:
             if _ref_filt in derotated:
                 try:
-                    _mc, _my, _ms, *_ = find_disk_center(derotated[_ref_filt])
-                    if _ms >= 5:
-                        _disk_cx, _disk_cy, _disk_sr = _mc, _my, _ms
+                    _mc, _my, _mrx, _mry, _ma = find_disk_center(derotated[_ref_filt])
+                    if _mrx >= 5:
+                        _disk_cx, _disk_cy = _mc, _my
+                        _disk_rx, _disk_ry, _disk_angle = _mrx, _mry, _ma
                         break
                 except Exception:
                     pass
@@ -938,13 +951,25 @@ def run(
                 _img = wavelet_module.border_taper(_img, top=_t, bottom=_b, left=_l, right=_r)
 
             if _disk_cx is not None:
+                # find_disk_center returns angle in degrees; convert to radians
+                _disk_angle_rad = np.radians(_disk_angle)
+                if config.wavelet.auto_params:
+                    _s8m_eff, _s8m_expand = wavelet_module.auto_wavelet_params(
+                        _img, _disk_cx, _disk_cy, _disk_rx, _disk_ry,
+                        _disk_angle_rad
+                    )
+                else:
+                    _s8m_eff    = config.wavelet.series_edge_feather_factor
+                    _s8m_expand = config.wavelet.disk_expand_px
                 _sharpened = wavelet_module.sharpen_disk_aware(
-                    _img, _disk_cx, _disk_cy, _disk_sr,
+                    _img, _disk_cx, _disk_cy, _disk_rx,
                     levels=config.wavelet.levels,
                     amounts=config.wavelet.series_amounts,
                     power=config.wavelet.series_power,
                     sharpen_filter=config.wavelet.series_sharpen_filter,
-                    edge_feather_factor=config.wavelet.series_edge_feather_factor,
+                    edge_feather_factor=_s8m_eff,
+                    ry=_disk_ry, angle=_disk_angle_rad,
+                    expand_px=_s8m_expand,
                 )
             else:
                 _sharpened = wavelet_module.sharpen(

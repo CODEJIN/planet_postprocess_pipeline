@@ -480,6 +480,241 @@ def _make_disk_weight(
     return np.clip((radius - dist) / max(feather_px, 1.0), 0.0, 1.0).astype(np.float32)
 
 
+def _make_disk_weight_ellipse(
+    h: int, w: int,
+    cx: float, cy: float,
+    rx: float, ry: float,
+    angle_rad: float,
+    feather_px: float,
+) -> np.ndarray:
+    """Soft elliptical mask: 1.0 inside disk, linear fade to 0 over feather_px at ellipse boundary.
+
+    Uses the actual ellipse shape (rx=semi-major, ry=semi-minor, angle_rad=tilt)
+    so that the feather zone follows Jupiter's oblate limb in every direction.
+    The normalised elliptical distance (1.0 at boundary) is scaled by the
+    geometric mean radius sqrt(rx*ry) to convert to pixels, preserving the same
+    feather depth as the circular version while adapting to the ellipse shape.
+    """
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    dx, dy = xx - cx, yy - cy
+    # Rotate to ellipse principal axes (semi-major along angle_rad from x-axis)
+    cos_a = float(np.cos(angle_rad))
+    sin_a = float(np.sin(angle_rad))
+    dx_r =  cos_a * dx + sin_a * dy
+    dy_r = -sin_a * dx + cos_a * dy
+    # Normalised elliptical distance: exactly 1.0 at the ellipse boundary
+    d_norm = np.sqrt((dx_r / rx) ** 2 + (dy_r / ry) ** 2)
+    # Convert to approximate pixel distance from boundary.
+    # (1 - d_norm) is dimensionless; scaling by sqrt(rx*ry) gives pixel units
+    # consistent with the circular version when rx == ry.
+    dist_from_boundary = (1.0 - d_norm) * float(np.sqrt(rx * ry))
+    t = np.clip(dist_from_boundary / max(feather_px, 1.0), 0.0, 1.0)
+    # Cosine S-curve: smoother at both endpoints than linear fade,
+    # making the disk-edge transition less perceptible.
+    return (0.5 * (1.0 - np.cos(np.pi * t))).astype(np.float32)
+
+
+def _fill_outside_ellipse(
+    image: np.ndarray,
+    cx: float,
+    cy: float,
+    rx: float,
+    ry: float,
+    angle_rad: float,
+) -> np.ndarray:
+    """Fill pixels outside the ellipse with the nearest ellipse-boundary pixel value.
+
+    Before applying the à trous wavelet, background pixels (near-zero) outside
+    the disk are read by the B3 kernel and artificially inflate detail
+    coefficients near the limb — creating a bright ring after sharpening.
+    Replacing the outside region with a smooth extension (nearest limb pixel
+    along each radial direction) makes the wavelet see a natural signal at the
+    boundary, eliminating this artifact.
+
+    Args:
+        image:     2-D float array (single channel).
+        cx, cy:    Disk centre in pixels.
+        rx, ry:    Semi-major and semi-minor axes of the fill boundary.
+        angle_rad: Ellipse tilt in radians (semi-major axis from x-axis).
+
+    Returns:
+        Copy of *image* with pixels outside the ellipse replaced by the value
+        of their radially-projected nearest boundary pixel.
+    """
+    h, w = image.shape[0], image.shape[1]
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    dx, dy = xx - cx, yy - cy
+    cos_a = float(np.cos(angle_rad))
+    sin_a = float(np.sin(angle_rad))
+    dx_r =  cos_a * dx + sin_a * dy
+    dy_r = -sin_a * dx + cos_a * dy
+    d_norm = np.sqrt((dx_r / rx) ** 2 + (dy_r / ry) ** 2)
+
+    outside = d_norm > 1.0
+    if not np.any(outside):
+        return image
+
+    # Project each outside pixel to the ellipse boundary along the radial
+    # direction from the centre.  Dividing (dx_r, dy_r) by d_norm gives a
+    # point (px_r, py_r) satisfying (px_r/rx)^2 + (py_r/ry)^2 = 1.
+    d_safe = np.where(d_norm > 1e-6, d_norm, 1e-6)
+    px_r = dx_r / d_safe          # projected, rotated frame
+    py_r = dy_r / d_safe
+    # Rotate back to image frame
+    px = cos_a * px_r - sin_a * py_r   # dx from centre
+    py = sin_a * px_r + cos_a * py_r   # dy from centre
+    xi = np.clip(np.round(cx + px).astype(int), 0, w - 1)
+    yi = np.clip(np.round(cy + py).astype(int), 0, h - 1)
+
+    filled = image.copy()
+    filled[outside] = image[yi[outside], xi[outside]]
+    return filled
+
+
+def auto_wavelet_params(
+    image: np.ndarray,
+    cx: float,
+    cy: float,
+    rx: float,
+    ry: float,
+    angle_rad: float,
+    n_angles: int = 36,
+    profile_ext_px: int = 10,
+    profile_int_px: int = 25,
+    visual_limb_frac: float = 0.05,
+    grad_threshold_frac: float = 0.25,
+) -> tuple:
+    """Auto-estimate edge_feather_factor and disk_expand_px from a de-rotation stack.
+
+    Measures two properties directly from the disk boundary in the stacked image:
+
+    1. **expand_px**: Scaled proportionally to the geometric mean disk radius
+       (``sqrt(rx × ry) × 0.0505``, calibrated from rx=102,ry=96→5.0 px).
+       This corrects for find_disk_center's Otsu-threshold landing inside the
+       true visual limb, which scales with planet size.  Visual-limb brightness
+       measurement was found to over-estimate this offset (gives 2× the optimal
+       value due to the coverage-gradient cross-scale consistency constraint).
+
+    2. **eff (edge_feather_factor)**: Width of the coverage-gradient transition
+       just inside the detected boundary.  The à trous wavelet amplifies any
+       brightness step at this boundary; the feather zone must span at least
+       half this width to suppress the artifact.  Measured as the radial
+       width (in pixels) where |d_brightness/d_r| exceeds
+       ``grad_threshold_frac × max_gradient``, then eff = gradient_width / 2.
+       Falls back to geometric-mean-radius scaling
+       (``sqrt(rx × ry) × 0.030``, calibrated from rx=102→eff=3.0) if the
+       gradient measurement is unreliable.
+
+    This function is designed to be called per-image (per filter per window)
+    so that parameters adapt to filter-specific limb darkening (IR > R > G > B),
+    seeing, and de-rotation coverage conditions.
+
+    Args:
+        image:               2-D or 3-D float array (values need not be normalised;
+                             normalised internally).
+        cx, cy:              Disk centre in pixels.
+        rx, ry:              Semi-major / semi-minor ellipse radii (from
+                             ``find_disk_center``).
+        angle_rad:           Ellipse tilt in radians (semi-major from x-axis).
+        n_angles:            Number of equally-spaced radial directions to sample
+                             (default 36 = every 10°).
+        profile_ext_px:      Pixels to sample outward past the detected boundary
+                             (used only for gradient analysis, not expand_px).
+        profile_int_px:      Pixels to sample inward from the detected boundary.
+        visual_limb_frac:    Unused (kept for API compatibility).
+        grad_threshold_frac: Fraction of the maximum radial |gradient| used to
+                             determine the coverage-gradient zone width.
+
+    Returns:
+        ``(eff, expand_px)`` — both rounded to 1 decimal place.
+    """
+    h, w = image.shape[:2]
+    lum = (image.mean(axis=2).astype(np.float64)
+           if image.ndim == 3 else image.astype(np.float64))
+
+    # Normalise to [0, 1] so thresholds are image-type agnostic
+    lum_max = lum.max()
+    if lum_max < 1e-8:
+        return 3.0, 5.0
+    lum = lum / lum_max
+
+    # Background: median of image corners (assumed to be sky, far from planet)
+    cs = max(10, int(min(h, w) * 0.05))
+    bg = float(np.median(np.concatenate([
+        lum[:cs, :cs].ravel(), lum[:cs, -cs:].ravel(),
+        lum[-cs:, :cs].ravel(), lum[-cs:, -cs:].ravel(),
+    ])))
+
+    # Disk interior: median inside 50 % of the minor radius
+    r_inner = int(0.5 * min(rx, ry))
+    ya = max(0, int(cy) - r_inner); yb = min(h, int(cy) + r_inner + 1)
+    xa = max(0, int(cx) - r_inner); xb = min(w, int(cx) + r_inner + 1)
+    disk_val = float(np.median(lum[ya:yb, xa:xb]))
+
+    if disk_val - bg < 0.02:
+        # Degenerate image; return calibration-derived defaults
+        return 3.0, 5.0
+
+    cos_a = float(np.cos(angle_rad))
+    sin_a = float(np.sin(angle_rad))
+
+    gradient_widths: List[float] = []
+
+    for theta in np.linspace(0.0, 2.0 * np.pi, n_angles, endpoint=False):
+        dx = float(np.cos(theta))
+        dy = float(np.sin(theta))
+
+        # Pixel distance to ellipse boundary along this image-space direction.
+        # Rotate direction to ellipse principal-axis frame, then invert ellipse eq.
+        dx_r =  cos_a * dx + sin_a * dy
+        dy_r = -sin_a * dx + cos_a * dy
+        denom = np.sqrt((dx_r / rx) ** 2 + (dy_r / ry) ** 2)
+        if denom < 1e-8:
+            continue
+        r_ell = 1.0 / denom   # ellipse boundary radius in this direction
+
+        # Build radial sample positions (inward side only for gradient analysis)
+        r_start = max(1.0, r_ell - profile_int_px)
+        rs = np.arange(r_start, r_ell + 1.0)
+        xs = np.clip(np.round(cx + rs * dx).astype(int), 0, w - 1)
+        ys = np.clip(np.round(cy + rs * dy).astype(int), 0, h - 1)
+        profile = lum[ys, xs]
+
+        # --- eff: gradient width on the inward side of the detected boundary ---
+        # The coverage gradient lives inside the Otsu-detected rx, where fewer
+        # de-rotation frames overlap.  We restrict the gradient analysis to the
+        # interior portion so limb-darkening outside the boundary doesn't inflate
+        # the estimate.
+        if len(profile) < 5:
+            continue
+        deriv = np.abs(np.gradient(profile))
+        max_d = deriv.max()
+        if max_d < 1e-6:
+            continue
+        in_grad = deriv >= grad_threshold_frac * max_d
+        gradient_widths.append(float(np.sum(in_grad)))
+
+    # expand_px: proportional to geometric mean disk radius.
+    # Calibrated from rx=102, ry=96 → optimal expand_px=5.0:
+    #   sqrt(102*96) * 0.0505 ≈ 5.0
+    # Visual-limb brightness measurement overestimates by ~2× due to the
+    # cross-scale feather consistency constraint (Level-0 feather must stay
+    # inside the Otsu boundary for all active wavelet scales to agree).
+    expand_px = round(float(np.sqrt(rx * ry) * 0.0505), 1)
+
+    # eff: measured gradient_width / 2 (Level-1 feather = 2*eff covers gradient)
+    # Fallback: geometric-mean-radius scaling calibrated to our data (rx=102→eff=3.0)
+    eff_fallback = float(np.sqrt(rx * ry) * 0.0303)
+    if gradient_widths:
+        grad_w = float(np.median(gradient_widths))
+        eff_measured = grad_w / 2.0
+        eff = eff_measured if 1.0 <= eff_measured <= 8.0 else eff_fallback
+    else:
+        eff = eff_fallback
+
+    return round(float(max(1.0, eff)), 1), round(float(max(0.0, expand_px)), 1)
+
+
 def sharpen_disk_aware(
     image: np.ndarray,
     cx: float,
@@ -491,6 +726,9 @@ def sharpen_disk_aware(
     power: float = 1.0,
     sharpen_filter: float = 0.0,
     edge_feather_factor: float = 2.0,
+    ry: Optional[float] = None,
+    angle: float = 0.0,
+    expand_px: float = 0.0,
 ) -> np.ndarray:
     """À trous wavelet sharpening with per-level spatial edge feathering.
 
@@ -502,30 +740,33 @@ def sharpen_disk_aware(
     disk edge over a zone of width ``feather_L = 2^L × edge_feather_factor``
     pixels.
 
-    Because finer levels (small L, narrow B3 kernel ~2^L px) have a smaller
-    feather zone, they sharpen almost to the disk limb.  Coarser levels (large
-    L, wide kernel) fade out further inward — suppressing their overshoot ring
-    without widening the total blurred zone.  The total effective blurred zone
-    equals the feather width of the *coarsest active* level, which is far
-    narrower than the monolithic post-sharpen blend approach.
+    When ``ry`` is provided, the feather zone follows the actual elliptical
+    disk boundary (rx=radius semi-major, ry semi-minor, angle tilt in radians)
+    rather than a circle.  This prevents over-blurring Jupiter's equatorial
+    limb when the equatorial radius > polar radius.
 
-    With the default ``edge_feather_factor=2.0``:
-        Level 0 (~2 px kernel):  feather = 2 px
-        Level 1 (~4 px kernel):  feather = 4 px
-        Level 2 (~8 px kernel):  feather = 8 px
+    **expand_px**: The mask boundary is pushed outward by ``expand_px`` pixels
+    beyond the detected disk edge.  Because ``find_disk_center`` uses an
+    Otsu-threshold contour, it often lands a few pixels inside the true visual
+    limb (due to limb darkening).  Expanding by 5–8 px shifts the feather zone
+    so it starts at the actual limb rather than inside the disk, allowing the
+    full disk interior to receive maximum wavelet gain.  The limb-darkening
+    zone between the detected boundary and the actual limb is also sharpened.
 
     Args:
         image:               Float array in [0, 1], 2-D or 3-D.
         cx, cy:              Disk centre in pixels.
-        radius:              Disk radius in pixels.
+        radius:              Semi-major axis radius in pixels (from find_disk_center).
         levels:              Number of decomposition levels.
         amounts:             Per-level WaveSharp amounts (0–200).
         weights:             Raw per-level gain (overrides amounts).
         power:               WaveSharp power-function exponent.
         sharpen_filter:      Soft-threshold noise-gate coefficient.
         edge_feather_factor: Feather width multiplier. ``feather_L = 2^L × factor``.
-                             Increase to suppress more aggressive ringing;
-                             decrease to sharpen closer to the disk edge.
+        ry:                  Semi-minor axis radius (pixels). If None, circular mask.
+        angle:               Ellipse tilt angle in radians (semi-major from x-axis).
+        expand_px:           Extra pixels to push the mask boundary outward beyond
+                             the detected disk edge (corrects for Otsu under-detection).
 
     Returns:
         Float32 array in [0, 1], same shape as input.
@@ -541,6 +782,8 @@ def sharpen_disk_aware(
             raise ValueError(f"len(amounts)={len(amounts)} must equal levels={levels}")
         gains = amounts_to_weights(amounts, power=power)
 
+    use_ellipse = ry is not None and ry > 0.0
+
     # Multi-channel: sharpen each channel with the same disk geometry
     if image.ndim == 3:
         channels = [
@@ -549,12 +792,22 @@ def sharpen_disk_aware(
                 levels=levels, weights=gains,
                 sharpen_filter=sharpen_filter,
                 edge_feather_factor=edge_feather_factor,
+                ry=ry, angle=angle,
+                expand_px=expand_px,
             )
             for c in range(image.shape[2])
         ]
         return np.stack(channels, axis=2).astype(np.float32)
 
     h, w = image.shape
+
+    # Expand mask boundary outward by expand_px to compensate for Otsu-threshold
+    # under-detection: find_disk_center lands inside the true visual limb due to
+    # limb darkening.  The expanded boundary shifts the feather zone outward so
+    # the disk interior (and limb-darkening zone) receive full wavelet gain.
+    rx_m = radius + expand_px
+    ry_m = (ry + expand_px) if use_ellipse else None
+
     coeffs = decompose(image.astype(np.float64), levels)
 
     # Reconstruct original (residual + all details)
@@ -569,9 +822,15 @@ def sharpen_disk_aware(
         thr = sharpen_filter * _noise_sigma(detail) if sharpen_filter > 0.0 else 0.0
         d_thr = _soft_threshold(detail, thr)
 
-        # Per-level spatial weight: finer levels have narrower fade zones
+        # Per-level spatial weight using EXPANDED boundary so the feather zone
+        # starts at/beyond the actual limb rather than inside the disk.
         feather_L = max((2 ** level_idx) * edge_feather_factor, 1.0)
-        weight_map = _make_disk_weight(h, w, cx, cy, radius, feather_L)
+        if use_ellipse:
+            weight_map = _make_disk_weight_ellipse(
+                h, w, cx, cy, rx_m, ry_m, angle, feather_L
+            )
+        else:
+            weight_map = _make_disk_weight(h, w, cx, cy, rx_m, feather_L)
 
         result = result + d_thr * gain * weight_map
 
@@ -589,13 +848,17 @@ def sharpen_color_disk_aware(
     power: float = 1.0,
     sharpen_filter: float = 0.0,
     edge_feather_factor: float = 2.0,
+    ry: Optional[float] = None,
+    angle: float = 0.0,
+    expand_px: float = 0.0,
 ) -> np.ndarray:
     """Disk-aware sharpening for colour (H, W, 3) RGB float images via Lab L-channel.
 
     Converts RGB → Lab, applies :func:`sharpen_disk_aware` to the L channel
     only, then converts back.  Chrominance is preserved unchanged.
 
-    Args and returns: same as :func:`sharpen_color` plus disk geometry args.
+    Args and returns: same as :func:`sharpen_color` plus disk geometry args
+    (including optional ry, angle for elliptical feather, and expand_px).
     """
     import cv2 as _cv2
     bgr = _cv2.cvtColor(image.astype(np.float32), _cv2.COLOR_RGB2BGR)
@@ -607,6 +870,8 @@ def sharpen_color_disk_aware(
         levels=levels, amounts=amounts, weights=weights,
         power=power, sharpen_filter=sharpen_filter,
         edge_feather_factor=edge_feather_factor,
+        ry=ry, angle=angle,
+        expand_px=expand_px,
     )
     lab[:, :, 0] = np.clip(L_sharp * 100.0, 0.0, 100.0)
 

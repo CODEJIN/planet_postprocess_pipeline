@@ -787,11 +787,11 @@ class MainWindow(QMainWindow):
         )
 
         wavelet = WaveletConfig(
-            preview_amounts             = list(d.get("preview_amounts", [200.0, 200.0, 200.0, 0.0, 0.0, 0.0])),
-            master_amounts              = list(d.get("master_amounts",  [200.0, 200.0, 200.0, 0.0, 0.0, 0.0])),
-            border_taper_px             = int(d.get("border_taper_px", 0)),
-            edge_feather_factor         = float(d.get("edge_feather_factor", 2.0)),
-            series_edge_feather_factor  = float(d.get("series_edge_feather_factor", 2.0)),
+            preview_amounts = list(d.get("preview_amounts", [200.0, 200.0, 200.0, 0.0, 0.0, 0.0])),
+            master_amounts  = list(d.get("master_amounts",  [200.0, 200.0, 200.0, 0.0, 0.0, 0.0])),
+            series_amounts  = list(d.get("series_amounts",  [200.0, 200.0, 200.0, 0.0, 0.0, 0.0])),
+            border_taper_px = int(d.get("border_taper_px", 0)),
+            auto_params     = True,
         )
 
         # window_frames: number of filter cycles (= time-series frames) per window.

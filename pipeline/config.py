@@ -61,16 +61,28 @@ class WaveletConfig:
 
     # Disk-edge feathering factor for sharpen_disk_aware (Steps 6 & 8).
     # Per-level feather width = 2^L × edge_feather_factor pixels.
-    # Finer levels (small L) sharpen close to the limb; coarser levels fade
-    # further inward to suppress overshoot rings.
-    # 0.0 = no feathering (full wavelet at limb, ringing visible).
-    # 2.0 = default (balanced).  8.0 = very wide feather zone.
-    # Applies to both mono (sharpen_disk_aware) and colour (sharpen_color_disk_aware).
+    # With pre-fill + disk_expand_px active, kernel contamination is eliminated
+    # and the feather only suppresses the de-rotation coverage gradient.
+    # 2.0 is typically sufficient when disk_expand_px is set correctly.
     edge_feather_factor: float = 2.0
 
     # Same as edge_feather_factor but applied only to Step 8 time-series frames.
-    # Allows independent tuning of limb feathering for series vs. master sharpening.
     series_edge_feather_factor: float = 2.0
+
+    # Extra pixels to expand the disk mask boundary beyond what find_disk_center
+    # detects.  find_disk_center uses Otsu thresholding on the contour, which
+    # lands inside the true visual limb due to limb darkening.  Expanding by
+    # 5–8 px shifts the feather zone to start at/beyond the actual limb so that
+    # disk interior pixels near the real edge get full wavelet gain.
+    # 0 = disabled (mask starts exactly at detected contour).
+    # Ignored when auto_params=True (value estimated per-image from data).
+    disk_expand_px: float = 0.0
+
+    # When True, edge_feather_factor and disk_expand_px are estimated
+    # automatically from each de-rotation stack image before sharpening.
+    # The manual values above are ignored; auto-estimated values are printed.
+    # Uses wavelet.auto_wavelet_params() — see that function for details.
+    auto_params: bool = False
 
 
 # ── Step 4: Quality assessment ─────────────────────────────────────────────────
@@ -274,6 +286,92 @@ class GifConfig:
     resize_factor: float = 1.0   # downscale factor for smaller file (1.0 = no resize)
 
 
+# ── Step 2: Lucky stacking ────────────────────────────────────────────────────
+
+@dataclass
+class LuckyStackConfig:
+    """AS!4-style lucky stacking from SER video frames.
+
+    Frame selection:
+      top_percent      — use the best top_percent of frames by Laplacian score.
+                         0.15 = top 15 %. Raise for smoother stacks (more noise);
+                         lower for sharper stacks (fewer frames, noisier).
+      min_frames       — minimum number of frames to stack regardless of top_percent.
+      reference_n_frames — number of top frames averaged to build the reference image.
+
+    AP (Alignment Point) grid:
+      ap_size          — patch size for local cross-correlation (pixels, power of 2).
+      ap_step          — AP centre spacing; smaller = denser grid, slower processing.
+      ap_search_range  — maximum allowed local shift per AP (pixels).
+      ap_min_contrast  — minimum RMS contrast of a reference patch to use that AP.
+                         Low-contrast patches (uniform limb, sky) give noisy shifts.
+      ap_confidence_threshold — minimum phaseCorrelate peak height to accept a shift.
+                         Values below this fall back to global-shift only for that AP.
+      ap_sigma_factor  — Gaussian KR smoothing sigma = ap_step × ap_sigma_factor.
+                         Must be ≥ 1/√2 ≈ 0.71 to guarantee C∞-smooth warp field
+                         (prevents triangle-edge gradient artifacts). Higher values
+                         smooth out noisy AP shifts at the cost of spatial resolution.
+                         Typical range: 0.7 – 1.5.
+
+    Stacking:
+      quality_weight_power — quality score exponent for weighted stacking.
+                         2.0 = best frames contribute quadratically more weight.
+                         1.0 = linear quality weighting.  0 = equal weights.
+
+    Intra-video de-rotation:
+      intra_video_derotate — EXPERIMENTAL/RISKY. Applies spherical_derotation_warp()
+                         to compensate for planetary rotation within the ~90-second
+                         video window before AP warp. Requires SER timestamps.
+                         Default False: the AP warp already absorbs the ~0.9°
+                         rotation at no risk of warp-composition artifacts.
+    """
+    # Frame selection
+    # Matches AS!4 default (25%) for fair comparison.
+    top_percent: float = 0.25
+    reference_n_frames: int = 50     # top frames mean-stacked as initial reference
+    min_frames: int = 20
+
+    # AP grid — matched to AS!4 (AP Size=64, Min Bright=50/255≈0.196)
+    # AS!4 uses 64px APs: Jupiter's belt/zone features span 20-50 px, so 64px
+    # patches contain entire features → more stable phase correlation than 32px.
+    ap_size: int = 64
+    ap_step: int = 16                # 16 px step → ~127 APs; 4:1 size/step ratio
+    ap_search_range: int = 20
+    ap_min_contrast: float = 0.01    # minimum patch RMS contrast (reject uniform sky)
+    ap_min_brightness: float = 0.196 # minimum patch mean brightness (≈ AS!4 Min Bright 50/255)
+    # Sweep result: conf=0.15 optimal; lower thresholds accept noisy shifts that hurt.
+    ap_confidence_threshold: float = 0.15
+    # σ = ap_step × 0.7 = 11.2 px. Minimum for C∞ continuity: ap_step/√2 = 11.3 px.
+    # Marginally below theoretical minimum but empirically optimal (wider sigma over-smooths).
+    ap_sigma_factor: float = 0.9     # σ = ap_step × 0.9 = 14.4px (April-11 code optimal)
+
+    # Stacking
+    quality_weight_power: float = 3.0    # raised 2.0→3.0: stronger suppression of marginal frames
+
+    # Sigma-clipping: 2-pass stacking that rejects outlier pixels per-frame.
+    # Pass 1 accumulates normally and computes per-pixel mean/std.
+    # Pass 2 re-warps each frame (from cached shifts) and rejects pixels where
+    # |pixel − mean| > sigma_clip_kappa × std before re-accumulating.
+    # This removes cosmic-ray hits, satellite trails, and seeing spikes that
+    # fall in the same sky position across multiple frames.
+    # 3.0 = conservative (keeps ~99.7% of good pixels under Gaussian noise).
+    # 0.0 = disabled (use pass-1 result only; saves processing time).
+    sigma_clip_kappa: float = 0.0    # disabled: sigma-clipping hurts lucky stacking
+    # (seeing variation dominates per-pixel variance, causing good high-contrast
+    #  frames to be clipped as "outliers" vs the blurry pass-1 mean)
+
+    # Iterative refinement: use the first-pass stack as reference for a second pass.
+    # The stacked result has ~√N better SNR than a single frame, so AP shifts on the
+    # second pass are much more accurate, yielding a sharper final stack.
+    # Sweep result: n_iterations=2 → ratio=1.056 vs AS!4 (31 s).
+    #               n_iterations=3 → ratio=1.099 but slightly noisier (45 s).
+    # 1 = single pass (fast); 2 = one refinement pass (recommended).
+    n_iterations: int = 2
+
+    # Experimental — see docstring
+    intra_video_derotate: bool = False
+
+
 # ── Step 1: PIPP preprocessing ────────────────────────────────────────────────
 
 @dataclass
@@ -308,11 +406,14 @@ class PipelineConfig:
     output_base_dir: Path = field(default_factory=lambda: Path("/data/astro_test/output"))
     # When set, step01_pipp writes here instead of output_base_dir/step01_pipp/
     step01_output_dir: Optional[Path] = None
+    # When set, step02_lucky_stack writes here instead of output_base_dir/step02_lucky_stack/
+    step02_output_dir: Optional[Path] = None
     # When set, step03 writes here instead of output_base_dir/step03_wavelet_preview/
     step03_output_dir: Optional[Path] = None
 
     # ── Step save flags ────────────────────────────────────────────────────────
     save_step01: bool = True   # PIPP-processed SER files
+    save_step02: bool = True   # Lucky-stacked TIF files
     save_step03: bool = True   # Wavelet preview PNGs  (for quality inspection)
     save_step04: bool = True   # Quality scores CSV + ranked file list
     save_step05: bool = True   # De-rotated master TIFs per filter
@@ -324,6 +425,7 @@ class PipelineConfig:
 
     # ── Sub-configs ────────────────────────────────────────────────────────────
     pipp: PippConfig = field(default_factory=PippConfig)
+    lucky_stack: LuckyStackConfig = field(default_factory=LuckyStackConfig)
     wavelet: WaveletConfig = field(default_factory=WaveletConfig)
     quality: QualityConfig = field(default_factory=QualityConfig)
     derotation: DerotationConfig = field(default_factory=DerotationConfig)

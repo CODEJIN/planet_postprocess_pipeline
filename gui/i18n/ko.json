@@ -167,7 +167,6 @@
   "step06.input_dir": "입력 폴더 (자동)",
   "step06.output_dir": "출력 폴더 (자동)",
   "step06.amounts": "레이어별 선명화 강도 (L1~L6)",
-  "step06.edge_feather": "림브 페더 폭 (factor)",
 
   "step07.title": "Step 7 — RGB 합성 (마스터)",
   "step07.desc": "각 윈도우의 마스터 필터를 합성하여 컬러 이미지를 생성합니다.",
@@ -188,7 +187,6 @@
   "step08.stack_min_quality": "최소 품질 필터",
   "step08.save_mono_frames": "필터별 모노 GIF 출력",
   "step08.series_amounts": "레이어별 선명화 강도 (L1~L6)",
-  "step08.edge_feather": "림브 페더 폭 (factor)",
   "step08.series_spec_header": "시계열 합성 설정 (Step 7과 독립)",
   "step08.optional": true,
 

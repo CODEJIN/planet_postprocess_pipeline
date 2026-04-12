@@ -302,32 +302,6 @@ class _Step08MonoWidget(QWidget):
                     self._series_wavelet_spins.append(spin)
             wav_vl.addLayout(pair)
 
-        _tip_feather8 = (
-            "디스크 림브(가장자리) 부근의 웨이블릿 감쇠 폭을 결정합니다.\n"
-            "레벨 L의 페더 폭 = 2^L × factor (px)\n\n"
-            "  0.0  = 페더링 없음 (림브까지 풀 선명화, 링잉 발생 위험)\n"
-            "  2.0  = 기본값 (권장)\n"
-            "  8.0  = 광폭 페더 (행성 내부도 일부 감쇠됨)\n\n"
-            "Step 6과 독립적으로 Step 8 시계열 프레임에만 적용됩니다.\n"
-            "Step 6 마스터 샤프닝에는 영향을 주지 않습니다."
-        )
-        feather_form = QFormLayout()
-        feather_form.setContentsMargins(0, 6, 0, 0)
-        feather_form.setSpacing(6)
-        feather_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._series_edge_feather = QDoubleSpinBox()
-        self._series_edge_feather.setStyleSheet(_DBLSPIN_STYLE)
-        self._series_edge_feather.setRange(0.0, 8.0)
-        self._series_edge_feather.setDecimals(1)
-        self._series_edge_feather.setSingleStep(0.5)
-        self._series_edge_feather.setValue(2.0)
-        self._series_edge_feather.setFixedWidth(72)
-        self._series_edge_feather.setToolTip(_tip_feather8)
-        lbl_feather8 = QLabel(S("step08.edge_feather"))
-        lbl_feather8.setToolTip(_tip_feather8)
-        feather_form.addRow(lbl_feather8, self._series_edge_feather)
-        wav_vl.addLayout(feather_form)
-
         root.addWidget(wav_section)
 
     def get_config_updates(self) -> dict[str, Any]:
@@ -340,7 +314,6 @@ class _Step08MonoWidget(QWidget):
             "stack_min_quality":            self._stack_min_quality.value(),
             "save_mono_frames":             self._save_mono_frames.isChecked(),
             "series_amounts":               [s.value() for s in self._series_wavelet_spins],
-            "series_edge_feather_factor":   self._series_edge_feather.value(),
             "series_composite_specs":       series_specs,
         }
 
@@ -361,7 +334,6 @@ class _Step08MonoWidget(QWidget):
         amounts = data.get("series_amounts", _SERIES_WAVELET_DEFAULTS)
         for spin, val in zip(self._series_wavelet_spins, amounts):
             spin.setValue(float(val))
-        self._series_edge_feather.setValue(float(data.get("series_edge_feather_factor", 2.0)))
 
         # Update available filter options from session
         raw = data.get("filters", "")
@@ -573,41 +545,15 @@ class _Step08ColorWidget(QWidget):
                     self._series_wavelet_spins.append(spin)
             wav_vl.addLayout(pair)
 
-        _tip_feather8 = (
-            "디스크 림브(가장자리) 부근의 웨이블릿 감쇠 폭을 결정합니다.\n"
-            "레벨 L의 페더 폭 = 2^L × factor (px)\n\n"
-            "  0.0  = 페더링 없음 (림브까지 풀 선명화, 링잉 발생 위험)\n"
-            "  2.0  = 기본값 (권장)\n"
-            "  8.0  = 광폭 페더 (행성 내부도 일부 감쇠됨)\n\n"
-            "Step 6과 독립적으로 Step 8 시계열 프레임에만 적용됩니다."
-        )
-        feather_form = QFormLayout()
-        feather_form.setContentsMargins(0, 6, 0, 0)
-        feather_form.setSpacing(6)
-        feather_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._series_edge_feather = QDoubleSpinBox()
-        self._series_edge_feather.setStyleSheet(_DBLSPIN_STYLE)
-        self._series_edge_feather.setRange(0.0, 8.0)
-        self._series_edge_feather.setDecimals(1)
-        self._series_edge_feather.setSingleStep(0.5)
-        self._series_edge_feather.setValue(2.0)
-        self._series_edge_feather.setFixedWidth(72)
-        self._series_edge_feather.setToolTip(_tip_feather8)
-        lbl_feather8 = QLabel(S("step08.edge_feather"))
-        lbl_feather8.setToolTip(_tip_feather8)
-        feather_form.addRow(lbl_feather8, self._series_edge_feather)
-        wav_vl.addLayout(feather_form)
-
         root.addWidget(wav_section)
 
     def get_config_updates(self) -> dict[str, Any]:
         return {
-            "series_scale":               self._series_scale.value(),
-            "series_cycle_seconds":       self._series_cycle_seconds.value(),
-            "stack_window_n":             self._stack_window_n.value(),
-            "stack_min_quality":          self._stack_min_quality.value(),
-            "series_amounts":             [s.value() for s in self._series_wavelet_spins],
-            "series_edge_feather_factor": self._series_edge_feather.value(),
+            "series_scale":         self._series_scale.value(),
+            "series_cycle_seconds": self._series_cycle_seconds.value(),
+            "stack_window_n":       self._stack_window_n.value(),
+            "stack_min_quality":    self._stack_min_quality.value(),
+            "series_amounts":       [s.value() for s in self._series_wavelet_spins],
         }
 
     def load_session(self, data: dict[str, Any]) -> None:
@@ -626,7 +572,6 @@ class _Step08ColorWidget(QWidget):
         amounts = data.get("series_amounts", _SERIES_WAVELET_DEFAULTS)
         for spin, val in zip(self._series_wavelet_spins, amounts):
             spin.setValue(float(val))
-        self._series_edge_feather.setValue(float(data.get("series_edge_feather_factor", 2.0)))
 
     def output_paths(self) -> list[Path]:
         if self._output_dir is None:

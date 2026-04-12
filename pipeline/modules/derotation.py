@@ -258,9 +258,17 @@ def find_disk_center(
         # polar axis and the second (mi) the longer equatorial axis.
         # Always return (semi_major, semi_minor) with semi_major >= semi_minor so
         # callers can rely on the 3rd return value being the larger (equatorial) axis.
-        semi_a = max(ma, mi) / 2
-        semi_b = min(ma, mi) / 2
-        return float(cx), float(cy), float(semi_a), float(semi_b), float(angle)
+        # When axes are swapped, rotate the returned angle by 90° so it always
+        # describes the direction of the semi_major axis (in degrees, 0-180).
+        if ma >= mi:
+            semi_a = ma / 2
+            semi_b = mi / 2
+            angle_major = angle
+        else:
+            semi_a = mi / 2
+            semi_b = ma / 2
+            angle_major = (angle + 90.0) % 180.0
+        return float(cx), float(cy), float(semi_a), float(semi_b), float(angle_major)
     else:
         # Fallback: centroid of bounding box
         x, y, w, h = cv2.boundingRect(largest)

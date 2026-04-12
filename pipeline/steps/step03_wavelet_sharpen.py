@@ -21,8 +21,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
+
 from pipeline.config import PipelineConfig
 from pipeline.modules import image_io, wavelet
+
 
 
 # Type alias: per-filter list of (output_path_or_None, metadata_dict)
@@ -92,8 +95,11 @@ def run(config: PipelineConfig, progress_callback=None) -> StepResult:
                 t, b, l, r = wavelet.safe_taper_widths(taper_src, config.wavelet.border_taper_px)
                 img = wavelet.border_taper(img, top=t, bottom=b, left=l, right=r)
 
+            # Plain (non-disk-aware) wavelet: sharpen_disk_aware's circular feather
+            # mask cuts into Jupiter's oblate equatorial bulge, over-blurring the
+            # left/right disk regions.  The stacking TIF already has a smooth limb
+            # fade, so plain sharpen does not produce limb ringing.
             if color_mode:
-                # Sharpen luminance only (Lab), preserve chrominance
                 sharpened = wavelet.sharpen_color(
                     img,
                     levels=config.wavelet.levels,

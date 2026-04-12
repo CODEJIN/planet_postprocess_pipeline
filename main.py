@@ -23,6 +23,7 @@ from pipeline.config import (
     WaveletConfig,
 )
 from pipeline.steps import step01_pipp
+from pipeline.steps import step02_lucky_stack
 from pipeline.steps import step03_wavelet_sharpen
 from pipeline.steps import step04_quality_assess
 from pipeline.steps import step05_derotate_stack
@@ -146,6 +147,13 @@ def main() -> None:
     # ── Step 1: PIPP preprocessing (frame reject + crop) ─────────────────────
     print("\n=== Step 1: PIPP Preprocessing ===")
     results_01 = step01_pipp.run(config)
+
+    # ── Step 2: Lucky stacking (SER → TIF, AS!4-style local AP warp) ─────────
+    print("\n=== Step 2: Lucky Stacking ===")
+    results_02 = step02_lucky_stack.run(config)
+    # After step 2, use its output as input for step 3+ (wavelet / derotation).
+    if results_02 and config.save_step02:
+        config.input_dir = config.step_dir(2, "lucky_stack")
 
     # ── Step 3: Wavelet sharpening preview ────────────────────────────────────
     print("\n=== Step 3: Wavelet Sharpening (Preview) ===")

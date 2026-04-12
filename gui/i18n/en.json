@@ -167,7 +167,6 @@
   "step06.input_dir": "Input folder (auto)",
   "step06.output_dir": "Output folder (auto)",
   "step06.amounts": "Layer amounts (L1–L6)",
-  "step06.edge_feather": "Limb feather factor",
 
   "step07.title": "Step 7 — RGB Composite (Master)",
   "step07.desc": "Combine filter masters into color composite images.",
@@ -188,7 +187,6 @@
   "step08.stack_min_quality": "Min quality filter",
   "step08.save_mono_frames": "Save mono filter GIFs",
   "step08.series_amounts": "Layer amounts (L1–L6)",
-  "step08.edge_feather": "Limb feather factor",
   "step08.series_spec_header": "Series Composite Specs (independent from Step 7)",
   "step08.optional": true,
 

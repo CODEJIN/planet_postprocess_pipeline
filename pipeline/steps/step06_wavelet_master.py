@@ -24,9 +24,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
+
 from pipeline.config import PipelineConfig
 from pipeline.modules import image_io, wavelet
-from pipeline.modules.derotation import find_disk_center, find_visual_limb_radius
+from pipeline.modules.derotation import find_disk_center
+
+
 
 
 def run(
@@ -95,27 +99,6 @@ def run(
             img = image_io.read_tif(tif_path)
             color_mode = config.camera_mode == "color"
 
-            # Detect disk center and Otsu semi-major radius.
-            # find_disk_center() now reliably returns semi_major >= semi_minor,
-            # so _sr is the equatorial (larger) radius regardless of ellipse angle.
-            #
-            # WHY use Otsu_r (not visual_r) for sharpen_disk_aware:
-            # visual_r ≈ 122px (5% brightness threshold) is the physical disk edge,
-            # but the wavelet weight at the PERCEIVED edge (~Otsu_r ≈ 103px) is
-            # still 1.0 when radius=visual_r — full wavelet right where stacking
-            # artifacts create an irregular limb gradient → ringing.
-            # Using Otsu_r places the fade zone at the perceived edge:
-            #   - Level 0 (finest): fade over 2px near Otsu_r → suppresses ringing
-            #   - Level 1: 4px, Level 2: 8px — only active levels (amounts>0)
-            #   - Levels 3-5: amounts=0, weight irrelevant
-            # Maximum blurred zone: 8px at the very edge — acceptable.
-            _lum = img.mean(axis=2) if img.ndim == 3 else img
-            try:
-                _cx, _cy, _sr, _, _ = find_disk_center(_lum)
-                _has_disk = _sr >= 5
-            except Exception:
-                _has_disk = False
-
             # Border taper: cosine-fade outermost pixels before wavelet to
             # prevent de-rotation stacking boundary gradients from being amplified.
             # Widths are clamped per-side to the actual background margin so
@@ -125,30 +108,56 @@ def run(
                 t, b, l, r = wavelet.safe_taper_widths(taper_src, config.wavelet.border_taper_px)
                 img = wavelet.border_taper(img, top=t, bottom=b, left=l, right=r)
 
-            # Disk-aware sharpening: each wavelet level L fades its contribution
-            # over feather_L = 2^L × factor pixels near the Otsu disk edge.
-            # The fade is applied to wavelet DETAIL coefficients, not the image
-            # itself — no circular mask boundary is ever added to pixel data.
+            # Elliptical disk-aware sharpening: feather zone follows Jupiter's
+            # actual oblate ellipse (semi-major=equatorial, semi-minor=polar),
+            # preventing over-blur at the equatorial limb while still suppressing
+            # ringing from de-rotation coverage gradients at the disk boundary.
+            _lum = img.mean(axis=2) if img.ndim == 3 else img
+            try:
+                _cx, _cy, _rx, _ry, _angle = find_disk_center(_lum)
+                _has_disk = _rx >= 5
+            except Exception:
+                _has_disk = False
+
             if _has_disk:
+                # find_disk_center returns angle in degrees; convert to radians
+                _angle_rad = np.radians(_angle)
+
+                # Auto-estimate eff and expand_px from image data if requested
+                if config.wavelet.auto_params:
+                    _lum_auto = img.mean(axis=2) if img.ndim == 3 else img
+                    _use_eff, _use_expand = wavelet.auto_wavelet_params(
+                        _lum_auto, _cx, _cy, _rx, _ry, _angle_rad
+                    )
+                    print(f"    [{filt}] auto params: eff={_use_eff} "
+                          f"expand_px={_use_expand}")
+                else:
+                    _use_eff    = config.wavelet.edge_feather_factor
+                    _use_expand = config.wavelet.disk_expand_px
+
                 if color_mode:
                     sharpened = wavelet.sharpen_color_disk_aware(
-                        img, _cx, _cy, _sr,
+                        img, _cx, _cy, _rx,
                         levels=config.wavelet.levels,
                         amounts=config.wavelet.master_amounts,
                         power=config.wavelet.master_power,
                         sharpen_filter=config.wavelet.master_sharpen_filter,
-                        edge_feather_factor=config.wavelet.edge_feather_factor,
+                        edge_feather_factor=_use_eff,
+                        ry=_ry, angle=_angle_rad,
+                        expand_px=_use_expand,
                     )
                 else:
                     sharpened = wavelet.sharpen_disk_aware(
-                        img, _cx, _cy, _sr,
+                        img, _cx, _cy, _rx,
                         levels=config.wavelet.levels,
                         amounts=config.wavelet.master_amounts,
                         power=config.wavelet.master_power,
                         sharpen_filter=config.wavelet.master_sharpen_filter,
-                        edge_feather_factor=config.wavelet.edge_feather_factor,
+                        edge_feather_factor=_use_eff,
+                        ry=_ry, angle=_angle_rad,
+                        expand_px=_use_expand,
                     )
-                print(f"    [{filt}] Otsu_r={_sr:.1f}px  (disk-aware, Otsu boundary)")
+                print(f"    [{filt}] ellipse rx={_rx:.1f} ry={_ry:.1f} angle={_angle:.1f}°")
             else:
                 if color_mode:
                     sharpened = wavelet.sharpen_color(
