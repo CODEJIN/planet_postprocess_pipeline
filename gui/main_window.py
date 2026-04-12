@@ -29,11 +29,11 @@ from gui.i18n import S
 from gui.panels.settings_panel import SettingsPanel
 from gui.panels.step01_panel import Step01Panel
 from gui.panels.step02_panel import Step02Panel
-from gui.panels.step03_panel import Step03Panel
-from gui.panels.step04_panel import Step04Panel
-from gui.panels.step05_panel import Step05Panel
-from gui.panels.step06_panel import Step06Panel
-from gui.panels.step07_panel import Step07Panel
+from gui.panels.step03_panel import Step06Panel   # 구 step07 RGB composite가 step03 파일에 있음
+from gui.panels.step04_panel import Step03Panel   # 구 step04 Quality가 step04 파일에 있음
+from gui.panels.step05_panel import Step04Panel   # 구 step05 Derotation이 step05 파일에 있음
+from gui.panels.step06_panel import Step05Panel   # 구 step06 Wavelet Master가 step06 파일에 있음
+from gui.panels.step07_panel import Step07Panel   # 구 step03 Wavelet Preview가 step07 파일에 있음
 from gui.panels.step08_panel import Step08Panel
 from gui.panels.step09_panel import Step09Panel
 from gui.panels.step10_panel import Step10Panel
@@ -173,11 +173,11 @@ _STEP_DEFS = [
     # (step_id, i18n_key, optional)
     ("01", "sidebar.step01", False),
     ("02", "sidebar.step02", False),
-    ("03", "sidebar.step03", True),
+    ("03", "sidebar.step03", False),
     ("04", "sidebar.step04", False),
     ("05", "sidebar.step05", False),
     ("06", "sidebar.step06", False),
-    ("07", "sidebar.step07", False),
+    ("07", "sidebar.step07", True),
     # separator before optional final steps
     ("08", "sidebar.step08", True),
     ("09", "sidebar.step09", True),
@@ -185,7 +185,7 @@ _STEP_DEFS = [
 ]
 
 # Which step IDs get a separator _before_ them in the sidebar
-_SEPARATOR_BEFORE = {"04", "08"}
+_SEPARATOR_BEFORE = {"03", "07"}
 
 
 class MainWindow(QMainWindow):
@@ -349,6 +349,7 @@ class MainWindow(QMainWindow):
             "09": Step09Panel,
             "10": Step10Panel,
         }
+
         for step_id, cls in panel_classes.items():
             panel = cls()
             self._step_panels[step_id] = panel
@@ -371,11 +372,8 @@ class MainWindow(QMainWindow):
         # Step 01 output folder changes → refresh downstream path labels
         self._step_panels["01"].dirs_changed.connect(self._on_step01_dirs_changed)
 
-        # Step 03 folder changes → refresh downstream path labels immediately
+        # Step 03 (quality) TIF input change → refresh step 03 itself and step 04+
         self._step_panels["03"].dirs_changed.connect(self._on_step03_dirs_changed)
-
-        # Step 04 TIF input change → refresh step 05+ path labels
-        self._step_panels["04"].dirs_changed.connect(self._on_step04_dirs_changed)
 
         right_splitter.addWidget(self._stack)
 
@@ -436,7 +434,6 @@ class MainWindow(QMainWindow):
         self._step_panels["02"].dirs_changed.connect(self._on_step02_dirs_changed)
         self._step_panels["01"].dirs_changed.connect(self._on_step01_dirs_changed)
         self._step_panels["03"].dirs_changed.connect(self._on_step03_dirs_changed)
-        self._step_panels["04"].dirs_changed.connect(self._on_step04_dirs_changed)
 
         # Restore session data into all new panels from in-memory data
         # (do NOT call load_session() here — that would re-read the disk and
@@ -596,8 +593,6 @@ class MainWindow(QMainWindow):
             new_output_dir = str(Path(step02_out).parent)
             self._session_data["output_dir"] = new_output_dir
             self._output_dir_label.setText(S("label.output", d=new_output_dir))
-            # Clear stale step03 saved path so it re-derives from new output_dir
-            self._session_data["step03_output_dir"] = ""
         # Cascade to all downstream steps regardless of whether step02_out changed
         for sid in ("03", "04", "05", "06", "07", "08", "09", "10"):
             dep = self._step_panels.get(sid)
@@ -615,7 +610,6 @@ class MainWindow(QMainWindow):
             # Clear stale downstream saved paths so panels re-derive from the new base.
             self._session_data["step02_ser_dir"]    = ""
             self._session_data["step02_output_dir"] = ""
-            self._session_data["step03_output_dir"] = ""
             # NOTE: do NOT clear input_dir here — it is set below after step02 derives
             # its output, so that step03+ can see the correct TIF input path.
             self._output_dir_label.setText(S("label.output", d=new_output_dir))
@@ -638,28 +632,21 @@ class MainWindow(QMainWindow):
                     dep.load_session(self._session_data)
 
     def _on_step03_dirs_changed(self) -> None:
-        """Refresh downstream path labels when Step 3 folder fields change.
-
-        Called on editingFinished (focus-out / Enter) — before any run.
-        Updates _session_data in memory without writing to disk so downstream
-        panels show correct auto-derived paths immediately.
-        """
+        """Propagate Step 3 TIF input change to step 03 itself and all downstream steps."""
         updates = self._step_panels["03"].get_config_updates()
-        self._session_data["input_dir"]        = updates.get("input_dir", "")
-        self._session_data["output_dir"]        = updates.get("output_dir", "")
-        self._session_data["step03_output_dir"] = updates.get("step03_output_dir", "")
-        for sid in ("04", "05", "06", "07", "08", "09", "10"):
-            dep = self._step_panels.get(sid)
-            if dep and hasattr(dep, "load_session"):
-                dep.load_session(self._session_data)
-
-    def _on_step04_dirs_changed(self) -> None:
-        """Propagate Step 4 TIF input change to step 05+ when user edits it manually."""
-        updates = self._step_panels["04"].get_config_updates()
         inp = updates.get("input_dir", "")
         if inp:
             self._session_data["input_dir"] = inp
-        for sid in ("05", "06", "07", "08", "09", "10"):
+            # Derive output_dir as parent of input dir (all step outputs are siblings).
+            new_output_dir = str(Path(inp).parent)
+            self._session_data["output_dir"] = new_output_dir
+            self._output_dir_label.setText(S("label.output", d=new_output_dir))
+        # Reload step 03 itself so its output folder display updates.
+        panel03 = self._step_panels.get("03")
+        if panel03 and hasattr(panel03, "load_session"):
+            panel03.load_session(self._session_data)
+        # Cascade to all downstream steps.
+        for sid in ("04", "05", "06", "07", "08", "09", "10"):
             dep = self._step_panels.get(sid)
             if dep and hasattr(dep, "load_session"):
                 dep.load_session(self._session_data)
@@ -694,8 +681,8 @@ class MainWindow(QMainWindow):
             # Rebuild step panels (applies _session_data in-memory, not from disk)
             self._rebuild_step_panels()
 
-        # 2. Refresh panels with the updated session (updates _is_color in step07/08)
-        for sid in ("01", "04", "05", "06", "07", "08", "09", "10"):
+        # 2. Refresh panels with the updated session (updates _is_color in step06/07/08)
+        for sid in ("01", "03", "04", "05", "06", "07", "08", "09", "10"):
             panel = self._step_panels.get(sid)
             if panel and hasattr(panel, "load_session"):
                 panel.load_session(self._session_data)
@@ -730,7 +717,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(
                     self,
                     "입력 폴더 없음",
-                    "Step 3의 AS!4 TIF 입력 폴더를 설정해주세요.\n\n"
+                    "Step 3의 TIF 입력 폴더를 설정해주세요.\n\n"
                     "Step 3 패널에서 폴더를 지정한 후 다시 시도하세요.",
                 )
                 return
@@ -741,7 +728,7 @@ class MainWindow(QMainWindow):
                     self,
                     "TIF 파일 없음",
                     f"입력 폴더에 TIF 파일이 없습니다:\n{input_dir}\n\n"
-                    "AutoStakkert 4를 실행하여 TIF 파일을 생성한 후 다시 시도하세요.",
+                    "Lucky Stacking(Step 2) 완료 후 TIF 파일 경로를 설정한 후 다시 시도하세요.",
                 )
                 return
 
@@ -817,29 +804,33 @@ class MainWindow(QMainWindow):
                         new_output_dir = str(Path(out).parent)
                         self._session_data["output_dir"] = new_output_dir
                         self._output_dir_label.setText(S("label.output", d=new_output_dir))
-                        # Clear stale step03 saved path so it re-derives
-                        self._session_data["step03_output_dir"] = ""
                 for sid in ("03", "04", "05", "06", "07", "08", "09", "10"):
                     dep = self._step_panels.get(sid)
                     if dep and hasattr(dep, "load_session"):
                         dep.load_session(self._session_data)
-            # After step 03 completes, refresh dependent panels so their
-            # auto-derived path labels reflect the updated input/output dirs.
+            # After step 03 completes (quality) → refresh step 04 sweep button
             if step_id == "03":
-                for sid in ("04", "05", "06", "07", "08", "09", "10"):
-                    dep = self._step_panels.get(sid)
-                    if dep and hasattr(dep, "load_session"):
-                        dep.load_session(self._session_data)
-            # After step 04 completes, refresh step 05 so the sweep button
-            # activates immediately (quality dir now exists on disk).
+                dep = self._step_panels.get("04")
+                if dep and hasattr(dep, "load_session"):
+                    dep.load_session(self._session_data)
+            # After step 04 completes (derotation) → refresh step 05 wavelet master
             if step_id == "04":
                 dep = self._step_panels.get("05")
                 if dep and hasattr(dep, "load_session"):
                     dep.load_session(self._session_data)
-            # After step 05 completes, refresh step 06 so its wavelet preview
-            # picks up the newly created step05_derotated/ directory.
+            # After step 05 completes (wavelet master) → refresh step 06 rgb composite
             if step_id == "05":
                 dep = self._step_panels.get("06")
+                if dep and hasattr(dep, "load_session"):
+                    dep.load_session(self._session_data)
+            # After step 06 completes (RGB composite) → refresh step 10 summary grid
+            if step_id == "06":
+                dep = self._step_panels.get("10")
+                if dep and hasattr(dep, "load_session"):
+                    dep.load_session(self._session_data)
+            # After step 07 completes (wavelet preview) → refresh step 08 paths
+            if step_id == "07":
+                dep = self._step_panels.get("08")
                 if dep and hasattr(dep, "load_session"):
                     dep.load_session(self._session_data)
             if panel and hasattr(panel, "refresh_after_run"):
@@ -865,8 +856,6 @@ class MainWindow(QMainWindow):
         step02_ser = Path(step02_ser_raw) if step02_ser_raw else None
         step02_out_raw = d.get("step02_output_dir", "")
         step02_out = Path(step02_out_raw) if step02_out_raw else None
-        step03_out_raw = d.get("step03_output_dir", "")
-        step03_out = Path(step03_out_raw) if step03_out_raw else None
 
         # Global core limit: 0 = auto.  Step 1 caps at 4; Step 2 uses the full value.
         _global_workers = int(d.get("global_max_workers", 0))
@@ -907,7 +896,7 @@ class MainWindow(QMainWindow):
             cycle_minutes         = cycle_sec  / 60.0,
             n_windows             = int(d.get("n_windows", 1)),
             allow_overlap         = bool(d.get("allow_overlap", False)),
-            min_quality_threshold = float(d.get("min_quality_threshold_04", 0.0)),
+            min_quality_threshold = float(d.get("min_quality_threshold_03", 0.0)),
         )
 
         derotation = DerotationConfig(
@@ -935,7 +924,7 @@ class MainWindow(QMainWindow):
             ] or None
 
         # Build CompositeSpec lists from session data
-        specs        = _parse_specs(d.get("composite_specs"))         # step07 specs
+        specs        = _parse_specs(d.get("composite_specs"))         # step06 specs
         series_specs = _parse_specs(d.get("series_composite_specs"))  # step08 series specs
 
         # series_cycle_seconds: step8-specific; fall back to step4's cycle_seconds
@@ -958,8 +947,8 @@ class MainWindow(QMainWindow):
             resize_factor = float(d.get("resize_factor", 1.0)),
         )
 
-        # Derive composite column names from the step07 composite_specs so the
-        # summary grid always reflects what step07 actually produced.
+        # Derive composite column names from the step06 composite_specs so the
+        # summary grid always reflects what step06 actually produced.
         raw_specs = d.get("composite_specs")
         if raw_specs:
             grid_composites = [s.get("name", "") for s in raw_specs if s.get("name")]
@@ -994,7 +983,6 @@ class MainWindow(QMainWindow):
             step01_output_dir = step01_out,
             step02_ser_dir    = step02_ser,
             step02_output_dir = step02_out,
-            step03_output_dir = step03_out,
             pipp            = pipp,
             lucky_stack     = lucky_stack,
             wavelet         = wavelet,

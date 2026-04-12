@@ -155,10 +155,10 @@ class Step10Panel(BasePanel):
         out = data.get("output_dir", "")
         if out:
             p = Path(out)
-            self._input_lbl.setText(str(p / "step07_rgb_composite"))
+            self._input_lbl.setText(str(p / "step06_rgb_composite"))
             self._output_lbl.setText(str(p / "step10_summary_grid"))
             if hasattr(self, "_preview"):
-                self._preview.set_input_dir(p / "step07_rgb_composite")
+                self._preview.set_input_dir(p / "step06_rgb_composite")
         self._black_point.setValue(float(data.get("black_point", 0.04)))
         self._gamma.setValue(float(data.get("gamma", 0.9)))
         self._cell_size.setValue(int(data.get("cell_size_px", 300)))
@@ -178,9 +178,9 @@ class Step10Panel(BasePanel):
 
     def set_output_dir(self, path: Path | str) -> None:
         self._output_dir = Path(path) if path else None
-        step07_dir = self._output_dir / "step07_rgb_composite" if self._output_dir else None
+        step06_dir = self._output_dir / "step06_rgb_composite" if self._output_dir else None
         if hasattr(self, "_preview"):
-            self._preview.set_input_dir(step07_dir)
+            self._preview.set_input_dir(step06_dir)
 
     # ── Qt events ────────────────────────────────────────────────────────────
 

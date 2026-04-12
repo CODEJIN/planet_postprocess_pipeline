@@ -7,7 +7,7 @@ applies wavelet sharpening and composites each set into RGB/LRGB/false-colour
 images.  The resulting time-ordered series is used as input to Step 9
 (animated GIF).
 
-Note: Step 3 wavelet-preview output (results_03) is intentionally bypassed
+Note: Step 7 wavelet-preview output (results_07) is intentionally bypassed
 for the mono path.  Sharpening is applied AFTER stacking (stack → sharpen)
 to maximise SNR before the sharpening step.
 
@@ -62,23 +62,23 @@ from pipeline.modules.derotation import (
 )
 
 
-# ── Disk-based Step 3 result loader ───────────────────────────────────────────
+# ── Disk-based Step 7 result loader ───────────────────────────────────────────
 
-def _load_step03_from_disk(
+def _load_step07_from_disk(
     config: PipelineConfig,
 ) -> Dict[str, List[Tuple[Optional[Path], dict]]]:
-    """Reconstruct Step 3 results by scanning the step03_wavelet_preview/ dir.
+    """Reconstruct Step 7 results by scanning the step07_wavelet_preview/ dir.
 
-    Used when step08 is run standalone (Step 3 results not in memory).
+    Used when step08 is run standalone (Step 7 results not in memory).
     PNG filenames follow the same AS!4 naming convention as the source TIFs,
     so ``image_io.parse_filename`` can extract timestamps from them.
     """
-    step03_dir = config.step_dir(3, "wavelet_preview")
-    if not step03_dir.exists():
+    step07_dir = config.step_dir(7, "wavelet_preview")
+    if not step07_dir.exists():
         return {}
 
     results: Dict[str, List[Tuple[Optional[Path], dict]]] = {}
-    for filt_dir in sorted(step03_dir.iterdir()):
+    for filt_dir in sorted(step07_dir.iterdir()):
         if not filt_dir.is_dir():
             continue
         filt = filt_dir.name
@@ -582,7 +582,7 @@ def _stack_window_frames(
 
 def _run_color_series(
     config: PipelineConfig,
-    results_03: Dict[str, List[Tuple[Optional[Path], dict]]],
+    results_07: Dict[str, List[Tuple[Optional[Path], dict]]],
     progress_callback=None,
 ) -> Dict[str, List[Tuple[Optional[Path], str]]]:
     """Step 8 for color camera: group → stack → sharpen → auto-correct → save.
@@ -598,7 +598,7 @@ def _run_color_series(
       6. Auto white balance + chromatic aberration correction per frame.
       7. Brightness scaling by series_scale.
     """
-    from pipeline.steps.step07_rgb_composite import _auto_color_correct
+    from pipeline.steps.step06_rgb_composite import _auto_color_correct
 
     print("  [Color] Loading color TIF files from input_dir...")
     all_frames: List[Tuple[Path, dict]] = []
@@ -774,17 +774,17 @@ def _run_color_series(
 
 def run(
     config: PipelineConfig,
-    results_03: Dict[str, List[Tuple[Optional[Path], dict]]],
+    results_07: Dict[str, List[Tuple[Optional[Path], dict]]],
     progress_callback=None,
 ) -> Dict[str, List[Tuple[Optional[Path], str]]]:
     """Run Step 8 for all filter-cycle sets found in the raw TIF input.
 
     Args:
         config:      Pipeline configuration.
-        results_03:  Unused for mono camera (Step 3 PNGs are bypassed).
+        results_07:  Unused for mono camera (Step 7 PNGs are bypassed).
                      The mono path loads raw TIFs from config.input_dir
                      (stack → sharpen workflow).  For color camera mode,
-                     results_03 is also unused; color TIFs are loaded from
+                     results_07 is also unused; color TIFs are loaded from
                      config.input_dir directly.
 
     Returns:
@@ -793,12 +793,12 @@ def run(
     # Color camera: single-stream stacking + auto WB/CA correction
     if config.camera_mode == "color":
         print("  Color camera mode: stack → sharpen → auto-correct per frame")
-        return _run_color_series(config, results_03, progress_callback)
+        return _run_color_series(config, results_07, progress_callback)
 
     # Step 8 now reads raw TIFs directly, applying wavelet sharpening AFTER
     # stacking (stack → sharpen → composite).  This is physically correct:
     # stacking first improves SNR, then sharpening acts on the high-SNR stack.
-    # results_03 (wavelet-sharpened PNGs from Step 3) is intentionally bypassed.
+    # results_07 (wavelet-sharpened PNGs from Step 7) is intentionally bypassed.
     print("  [INFO] Loading raw TIFs from input_dir (stack→sharpen workflow)...")
     raw_tif_frames = _load_raw_tifs(config)
 
@@ -847,7 +847,7 @@ def run(
     else:
         print("  save_step08=False: results not written to disk")
 
-    # Use series-specific specs when set (Step 8 GUI), else fall back to Step 7 specs.
+    # Use series-specific specs when set (Step 8 GUI), else fall back to Step 6 specs.
     specs  = config.composite.series_specs or config.composite.specs
     align  = config.composite.align_channels
     plow   = config.composite.stretch_plow
@@ -1070,7 +1070,7 @@ def run(
                 _align = align if window_n == 1 else False
                 # When global_filter_normalize is on the channels are
                 # already rescaled by Pass 1.  A second stretch would
-                # double-clip and brighten the result relative to Step 7.
+                # double-clip and brighten the result relative to Step 6.
                 comp_img, clog = comp_module.compose(
                     spec,
                     {k: derotated[k] for k in required},

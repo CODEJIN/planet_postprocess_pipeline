@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 from gui.i18n import S
 from gui.panels.base_panel import BasePanel
 from gui.panels.step06_panel import _make_wavelet_row
-from gui.panels.step07_panel import (
+from gui.panels.step03_panel import (
     _SpecRow,
     _BTN_ADD,
     _BTN_SMALL,

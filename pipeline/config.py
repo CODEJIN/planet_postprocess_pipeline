@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Optional
 
 
-# ── Step 3 & 6: Wavelet sharpening ────────────────────────────────────────────
+# ── Step 7 & 5: Wavelet sharpening ────────────────────────────────────────────
 
 @dataclass
 class WaveletConfig:
@@ -28,21 +28,21 @@ class WaveletConfig:
     """
     levels: int = 6
 
-    # Step 3 – all three active layers at maximum (matches WaveSharp reference)
+    # Step 7 – all three active layers at maximum (matches WaveSharp reference)
     preview_amounts: List[float] = field(
         default_factory=lambda: [200.0, 200.0, 200.0, 0.0, 0.0, 0.0]
     )
     preview_power: float = 1.0
     preview_sharpen_filter: float = 0.1   # WaveSharp default (MAD-based soft threshold)
 
-    # Step 6 – final master output (best-quality stack per window)
+    # Step 5 – final master output (best-quality stack per window)
     master_amounts: List[float] = field(
         default_factory=lambda: [200.0, 200.0, 200.0, 0.0, 0.0, 0.0]
     )
     master_power: float = 1.0
     master_sharpen_filter: float = 0.0
 
-    # Step 8 – time-series animation frames (independent from Step 6)
+    # Step 8 – time-series animation frames (independent from Step 5)
     # Defaults match master_amounts so existing behaviour is unchanged.
     # Tune separately if the animation needs gentler/stronger sharpening.
     series_amounts: List[float] = field(
@@ -51,7 +51,7 @@ class WaveletConfig:
     series_power: float = 1.0
     series_sharpen_filter: float = 0.0
 
-    # Rectangular border taper before wavelet sharpening (Step 3 and Step 6).
+    # Rectangular border taper before wavelet sharpening (Step 7 and Step 5).
     # Cosine-fades the outermost border_taper_px pixels on all 4 sides to 0,
     # removing de-rotation stacking boundary gradients before wavelet can
     # amplify them.  The taper boundary lies in the near-zero background
@@ -85,7 +85,7 @@ class WaveletConfig:
     auto_params: bool = False
 
 
-# ── Step 4: Quality assessment ─────────────────────────────────────────────────
+# ── Step 3: Quality assessment ─────────────────────────────────────────────────
 
 @dataclass
 class QualityConfig:
@@ -115,7 +115,7 @@ class QualityConfig:
         return self.window_frames * self.cycle_minutes
 
 
-# ── Step 5 / 8 / 9: De-rotation ───────────────────────────────────────────────
+# ── Step 4 / 8 / 9: De-rotation ───────────────────────────────────────────────
 
 @dataclass
 class DerotationConfig:
@@ -206,7 +206,7 @@ class CompositeConfig:
     series_scale: float = 0.80
 
     # Global per-filter normalisation across ALL series frames (Step 8).
-    # When True a lightweight first pass reads all Step 3 PNGs, computes the
+    # When True a lightweight first pass reads all Step 7 PNGs, computes the
     # 0.5th–99.5th percentile lo/hi for every filter across every frame, and
     # applies that single mapping before compositing.  This ensures that the
     # same filter has the same brightness range in every frame, eliminating
@@ -217,7 +217,7 @@ class CompositeConfig:
     # Duration of one complete filter cycle in Step 8 (seconds).
     # Used to group raw TIF frames into per-cycle sets before compositing.
     # Typical value: 270 s (45 s × 5 filters + overhead).
-    # Kept separate from QualityConfig.cycle_minutes (Step 4) so the two
+    # Kept separate from QualityConfig.cycle_minutes (Step 3) so the two
     # steps can be tuned independently.
     cycle_seconds: float = 225.0
 
@@ -226,7 +226,7 @@ class CompositeConfig:
     #   frame.  1 = single-frame mode (current behaviour).  Odd values keep the
     #   centre frame as the reference time.  Recommended: 1–5.
     # stack_min_quality: normalised quality threshold [0, 1].  Frames whose
-    #   Laplacian-variance score (computed from the Step 3 wavelet PNG) is below
+    #   Laplacian-variance score (computed from the Step 7 wavelet PNG) is below
     #   this fraction of the per-filter maximum are excluded from the stack.
     #   0.0 = accept all frames.
     stack_window_n: int = 3
@@ -240,7 +240,7 @@ class CompositeConfig:
 
     # Series-specific composite specs (Step 8).  When set, these override
     # `specs` for Step 8 time-series compositing, allowing different channel
-    # mappings from the Step 7 master composites.  None = use `specs`.
+    # mappings from the Step 6 master composites.  None = use `specs`.
     series_specs: Optional[List[CompositeSpec]] = None
 
 
@@ -418,17 +418,17 @@ class PipelineConfig:
     step02_ser_dir: Optional[Path] = None
     # When set, step02_lucky_stack writes here instead of output_base_dir/step02_lucky_stack/
     step02_output_dir: Optional[Path] = None
-    # When set, step03 writes here instead of output_base_dir/step03_wavelet_preview/
-    step03_output_dir: Optional[Path] = None
+    # When set, step07 writes here instead of output_base_dir/step07_wavelet_preview/
+    step07_output_dir: Optional[Path] = None
 
     # ── Step save flags ────────────────────────────────────────────────────────
     save_step01: bool = True   # PIPP-processed SER files
     save_step02: bool = True   # Lucky-stacked TIF files
-    save_step03: bool = True   # Wavelet preview PNGs  (for quality inspection)
-    save_step04: bool = True   # Quality scores CSV + ranked file list
-    save_step05: bool = True   # De-rotated master TIFs per filter
-    save_step06: bool = True   # Wavelet-sharpened master PNGs
-    save_step07: bool = True   # RGB / IR-RGB / CH4-G-IR composites (master)
+    save_step03: bool = True   # Quality scores CSV + ranked file list
+    save_step04: bool = True   # De-rotated master TIFs per filter
+    save_step05: bool = True   # Wavelet-sharpened master PNGs
+    save_step06: bool = True   # RGB / IR-RGB / CH4-G-IR composites
+    save_step07: bool = True   # Wavelet preview PNGs
     save_step08: bool = True   # RGB composites per time-series set
     save_step09: bool = True   # Animated GIF
     save_step10: bool = True   # Summary contact sheet
@@ -447,7 +447,7 @@ class PipelineConfig:
     # ── Camera mode ────────────────────────────────────────────────────────────
     # "mono"  : separate mono captures per filter (default — IR/R/G/B/CH4)
     # "color" : single color (Bayer) camera; one RGB stream, no filter separation.
-    #           Steps 03–06 sharpen/derotate the single COLOR channel in Lab space.
+    #           Steps 04–07 sharpen/derotate the single COLOR channel in Lab space.
     #           Step 08 is a colour pass-through (no compositing needed).
     #           Step 11 shows a single-column grid.
     camera_mode: str = "mono"

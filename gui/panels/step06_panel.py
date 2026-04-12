@@ -1,4 +1,4 @@
-"""Step 6 — Wavelet master sharpening panel."""
+"""Step 5 — Wavelet master sharpening panel."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -99,10 +99,10 @@ def _make_wavelet_row(
     return row, spin
 
 
-class Step06Panel(BasePanel):
-    STEP_ID   = "06"
-    TITLE_KEY = "step06.title"
-    DESC_KEY  = "step06.desc"
+class Step05Panel(BasePanel):
+    STEP_ID   = "05"
+    TITLE_KEY = "step05.title"
+    DESC_KEY  = "step05.desc"
     OPTIONAL  = False
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -137,20 +137,20 @@ class Step06Panel(BasePanel):
         self._input_lbl = QLineEdit()
         self._input_lbl.setReadOnly(True)
         self._input_lbl.setStyleSheet(_READONLY_STYLE)
-        lbl_in = QLabel(S("step06.input_dir"))
-        lbl_in.setToolTip("Step 5 De-rotation 결과물이 있는 폴더 (자동 설정)")
+        lbl_in = QLabel(S("step05.input_dir"))
+        lbl_in.setToolTip("Step 4 De-rotation 결과물이 있는 폴더 (자동 설정)")
         fl.addRow(lbl_in, self._input_lbl)
 
         self._output_lbl = QLineEdit()
         self._output_lbl.setReadOnly(True)
         self._output_lbl.setStyleSheet(_READONLY_STYLE)
-        lbl_out = QLabel(S("step06.output_dir"))
+        lbl_out = QLabel(S("step05.output_dir"))
         lbl_out.setToolTip("웨이블릿 마스터 이미지가 저장될 폴더 (자동 설정)")
         fl.addRow(lbl_out, self._output_lbl)
         left_layout.addWidget(folder_widget)
 
         # Section label
-        amounts_label = QLabel(S("step06.amounts"))
+        amounts_label = QLabel(S("step05.amounts"))
         amounts_label.setStyleSheet("color: #aaa; font-size: 11px;")
         amounts_label.setToolTip(
             "스태킹된 마스터 이미지에 적용할 웨이블릿 선명화 강도입니다.\n"
@@ -195,18 +195,22 @@ class Step06Panel(BasePanel):
         self._preview.retranslate()
 
     def get_config_updates(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "master_amounts": [s.value() for s in self._wavelet_spins],
         }
+        out_text = self._output_lbl.text().strip()
+        if out_text:
+            result["output_dir"] = str(Path(out_text).parent)
+        return result
 
     def load_session(self, data: dict[str, Any]) -> None:
         out = data.get("output_dir", "")
         if out:
             p = Path(out)
-            self._input_lbl.setText(str(p / "step05_derotated"))
-            self._output_lbl.setText(str(p / "step06_wavelet_master"))
+            self._input_lbl.setText(str(p / "step04_derotated"))
+            self._output_lbl.setText(str(p / "step05_wavelet_master"))
             if hasattr(self, "_preview"):
-                self._preview.set_input_dir(p / "step05_derotated")
+                self._preview.set_input_dir(p / "step04_derotated")
         amounts = data.get("master_amounts", _WAVELET_DEFAULTS)
         for spin, val in zip(self._wavelet_spins, amounts):
             spin.setValue(float(val))
@@ -219,14 +223,14 @@ class Step06Panel(BasePanel):
     def output_paths(self) -> list[Path]:
         if self._output_dir is None:
             return []
-        step_dir = self._output_dir / "step06_wavelet_master"
+        step_dir = self._output_dir / "step05_wavelet_master"
         if not step_dir.exists():
             return []
         return sorted(step_dir.rglob("*.png"))
 
     def set_output_dir(self, path: Path | str) -> None:
         self._output_dir = Path(path) if path else None
-        step05_dir = self._output_dir / "step05_derotated" if self._output_dir else None
+        step05_dir = self._output_dir / "step04_derotated" if self._output_dir else None
         if hasattr(self, "_preview"):
             self._preview.set_input_dir(step05_dir)
 

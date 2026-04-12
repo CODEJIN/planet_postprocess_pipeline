@@ -2,7 +2,7 @@
 Step 10 – Summary contact sheet.
 
 Creates a single PNG arranged as a grid of composite images:
-  Rows    → time windows from Step 7, oldest at top
+  Rows    → time windows from Step 6, oldest at top
   Columns → composite types (RGB, IR-RGB, CH4-G-IR)
 
 Each cell receives a levels adjustment (black_point / white_point / gamma)
@@ -148,30 +148,30 @@ def _draw_rotated_text(
 
 def run(
     config: PipelineConfig,
-    results_07: Dict[str, List[Tuple[Optional[Path], str]]],
-    results_05: dict,
+    results_06: Dict[str, List[Tuple[Optional[Path], str]]],
+    results_04: dict,
 ) -> Optional[Path]:
-    """Build the summary contact sheet from Step 8 master composites.
+    """Build the summary contact sheet from Step 6 master composites.
 
     Args:
         config:      Pipeline configuration.
-        results_07:  Output of step07_rgb_composite.run():
+        results_06:  Output of step06_rgb_composite.run():
                      ``{window_label: [(composite_path_or_None, composite_name), ...]}``
-        results_05:  Output of step05_derotate_stack.run() — used to look up
+        results_04:  Output of step04_derotate_stack.run() — used to look up
                      the center time of each window for row labels.
 
     Returns:
         Path to the saved PNG, or None if save_step10 is False or no data.
     """
-    if not results_07:
-        print("  [WARNING] No Step 7 results — Step 10 skipped.")
+    if not results_06:
+        print("  [WARNING] No Step 6 results — Step 10 skipped.")
         return None
 
     cfg = config.grid
     # Color camera: single column; override composite list from Step 8 keys
     if config.camera_mode == "color":
-        # Collect all composite names actually present in results_07
-        color_cols = sorted({name for pairs in results_07.values() for _, name in pairs})
+        # Collect all composite names actually present in results_06
+        color_cols = sorted({name for pairs in results_06.values() for _, name in pairs})
         col_names = color_cols if color_cols else ["COLOR"]
     else:
         col_names = cfg.composites
@@ -179,7 +179,7 @@ def run(
 
     # ── Build window_label → center_time lookup from Step 5 ──────────────────
     window_times: Dict[str, str] = {}
-    for w in results_05.get("windows", []):
+    for w in results_04.get("windows", []):
         label = f"window_{w['window_index']:02d}"
         window_times[label] = w.get("center_time", "")
 
@@ -202,7 +202,7 @@ def run(
             return t
         return t + local_offset
 
-    sorted_labels = sorted(results_07.keys(), key=_window_time_utc)
+    sorted_labels = sorted(results_06.keys(), key=_window_time_utc)
     n_rows = len(sorted_labels)
 
     if n_rows == 0:
@@ -219,7 +219,7 @@ def run(
 
     # ── Build lookup: window_label → {composite_name: Path} ──────────────────
     frame_map: Dict[str, Dict[str, Optional[Path]]] = {}
-    for label, pairs in results_07.items():
+    for label, pairs in results_06.items():
         frame_map[label] = {name: path for path, name in pairs}
 
     # ── Detect native cell size from first available image ────────────────────

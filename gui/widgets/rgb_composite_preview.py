@@ -1,6 +1,6 @@
 """RGB composite preview widget — used by Step 7.
 
-Loads filter master PNGs from ``step06_wavelet_master`` (first window found),
+Loads filter master PNGs from ``step05_wavelet_master`` (first window found),
 applies the first composite spec without channel alignment (fast preview), and
 shows:
   - Left : reference channel (L if LRGB, else R) as grayscale
@@ -72,7 +72,7 @@ def _make_img_label() -> QLabel:
 
 
 def _pick_first_window(step06_dir: Path) -> Optional[Path]:
-    """Return the first window sub-directory in step06_wavelet_master/."""
+    """Return the first window sub-directory in step05_wavelet_master/."""
     if not step06_dir.is_dir():
         return None
     dirs = sorted(p for p in step06_dir.iterdir() if p.is_dir())
@@ -109,9 +109,9 @@ class _Worker(QObject):
             win_dir = _pick_first_window(self._step06_dir)
             if win_dir is None:
                 msg = (
-                    "윈도우 없음: Step 6을 먼저 실행해 주세요."
+                    "윈도우 없음: Step 5를 먼저 실행해 주세요."
                     if self._step06_dir.is_dir()
-                    else "Step 6 출력 폴더를 찾을 수 없습니다."
+                    else "Step 5 출력 폴더를 찾을 수 없습니다."
                 )
                 self.error.emit(msg)
                 return
@@ -130,11 +130,11 @@ class _Worker(QObject):
             b_img = _load(self._b)
             l_img = _load(self._l) if self._l else None
 
-            # No extra stretch — use raw float [0,1] values from step 6 PNGs directly.
-            # Step 6 masters are stored as 16-bit PNGs (float * 65535 on write,
+            # No extra stretch — use raw float [0,1] values from step 5 PNGs directly.
+            # Step 5 masters are stored as 16-bit PNGs (float * 65535 on write,
             # /65535 on read), so their pixel values already reflect the true
             # sensor output.  Adding auto_stretch on top would be a second stretch
-            # that makes the preview artificially brighter than the actual step 7
+            # that makes the preview artificially brighter than the actual step 6
             # output that step 10 reads.  Matching step 10's _to_uint8_levels
             # approach: just multiply by 255, no additional normalisation.
             l_s = l_img   # may be None

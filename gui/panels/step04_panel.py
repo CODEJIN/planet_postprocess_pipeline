@@ -1,4 +1,4 @@
-"""Step 4 — Quality assessment panel."""
+"""Step 3 — Quality assessment panel."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -81,10 +81,10 @@ def _dir_row(parent: QWidget, line_edit: QLineEdit) -> QHBoxLayout:
     return row
 
 
-class Step04Panel(BasePanel):
-    STEP_ID   = "04"
-    TITLE_KEY = "step04.title"
-    DESC_KEY  = "step04.desc"
+class Step03Panel(BasePanel):
+    STEP_ID   = "03"
+    TITLE_KEY = "step03.title"
+    DESC_KEY  = "step03.desc"
     OPTIONAL  = False
 
     # Emitted on editingFinished so downstream panels (05+) refresh immediately.
@@ -110,9 +110,9 @@ class Step04Panel(BasePanel):
         self._input_lbl.setPlaceholderText("Lucky Stacking TIF 폴더")
         self._input_lbl.textChanged.connect(self._on_input_changed)
         self._input_lbl.editingFinished.connect(self.dirs_changed)
-        lbl_in = QLabel(S("step04.input_dir"))
+        lbl_in = QLabel(S("step03.input_dir"))
         lbl_in.setToolTip(
-            "Step 4가 품질을 평가할 TIF 파일 폴더입니다.\n"
+            "Step 3가 품질을 평가할 TIF 파일 폴더입니다.\n"
             "Step 2 Lucky Stacking 출력 폴더와 동일합니다.\n"
             "cascade로 자동 설정되지만 직접 변경할 수 있습니다."
         )
@@ -121,7 +121,7 @@ class Step04Panel(BasePanel):
         self._output_lbl = QLineEdit()
         self._output_lbl.setReadOnly(True)
         self._output_lbl.setStyleSheet(_READONLY_STYLE)
-        lbl_out = QLabel(S("step04.output_dir"))
+        lbl_out = QLabel(S("step03.output_dir"))
         lbl_out.setToolTip(
             "품질 점수 CSV, 윈도우 추천 JSON이 저장될 폴더입니다.\n"
             "자동으로 설정됩니다."
@@ -143,7 +143,7 @@ class Step04Panel(BasePanel):
         self._window_frames.setSingleStep(1)
         self._window_frames.setValue(3)
         self._window_frames.setToolTip(_tip_win)
-        lbl_win = QLabel(S("step04.window_frames"))
+        lbl_win = QLabel(S("step03.window_frames"))
         lbl_win.setToolTip(_tip_win)
         fl.addRow(lbl_win, self._window_frames)
 
@@ -161,7 +161,7 @@ class Step04Panel(BasePanel):
         self._cycle_seconds.setSingleStep(15)
         self._cycle_seconds.setValue(225)
         self._cycle_seconds.setToolTip(_tip_cyc)
-        self._lbl_cyc = QLabel(S("step04.cycle_seconds"))
+        self._lbl_cyc = QLabel(S("step03.cycle_seconds"))
         self._lbl_cyc.setToolTip(_tip_cyc)
         fl.addRow(self._lbl_cyc, self._cycle_seconds)
 
@@ -178,7 +178,7 @@ class Step04Panel(BasePanel):
         self._n_windows.setSingleStep(1)
         self._n_windows.setValue(1)
         self._n_windows.setToolTip(_tip_nwin)
-        lbl_nwin = QLabel(S("step04.n_windows"))
+        lbl_nwin = QLabel(S("step03.n_windows"))
         lbl_nwin.setToolTip(_tip_nwin)
         fl.addRow(lbl_nwin, self._n_windows)
 
@@ -193,7 +193,7 @@ class Step04Panel(BasePanel):
         self._allow_overlap.setStyleSheet(_CHECK_STYLE)
         self._allow_overlap.setChecked(False)
         self._allow_overlap.setToolTip(_tip_overlap)
-        lbl_overlap = QLabel(S("step04.allow_overlap"))
+        lbl_overlap = QLabel(S("step03.allow_overlap"))
         lbl_overlap.setToolTip(_tip_overlap)
         fl.addRow(lbl_overlap, self._allow_overlap)
 
@@ -212,7 +212,7 @@ class Step04Panel(BasePanel):
         self._min_quality.setSingleStep(0.05)
         self._min_quality.setValue(0.05)
         self._min_quality.setToolTip(_tip_mq)
-        lbl_mq = QLabel(S("step04.min_quality"))
+        lbl_mq = QLabel(S("step03.min_quality"))
         lbl_mq.setToolTip(_tip_mq)
         fl.addRow(lbl_mq, self._min_quality)
 
@@ -220,14 +220,18 @@ class Step04Panel(BasePanel):
         self._form_layout.insertWidget(idx, form_widget)
 
     def get_config_updates(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "input_dir":                self._input_lbl.text().strip(),
             "window_frames":            self._window_frames.value(),
             "cycle_seconds":            self._cycle_seconds.value(),
             "n_windows":                self._n_windows.value(),
             "allow_overlap":            self._allow_overlap.isChecked(),
-            "min_quality_threshold_04": self._min_quality.value(),
+            "min_quality_threshold_03": self._min_quality.value(),
         }
+        out_text = self._output_lbl.text().strip()
+        if out_text:
+            result["output_dir"] = str(Path(out_text).parent)
+        return result
 
     def load_session(self, data: dict[str, Any]) -> None:
         inp = data.get("input_dir", "")
@@ -237,11 +241,11 @@ class Step04Panel(BasePanel):
         self._input_lbl.blockSignals(False)
         self._update_input_style(inp)
         if out:
-            self._output_lbl.setText(str(Path(out) / "step04_quality"))
+            self._output_lbl.setText(str(Path(out) / "step03_quality"))
 
         is_color = data.get("camera_mode", "mono") == "color"
         if is_color:
-            self._lbl_cyc.setText(S("step04.cycle_seconds_color"))
+            self._lbl_cyc.setText(S("step03.cycle_seconds_color"))
             self._cycle_seconds.setToolTip(
                 "RGB 프레임 한 장 촬영에 걸리는 시간(초)입니다.\n"
                 "윈도우 길이 = 프레임 수 × 이 값\n"
@@ -250,7 +254,7 @@ class Step04Panel(BasePanel):
             if not data.get("cycle_seconds"):
                 self._cycle_seconds.setValue(45)
         else:
-            self._lbl_cyc.setText(S("step04.cycle_seconds"))
+            self._lbl_cyc.setText(S("step03.cycle_seconds"))
             self._cycle_seconds.setToolTip(
                 "필터 한 사이클(IR→R→G→B→CH4→IR)에 걸리는 시간(초)입니다.\n"
                 "실제 촬영 패턴에 맞춰 입력하세요.\n"
@@ -271,8 +275,9 @@ class Step04Panel(BasePanel):
         self._n_windows.setValue(int(data.get("n_windows", 1)))
         self._allow_overlap.setChecked(bool(data.get("allow_overlap", False)))
         # Support both old key (top_fraction) and new key
-        mq = data.get("min_quality_threshold_04",
-                      data.get("top_fraction", 0.05))
+        mq = data.get("min_quality_threshold_03",
+                      data.get("min_quality_threshold_04",
+                               data.get("top_fraction", 0.05)))
         self._min_quality.setValue(float(mq))
 
     # ── Slots ─────────────────────────────────────────────────────────────────
@@ -289,7 +294,7 @@ class Step04Panel(BasePanel):
     def output_paths(self) -> list[Path]:
         if self._output_dir is None:
             return []
-        step_dir = self._output_dir / "step04_quality"
+        step_dir = self._output_dir / "step03_quality"
         if not step_dir.exists():
             return []
         return sorted(step_dir.glob("*.csv"))

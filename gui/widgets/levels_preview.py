@@ -214,7 +214,7 @@ class LevelsPreviewWidget(QWidget):
             self._input_dir = None
 
         if self._input_dir is None:
-            self._status_lbl.setText("Step 7 출력 폴더를 설정하면 미리보기가 활성화됩니다.")
+            self._status_lbl.setText(S("preview.status.step7"))
         elif self.isVisible():
             self.schedule_update(100)
 

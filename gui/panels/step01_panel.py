@@ -182,14 +182,17 @@ class Step01Panel(BasePanel):
 
     def get_config_updates(self) -> dict[str, Any]:
         step1_out = self._output_step1.text().strip()
-        output_base = str(Path(step1_out).parent) if step1_out else ""
-        return {
-            "ser_input_dir":    self._ser_dir.text().strip(),
+        result: dict[str, Any] = {
+            "ser_input_dir":     self._ser_dir.text().strip(),
             "step01_output_dir": step1_out,
-            "output_dir":       output_base,
-            "roi_size":         self._roi_size.value(),
-            "min_diameter":     self._min_diameter.value(),
+            "roi_size":          self._roi_size.value(),
+            "min_diameter":      self._min_diameter.value(),
         }
+        # Only propagate output_dir when Step 1 is actually configured; an empty
+        # value would overwrite the output_dir set by the Step 2/3 cascade.
+        if step1_out:
+            result["output_dir"] = str(Path(step1_out).parent)
+        return result
 
     def load_session(self, data: dict[str, Any]) -> None:
         ser_dir = data.get("ser_input_dir", "")

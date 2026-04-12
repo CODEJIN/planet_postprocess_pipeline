@@ -54,11 +54,11 @@ def _import_steps():
     from pipeline.steps import (
         step01_pipp,
         step02_lucky_stack,
-        step03_wavelet_sharpen,
-        step04_quality_assess,
-        step05_derotate_stack,
-        step06_wavelet_master,
-        step07_rgb_composite,
+        step03_quality_assess,
+        step04_derotate_stack,
+        step05_wavelet_master,
+        step06_rgb_composite,
+        step07_wavelet_preview,
         step08_series_composite,
         step09_gif,
         step10_summary_grid,
@@ -66,11 +66,11 @@ def _import_steps():
     return {
         "01": step01_pipp,
         "02": step02_lucky_stack,
-        "03": step03_wavelet_sharpen,
-        "04": step04_quality_assess,
-        "05": step05_derotate_stack,
-        "06": step06_wavelet_master,
-        "07": step07_rgb_composite,
+        "03": step03_quality_assess,
+        "04": step04_derotate_stack,
+        "05": step05_wavelet_master,
+        "06": step06_rgb_composite,
+        "07": step07_wavelet_preview,
         "08": step08_series_composite,
         "09": step09_gif,
         "10": step10_summary_grid,
@@ -172,19 +172,19 @@ class StepRunner(QThread):
             elif step_id == "03":
                 r = mods["03"].run(cfg, progress_callback=pcb)
             elif step_id == "04":
-                r = mods["04"].run(cfg, progress_callback=pcb)
+                r = mods["04"].run(cfg, res.get("03", {}), progress_callback=pcb)
             elif step_id == "05":
-                r = mods["05"].run(cfg, res.get("04", {}), progress_callback=pcb)
+                r = mods["05"].run(cfg, res.get("04", {}))
             elif step_id == "06":
                 r = mods["06"].run(cfg, res.get("05", {}))
             elif step_id == "07":
-                r = mods["07"].run(cfg, res.get("06", {}))
+                r = mods["07"].run(cfg, progress_callback=pcb)
             elif step_id == "08":
-                r = mods["08"].run(cfg, res.get("03", {}), progress_callback=pcb)
+                r = mods["08"].run(cfg, res.get("07", {}), progress_callback=pcb)
             elif step_id == "09":
                 r = mods["09"].run(cfg, res.get("08", {}), progress_callback=pcb)
             elif step_id == "10":
-                r = mods["10"].run(cfg, res.get("07", {}), res.get("05", {}))
+                r = mods["10"].run(cfg, res.get("06", {}), res.get("04", {}))
             else:
                 print(f"  [WARN] Step {step_id} has no runner implementation.")
                 r = {}

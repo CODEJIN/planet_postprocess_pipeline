@@ -1,4 +1,4 @@
-"""Step 5 — De-rotation stacking panel."""
+"""Step 4 — De-rotation stacking panel."""
 from __future__ import annotations
 
 import csv
@@ -142,7 +142,7 @@ class _WarpSweepWorker(QThread):
         filt = self._pick_filter()
         if filt is None:
             self.finished.emit(0.80, "error",
-                               "Step 4 데이터가 없습니다. Step 4를 먼저 실행하세요.")
+                               "Step 3 데이터가 없습니다. Step 3을 먼저 실행하세요.")
             return
 
         # ── load frames ───────────────────────────────────────────────────────
@@ -208,10 +208,10 @@ class _WarpSweepWorker(QThread):
 
 # ── Panel ──────────────────────────────────────────────────────────────────────
 
-class Step05Panel(BasePanel):
-    STEP_ID   = "05"
-    TITLE_KEY = "step05.title"
-    DESC_KEY  = "step05.desc"
+class Step04Panel(BasePanel):
+    STEP_ID   = "04"
+    TITLE_KEY = "step04.title"
+    DESC_KEY  = "step04.desc"
     OPTIONAL  = False
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -236,7 +236,7 @@ class Step05Panel(BasePanel):
         self._input_lbl = QLineEdit()
         self._input_lbl.setReadOnly(True)
         self._input_lbl.setStyleSheet(_READONLY_STYLE)
-        lbl_in = QLabel(S("step05.input_dir"))
+        lbl_in = QLabel(S("step04.input_dir"))
         lbl_in.setToolTip(
             "Step 2 Lucky Stacking 출력 TIF 폴더입니다.\n"
             "cascade로 자동 설정됩니다."
@@ -246,10 +246,10 @@ class Step05Panel(BasePanel):
         self._quality_lbl = QLineEdit()
         self._quality_lbl.setReadOnly(True)
         self._quality_lbl.setStyleSheet(_READONLY_STYLE)
-        lbl_q = QLabel(S("step05.quality_dir"))
+        lbl_q = QLabel(S("step04.quality_dir"))
         lbl_q.setToolTip(
-            "Step 4가 생성한 품질 점수 CSV 파일이 있는 폴더입니다.\n"
-            "Step 4 완료 후 자동으로 설정됩니다.\n"
+            "Step 3가 생성한 품질 점수 CSV 파일이 있는 폴더입니다.\n"
+            "Step 3 완료 후 자동으로 설정됩니다.\n"
             "이 폴더가 있어야 '최적값 자동탐색' 버튼이 활성화됩니다."
         )
         fl.addRow(lbl_q, self._quality_lbl)
@@ -257,7 +257,7 @@ class Step05Panel(BasePanel):
         self._output_lbl = QLineEdit()
         self._output_lbl.setReadOnly(True)
         self._output_lbl.setStyleSheet(_READONLY_STYLE)
-        lbl_out = QLabel(S("step05.output_dir"))
+        lbl_out = QLabel(S("step04.output_dir"))
         lbl_out.setToolTip(
             "De-rotation 스태킹된 TIF 마스터 이미지가 저장될 폴더입니다.\n"
             "자동으로 설정됩니다."
@@ -292,7 +292,7 @@ class Step05Panel(BasePanel):
         self._warp_scale.setSingleStep(0.01)
         self._warp_scale.setValue(0.80)
         self._warp_scale.setToolTip(_tip_warp)
-        lbl_warp = QLabel(S("step05.warp_scale"))
+        lbl_warp = QLabel(S("step04.warp_scale"))
         lbl_warp.setToolTip(_tip_warp)
         fl.addRow(lbl_warp, self._warp_scale)
 
@@ -303,13 +303,13 @@ class Step05Panel(BasePanel):
         sweep_layout.setContentsMargins(0, 0, 0, 0)
         sweep_layout.setSpacing(8)
 
-        self._sweep_btn = QPushButton(S("step05.sweep_btn"))
+        self._sweep_btn = QPushButton(S("step04.sweep_btn"))
         self._sweep_btn.setStyleSheet(_BTN_STYLE)
         self._sweep_btn.setFixedWidth(130)
         self._sweep_btn.setToolTip(
-            "현재 Step 4 데이터를 바탕으로 스택 선명도가 최대가 되는\n"
+            "현재 Step 3 데이터를 바탕으로 스택 선명도가 최대가 되는\n"
             "warp_scale 값을 자동으로 탐색합니다.\n"
-            "약 2~4초 소요. Step 4가 완료되어 있어야 합니다."
+            "약 2~4초 소요. Step 3이 완료되어 있어야 합니다."
         )
         self._sweep_btn.clicked.connect(self._on_sweep_clicked)
 
@@ -334,7 +334,7 @@ class Step05Panel(BasePanel):
         self._min_quality.setSingleStep(0.05)
         self._min_quality.setValue(0.05)
         self._min_quality.setToolTip(_tip_mq)
-        lbl_mq = QLabel(S("step05.min_quality"))
+        lbl_mq = QLabel(S("step04.min_quality"))
         lbl_mq.setToolTip(_tip_mq)
         fl.addRow(lbl_mq, self._min_quality)
 
@@ -347,7 +347,7 @@ class Step05Panel(BasePanel):
         self._normalize.setStyleSheet(_CHECK_STYLE)
         self._normalize.setChecked(False)
         self._normalize.setToolTip(_tip_norm)
-        lbl_norm = QLabel(S("step05.normalize"))
+        lbl_norm = QLabel(S("step04.normalize"))
         lbl_norm.setToolTip(_tip_norm)
         fl.addRow(lbl_norm, self._normalize)
 
@@ -355,11 +355,15 @@ class Step05Panel(BasePanel):
         self._form_layout.insertWidget(idx, form_widget)
 
     def get_config_updates(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "warp_scale":            self._warp_scale.value(),
             "min_quality_threshold": self._min_quality.value(),
             "normalize_brightness":  self._normalize.isChecked(),
         }
+        out_text = self._output_lbl.text().strip()
+        if out_text:
+            result["output_dir"] = str(Path(out_text).parent)
+        return result
 
     def load_session(self, data: dict[str, Any]) -> None:
         inp = data.get("input_dir", "")
@@ -370,8 +374,8 @@ class Step05Panel(BasePanel):
         if out:
             p = Path(out)
             if hasattr(self, "_quality_lbl"):
-                self._quality_lbl.setText(str(p / "step04_quality"))
-            self._output_lbl.setText(str(p / "step05_derotated"))
+                self._quality_lbl.setText(str(p / "step03_quality"))
+            self._output_lbl.setText(str(p / "step04_derotated"))
             self._output_dir = p
 
         # Store for sweep worker
@@ -388,7 +392,7 @@ class Step05Panel(BasePanel):
     def output_paths(self) -> list[Path]:
         if self._output_dir is None:
             return []
-        step_dir = self._output_dir / "step05_derotated"
+        step_dir = self._output_dir / "step04_derotated"
         if not step_dir.exists():
             return []
         paths = sorted(step_dir.rglob("*.tif"))
@@ -402,7 +406,7 @@ class Step05Panel(BasePanel):
     def _quality_dir(self) -> Path | None:
         if self._output_dir is None:
             return None
-        q = self._output_dir / "step04_quality"
+        q = self._output_dir / "step03_quality"
         return q if q.exists() else None
 
     def _update_sweep_btn_state(self) -> None:
@@ -412,7 +416,7 @@ class Step05Panel(BasePanel):
         self._sweep_btn.setEnabled(enabled)
         if not enabled:
             self._sweep_result.setStyleSheet("QLabel { color: #666; font-size: 11px; }")
-            self._sweep_result.setText(S("step05.sweep_wait"))
+            self._sweep_result.setText(S("step04.sweep_wait"))
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
@@ -422,7 +426,7 @@ class Step05Panel(BasePanel):
             return
 
         self._sweep_btn.setEnabled(False)
-        self._sweep_btn.setText(S("step05.sweeping"))
+        self._sweep_btn.setText(S("step04.sweeping"))
         self._sweep_result.setStyleSheet("QLabel { color: #888; font-size: 11px; }")
         self._sweep_result.setText("")
 
@@ -437,7 +441,7 @@ class Step05Panel(BasePanel):
 
     def _on_sweep_finished(self, best_scale: float, confidence: str, msg: str) -> None:
         self._sweep_btn.setEnabled(True)
-        self._sweep_btn.setText(S("step05.sweep_btn"))
+        self._sweep_btn.setText(S("step04.sweep_btn"))
 
         if confidence == "error":
             color = "#e06c75"   # red
