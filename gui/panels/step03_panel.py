@@ -145,7 +145,7 @@ class Step03Panel(BasePanel):
     STEP_ID   = "03"
     TITLE_KEY = "step03.title"
     DESC_KEY  = "step03.desc"
-    OPTIONAL  = False
+    OPTIONAL  = True
 
     # Emitted when input/output dirs change so downstream panels can refresh.
     dirs_changed = Signal()
@@ -288,17 +288,29 @@ class Step03Panel(BasePanel):
     def load_session(self, data: dict[str, Any]) -> None:
         input_dir = data.get("input_dir", "")
         step3_out = data.get("step03_output_dir", "")
+        output_base = data.get("output_dir", "")
 
         self._input_dir.blockSignals(True)
         self._input_dir.setText(input_dir)
         self._input_dir.blockSignals(False)
         self._update_input_style(input_dir)
 
+        # Reset the flag on every load so upstream cascades always trigger re-derivation.
+        # The flag is set True only by direct user UI interaction (textEdited).
+        self._output_manually_edited = False
+
         if step3_out:
-            self._output_manually_edited = True
+            # Explicitly saved path — restore it and mark as user-chosen.
             self._output_step3.setText(step3_out)
             self._output_dir = Path(step3_out).parent
+            self._output_manually_edited = True
+        elif output_base:
+            # Known session output base: put step03 output as a sibling of other steps.
+            derived = str(Path(output_base) / "step03_wavelet_preview")
+            self._output_step3.setText(derived)
+            self._output_dir = Path(output_base)
         elif input_dir:
+            # Fallback: derive from the input directory (uses parent for sibling placement).
             self._auto_set_output(input_dir)
 
         amounts = data.get("preview_amounts", _WAVELET_DEFAULTS)
@@ -368,6 +380,10 @@ class Step03Panel(BasePanel):
         if not t:
             return
         p = Path(t)
-        derived = str(p / "step03_wavelet_preview")
+        # Step outputs are siblings of the input dir, not nested inside it.
+        # output_base = parent of input dir (e.g. /data/260402 when input is
+        # /data/260402/step02_lucky_stack or /data/260402/AS_P25)
+        output_base = p.parent
+        derived = str(output_base / "step03_wavelet_preview")
         self._output_step3.setText(derived)
-        self._output_dir = p
+        self._output_dir = output_base

@@ -1,10 +1,15 @@
 """
 Step 8 – Time-series RGB/LRGB compositing with sliding-window stacking.
 
-Groups individual wavelet-sharpened frames (Step 3) into filter-cycle sets,
-applies de-rotation correction, then composites each set into RGB/LRGB/
-false-colour images.  The resulting time-ordered series is used as input to
-Step 9 (animated GIF).
+Groups raw TIF frames (Step 2 lucky-stacking output, via config.input_dir)
+into filter-cycle sets, applies de-rotation correction, stacks them, then
+applies wavelet sharpening and composites each set into RGB/LRGB/false-colour
+images.  The resulting time-ordered series is used as input to Step 9
+(animated GIF).
+
+Note: Step 3 wavelet-preview output (results_03) is intentionally bypassed
+for the mono path.  Sharpening is applied AFTER stacking (stack → sharpen)
+to maximise SNR before the sharpening step.
 
 Two stacking modes (controlled by config.composite.stack_window_n):
 
@@ -772,12 +777,15 @@ def run(
     results_03: Dict[str, List[Tuple[Optional[Path], dict]]],
     progress_callback=None,
 ) -> Dict[str, List[Tuple[Optional[Path], str]]]:
-    """Run Step 8 for all filter-cycle sets found in Step 3 output.
+    """Run Step 8 for all filter-cycle sets found in the raw TIF input.
 
     Args:
         config:      Pipeline configuration.
-        results_03:  Output of step03_wavelet_sharpen.run():
-                     ``{filter: [(png_path, meta), ...]}``
+        results_03:  Unused for mono camera (Step 3 PNGs are bypassed).
+                     The mono path loads raw TIFs from config.input_dir
+                     (stack → sharpen workflow).  For color camera mode,
+                     results_03 is also unused; color TIFs are loaded from
+                     config.input_dir directly.
 
     Returns:
         ``{frame_label: [(composite_path_or_None, composite_name), ...]}``

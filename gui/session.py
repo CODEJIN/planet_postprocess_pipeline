@@ -24,9 +24,16 @@ _DEFAULTS: dict[str, Any] = {
     "horizons_id":      "599",
     "rotation_period":  9.9281,
     "filters":          "IR,R,G,B,CH4",
-    "ser_input_dir":    "",
-    "input_dir":        "",
-    "output_dir":       "",
+    "ser_input_dir":      "",
+    "input_dir":          "",
+    "output_dir":         "",
+    "step02_ser_dir":     "",
+    "step02_output_dir":  "",
+    "lucky_top_percent":  0.25,
+    "lucky_ap_size":      64,
+    "lucky_n_iterations": 2,
+    "lucky_n_workers":    0,   # kept for migration compat; UI uses global_max_workers
+    "global_max_workers": 0,   # 0=auto (all cores); Step 1 caps at 4, Step 2 uses all
     "save_mono_frames": False,
     # Which optional steps are enabled
     "enabled_steps":    {"01": True, "02": True, "03": True, "04": True,

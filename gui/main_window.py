@@ -42,6 +42,7 @@ from gui.widgets.log_widget import LogWidget
 from gui.widgets.step_item import StepItem
 from pipeline.config import (
     PipelineConfig,
+    LuckyStackConfig,
     PippConfig,
     WaveletConfig,
     QualityConfig,
@@ -172,7 +173,7 @@ _STEP_DEFS = [
     # (step_id, i18n_key, optional)
     ("01", "sidebar.step01", False),
     ("02", "sidebar.step02", False),
-    ("03", "sidebar.step03", False),
+    ("03", "sidebar.step03", True),
     ("04", "sidebar.step04", False),
     ("05", "sidebar.step05", False),
     ("06", "sidebar.step06", False),
@@ -184,7 +185,7 @@ _STEP_DEFS = [
 ]
 
 # Which step IDs get a separator _before_ them in the sidebar
-_SEPARATOR_BEFORE = {"03", "08"}
+_SEPARATOR_BEFORE = {"04", "08"}
 
 
 class MainWindow(QMainWindow):
@@ -364,16 +365,17 @@ class MainWindow(QMainWindow):
                     lambda _checked, sid=step_id: self._advance_to_next(sid)
                 )
 
-        # Step 02 completed → advance to step 03
-        self._step_panels["02"].completed.connect(
-            lambda: self._show_panel("03")
-        )
+        # Step 02 output folder changes → auto-link to step 03 input
+        self._step_panels["02"].dirs_changed.connect(self._on_step02_dirs_changed)
 
         # Step 01 output folder changes → refresh downstream path labels
         self._step_panels["01"].dirs_changed.connect(self._on_step01_dirs_changed)
 
         # Step 03 folder changes → refresh downstream path labels immediately
         self._step_panels["03"].dirs_changed.connect(self._on_step03_dirs_changed)
+
+        # Step 04 TIF input change → refresh step 05+ path labels
+        self._step_panels["04"].dirs_changed.connect(self._on_step04_dirs_changed)
 
         right_splitter.addWidget(self._stack)
 
@@ -431,9 +433,10 @@ class MainWindow(QMainWindow):
                     lambda _checked, sid=step_id: self._advance_to_next(sid)
                 )
 
-        self._step_panels["02"].completed.connect(lambda: self._show_panel("03"))
+        self._step_panels["02"].dirs_changed.connect(self._on_step02_dirs_changed)
         self._step_panels["01"].dirs_changed.connect(self._on_step01_dirs_changed)
         self._step_panels["03"].dirs_changed.connect(self._on_step03_dirs_changed)
+        self._step_panels["04"].dirs_changed.connect(self._on_step04_dirs_changed)
 
         # Restore session data into all new panels from in-memory data
         # (do NOT call load_session() here — that would re-read the disk and
@@ -500,7 +503,7 @@ class MainWindow(QMainWindow):
                 self._enabled_steps["09"] = False
 
         # Load step panels that use load_session() to populate derived folder fields
-        for sid in ("01", "03", "04", "05", "06", "07", "08", "09", "10"):
+        for sid in ("01", "02", "03", "04", "05", "06", "07", "08", "09", "10"):
             panel = self._step_panels.get(sid)
             if panel and hasattr(panel, "load_session"):
                 panel.load_session(self._session_data)
@@ -579,14 +582,56 @@ class MainWindow(QMainWindow):
 
     # ── Step execution ────────────────────────────────────────────────────────
 
+    def _on_step02_dirs_changed(self) -> None:
+        """Auto-link Step 2 SER/output dirs to session and all downstream steps."""
+        updates = self._step_panels["02"].get_config_updates()
+        step02_ser = updates.get("step02_ser_dir", "")
+        step02_out = updates.get("step02_output_dir", "")
+        if step02_ser:
+            self._session_data["step02_ser_dir"] = step02_ser
+        if step02_out:
+            self._session_data["step02_output_dir"] = step02_out
+            self._session_data["input_dir"] = step02_out
+            # All step outputs are siblings of step02 output under the same base dir
+            new_output_dir = str(Path(step02_out).parent)
+            self._session_data["output_dir"] = new_output_dir
+            self._output_dir_label.setText(S("label.output", d=new_output_dir))
+            # Clear stale step03 saved path so it re-derives from new output_dir
+            self._session_data["step03_output_dir"] = ""
+        # Cascade to all downstream steps regardless of whether step02_out changed
+        for sid in ("03", "04", "05", "06", "07", "08", "09", "10"):
+            dep = self._step_panels.get(sid)
+            if dep and hasattr(dep, "load_session"):
+                dep.load_session(self._session_data)
+
     def _on_step01_dirs_changed(self) -> None:
         """Refresh output_dir and all dependent panels when Step 1 output changes."""
         updates = self._step_panels["01"].get_config_updates()
         new_output_dir = updates.get("output_dir", "")
         if new_output_dir:
+            self._session_data["ser_input_dir"]     = updates.get("ser_input_dir", "")
             self._session_data["output_dir"]        = new_output_dir
             self._session_data["step01_output_dir"] = updates.get("step01_output_dir", "")
+            # Clear stale downstream saved paths so panels re-derive from the new base.
+            self._session_data["step02_ser_dir"]    = ""
+            self._session_data["step02_output_dir"] = ""
+            self._session_data["step03_output_dir"] = ""
+            # NOTE: do NOT clear input_dir here — it is set below after step02 derives
+            # its output, so that step03+ can see the correct TIF input path.
             self._output_dir_label.setText(S("label.output", d=new_output_dir))
+
+            # 1) Load step02 first so it re-derives its output from the new step01 result.
+            panel02 = self._step_panels.get("02")
+            if panel02 and hasattr(panel02, "load_session"):
+                panel02.load_session(self._session_data)
+                # Propagate step02's freshly derived output into session as input_dir
+                # so that step03 (and beyond) see the correct TIF source path.
+                upd02 = panel02.get_config_updates()
+                step02_out = upd02.get("step02_output_dir", "")
+                self._session_data["step02_output_dir"] = step02_out
+                self._session_data["input_dir"]         = step02_out
+
+            # 2) Load step03-10 with updated session (input_dir now reflects step02 output).
             for sid in ("03", "04", "05", "06", "07", "08", "09", "10"):
                 dep = self._step_panels.get(sid)
                 if dep and hasattr(dep, "load_session"):
@@ -604,6 +649,17 @@ class MainWindow(QMainWindow):
         self._session_data["output_dir"]        = updates.get("output_dir", "")
         self._session_data["step03_output_dir"] = updates.get("step03_output_dir", "")
         for sid in ("04", "05", "06", "07", "08", "09", "10"):
+            dep = self._step_panels.get(sid)
+            if dep and hasattr(dep, "load_session"):
+                dep.load_session(self._session_data)
+
+    def _on_step04_dirs_changed(self) -> None:
+        """Propagate Step 4 TIF input change to step 05+ when user edits it manually."""
+        updates = self._step_panels["04"].get_config_updates()
+        inp = updates.get("input_dir", "")
+        if inp:
+            self._session_data["input_dir"] = inp
+        for sid in ("05", "06", "07", "08", "09", "10"):
             dep = self._step_panels.get(sid)
             if dep and hasattr(dep, "load_session"):
                 dep.load_session(self._session_data)
@@ -746,6 +802,27 @@ class MainWindow(QMainWindow):
         if ok:
             if results is not None:
                 self._results[step_id] = results
+            # After step 02 completes, link output dir to all downstream steps.
+            if step_id == "02":
+                panel02 = self._step_panels.get("02")
+                if panel02 and hasattr(panel02, "get_config_updates"):
+                    upd = panel02.get_config_updates()
+                    ser = upd.get("step02_ser_dir", "")
+                    out = upd.get("step02_output_dir", "")
+                    if ser:
+                        self._session_data["step02_ser_dir"] = ser
+                    if out:
+                        self._session_data["step02_output_dir"] = out
+                        self._session_data["input_dir"] = out
+                        new_output_dir = str(Path(out).parent)
+                        self._session_data["output_dir"] = new_output_dir
+                        self._output_dir_label.setText(S("label.output", d=new_output_dir))
+                        # Clear stale step03 saved path so it re-derives
+                        self._session_data["step03_output_dir"] = ""
+                for sid in ("03", "04", "05", "06", "07", "08", "09", "10"):
+                    dep = self._step_panels.get(sid)
+                    if dep and hasattr(dep, "load_session"):
+                        dep.load_session(self._session_data)
             # After step 03 completes, refresh dependent panels so their
             # auto-derived path labels reflect the updated input/output dirs.
             if step_id == "03":
@@ -753,6 +830,12 @@ class MainWindow(QMainWindow):
                     dep = self._step_panels.get(sid)
                     if dep and hasattr(dep, "load_session"):
                         dep.load_session(self._session_data)
+            # After step 04 completes, refresh step 05 so the sweep button
+            # activates immediately (quality dir now exists on disk).
+            if step_id == "04":
+                dep = self._step_panels.get("05")
+                if dep and hasattr(dep, "load_session"):
+                    dep.load_session(self._session_data)
             # After step 05 completes, refresh step 06 so its wavelet preview
             # picks up the newly created step05_derotated/ directory.
             if step_id == "05":
@@ -778,12 +861,27 @@ class MainWindow(QMainWindow):
         output_dir = Path(d.get("output_dir", "") or ".")
         step01_out_raw = d.get("step01_output_dir", "")
         step01_out = Path(step01_out_raw) if step01_out_raw else None
+        step02_ser_raw = d.get("step02_ser_dir", "")
+        step02_ser = Path(step02_ser_raw) if step02_ser_raw else None
+        step02_out_raw = d.get("step02_output_dir", "")
+        step02_out = Path(step02_out_raw) if step02_out_raw else None
         step03_out_raw = d.get("step03_output_dir", "")
         step03_out = Path(step03_out_raw) if step03_out_raw else None
+
+        # Global core limit: 0 = auto.  Step 1 caps at 4; Step 2 uses the full value.
+        _global_workers = int(d.get("global_max_workers", 0))
+
+        lucky_stack = LuckyStackConfig(
+            top_percent  = float(d.get("lucky_top_percent", 0.25)),
+            ap_size      = int(d.get("lucky_ap_size", 64)),
+            n_iterations = int(d.get("lucky_n_iterations", 2)),
+            n_workers    = _global_workers,   # Step 2 uses all available cores
+        )
 
         pipp = PippConfig(
             roi_size     = int(d.get("roi_size", 448)),
             min_diameter = int(d.get("min_diameter", 50)),
+            n_workers    = _global_workers,   # step01_pipp.py caps at 4 internally
         )
 
         wavelet = WaveletConfig(
@@ -894,8 +992,11 @@ class MainWindow(QMainWindow):
             input_dir         = input_dir,
             output_base_dir   = output_dir,
             step01_output_dir = step01_out,
+            step02_ser_dir    = step02_ser,
+            step02_output_dir = step02_out,
             step03_output_dir = step03_out,
             pipp            = pipp,
+            lucky_stack     = lucky_stack,
             wavelet         = wavelet,
             quality         = quality,
             derotation      = derotation,

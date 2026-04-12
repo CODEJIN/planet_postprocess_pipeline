@@ -319,9 +319,13 @@ class _Step08MonoWidget(QWidget):
 
     def load_session(self, data: dict[str, Any]) -> None:
         out = data.get("output_dir", "")
+        input_dir = data.get("input_dir", "")
+        if input_dir:
+            self._input_lbl.setText(input_dir)
+        elif out:
+            self._input_lbl.setText(str(Path(out) / "step02_lucky_stack"))
         if out:
             p = Path(out)
-            self._input_lbl.setText(str(p / "step03_wavelet_preview"))
             self._output_lbl.setText(str(p / "step08_series"))
             self._output_dir = p
         self._global_normalize.setChecked(bool(data.get("global_filter_normalize", True)))

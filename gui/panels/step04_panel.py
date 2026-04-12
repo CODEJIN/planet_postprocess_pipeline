@@ -4,13 +4,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QSpinBox,
     QWidget,
 )
@@ -39,6 +42,43 @@ _READONLY_STYLE = (
     "QLineEdit { background: #2a2a2a; color: #888; border: 1px solid #3a3a3a;"
     " border-radius: 3px; padding: 3px 6px; }"
 )
+_INPUT_STYLE = (
+    "QLineEdit { background: #3c3c3c; color: #d4d4d4; border: 1px solid #555;"
+    " border-radius: 3px; padding: 3px 6px; }"
+    "QLineEdit:focus { border-color: #4da6ff; }"
+)
+_INPUT_EMPTY_STYLE = (
+    "QLineEdit { background: #3c2020; color: #d4d4d4; border: 1px solid #884444;"
+    " border-radius: 3px; padding: 3px 6px; }"
+    "QLineEdit:focus { border-color: #ff6666; }"
+)
+_BTN_BROWSE = (
+    "QPushButton { background: #3c3c3c; color: #aaa; border: 1px solid #555;"
+    " border-radius: 3px; padding: 3px 8px; }"
+    "QPushButton:hover { background: #4a4a4a; color: #d4d4d4; }"
+)
+
+
+def _dir_row(parent: QWidget, line_edit: QLineEdit) -> QHBoxLayout:
+    row = QHBoxLayout()
+    row.setSpacing(4)
+    row.addWidget(line_edit)
+    btn = QPushButton("찾아보기")
+    btn.setFixedWidth(70)
+    btn.setStyleSheet(_BTN_BROWSE)
+
+    def _browse() -> None:
+        current = line_edit.text().strip()
+        folder = QFileDialog.getExistingDirectory(
+            parent, "폴더 선택", current or str(Path.home())
+        )
+        if folder:
+            line_edit.setText(folder)
+            line_edit.editingFinished.emit()
+
+    btn.clicked.connect(_browse)
+    row.addWidget(btn)
+    return row
 
 
 class Step04Panel(BasePanel):
@@ -46,6 +86,9 @@ class Step04Panel(BasePanel):
     TITLE_KEY = "step04.title"
     DESC_KEY  = "step04.desc"
     OPTIONAL  = False
+
+    # Emitted on editingFinished so downstream panels (05+) refresh immediately.
+    dirs_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         self._output_dir: Path | None = None
@@ -61,16 +104,19 @@ class Step04Panel(BasePanel):
         fl.setContentsMargins(0, 0, 0, 0)
         fl.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        # Folder display (auto-derived, read-only)
+        # TIF input dir (editable — user can override cascade value)
         self._input_lbl = QLineEdit()
-        self._input_lbl.setReadOnly(True)
-        self._input_lbl.setStyleSheet(_READONLY_STYLE)
+        self._input_lbl.setStyleSheet(_INPUT_EMPTY_STYLE)
+        self._input_lbl.setPlaceholderText("Lucky Stacking TIF 폴더")
+        self._input_lbl.textChanged.connect(self._on_input_changed)
+        self._input_lbl.editingFinished.connect(self.dirs_changed)
         lbl_in = QLabel(S("step04.input_dir"))
         lbl_in.setToolTip(
             "Step 4가 품질을 평가할 TIF 파일 폴더입니다.\n"
-            "Step 3의 입력 폴더와 동일한 AS!4 출력 폴더를 사용합니다."
+            "Step 2 Lucky Stacking 출력 폴더와 동일합니다.\n"
+            "cascade로 자동 설정되지만 직접 변경할 수 있습니다."
         )
-        fl.addRow(lbl_in, self._input_lbl)
+        fl.addRow(lbl_in, _dir_row(self, self._input_lbl))
 
         self._output_lbl = QLineEdit()
         self._output_lbl.setReadOnly(True)
@@ -175,6 +221,7 @@ class Step04Panel(BasePanel):
 
     def get_config_updates(self) -> dict[str, Any]:
         return {
+            "input_dir":                self._input_lbl.text().strip(),
             "window_frames":            self._window_frames.value(),
             "cycle_seconds":            self._cycle_seconds.value(),
             "n_windows":                self._n_windows.value(),
@@ -185,8 +232,10 @@ class Step04Panel(BasePanel):
     def load_session(self, data: dict[str, Any]) -> None:
         inp = data.get("input_dir", "")
         out = data.get("output_dir", "")
-        if inp:
-            self._input_lbl.setText(inp)
+        self._input_lbl.blockSignals(True)
+        self._input_lbl.setText(inp)
+        self._input_lbl.blockSignals(False)
+        self._update_input_style(inp)
         if out:
             self._output_lbl.setText(str(Path(out) / "step04_quality"))
 
@@ -225,6 +274,17 @@ class Step04Panel(BasePanel):
         mq = data.get("min_quality_threshold_04",
                       data.get("top_fraction", 0.05))
         self._min_quality.setValue(float(mq))
+
+    # ── Slots ─────────────────────────────────────────────────────────────────
+
+    def _on_input_changed(self, text: str) -> None:
+        self._update_input_style(text)
+
+    def _update_input_style(self, text: str) -> None:
+        if text.strip():
+            self._input_lbl.setStyleSheet(_INPUT_STYLE)
+        else:
+            self._input_lbl.setStyleSheet(_INPUT_EMPTY_STYLE)
 
     def output_paths(self) -> list[Path]:
         if self._output_dir is None:

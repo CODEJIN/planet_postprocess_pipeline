@@ -1,6 +1,7 @@
 """Global settings panel — not a step panel, does NOT extend BasePanel."""
 from __future__ import annotations
 
+import multiprocessing as _mp
 from typing import Any
 
 from PySide6.QtCore import Qt
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -238,6 +240,37 @@ class SettingsPanel(QWidget):
         self._lang_combo.addItem("English", "en")
         fl.addRow(_lbl(S("settings.language"), _tip_lang), self._lang_combo)
 
+        # ── Performance ───────────────────────────────────────────────────────
+        _sep2 = QFrame()
+        _sep2.setFrameShape(QFrame.Shape.HLine)
+        _sep2.setStyleSheet("color: #444;")
+        fl.addRow(_sep2)
+
+        _cpu_n = _mp.cpu_count() or 1
+        _tip_wk = (
+            f"파이프라인에서 사용할 최대 CPU 코어 수입니다.\n"
+            f"현재 시스템: {_cpu_n}개 논리 코어\n\n"
+            f"• Step 1 (PIPP): 최대 4개 코어 — I/O 병목으로 그 이상은 무의미\n"
+            f"• Step 2 (Lucky Stack): 지정한 전체 코어 사용\n\n"
+            f"자동 = Step 1: min(4, 전체코어), Step 2: 전체코어"
+        )
+        self._max_workers = QSpinBox()
+        self._max_workers.setStyleSheet(
+            "QSpinBox { background: #3c3c3c; color: #d4d4d4; border: 1px solid #555;"
+            " border-radius: 3px; padding: 3px 6px; }"
+            "QSpinBox:focus { border-color: #4da6ff; }"
+        )
+        self._max_workers.setRange(0, _cpu_n)
+        self._max_workers.setValue(0)
+        self._max_workers.setFixedWidth(100)
+        self._max_workers.setSpecialValueText(f"자동 ({_cpu_n}코어)")
+        self._max_workers.setToolTip(_tip_wk)
+        wk_row = QHBoxLayout()
+        wk_row.setSpacing(4)
+        wk_row.addWidget(self._max_workers)
+        wk_row.addStretch()
+        fl.addRow(_lbl(S("settings.max_workers"), _tip_wk), wk_row)
+
         scroll.setWidget(form_container)
         root.addWidget(scroll, 1)
 
@@ -306,13 +339,14 @@ class SettingsPanel(QWidget):
         lang_idx    = self._lang_combo.currentIndex()
         language    = self._lang_combo.itemData(lang_idx) or "ko"
         return {
-            "planet":          planet,
-            "target":          self._target.text().strip(),
-            "horizons_id":     self._horizons_id.text().strip(),
-            "rotation_period": self._rotation_period.value(),
-            "filters":         self._filters.text().strip(),
-            "camera_mode":     camera_mode,
-            "language":        language,
+            "planet":             planet,
+            "target":             self._target.text().strip(),
+            "horizons_id":        self._horizons_id.text().strip(),
+            "rotation_period":    self._rotation_period.value(),
+            "filters":            self._filters.text().strip(),
+            "camera_mode":        camera_mode,
+            "language":           language,
+            "global_max_workers": self._max_workers.value(),
         }
 
     def load_session(self, data: dict[str, Any]) -> None:
@@ -340,6 +374,8 @@ class SettingsPanel(QWidget):
             if self._lang_combo.itemData(i) == lang:
                 self._lang_combo.setCurrentIndex(i)
                 break
+
+        self._max_workers.setValue(int(data.get("global_max_workers", 0)))
 
     def retranslate(self) -> None:
         """Update widget texts after a runtime language change."""

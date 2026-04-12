@@ -238,10 +238,21 @@ class Step05Panel(BasePanel):
         self._input_lbl.setStyleSheet(_READONLY_STYLE)
         lbl_in = QLabel(S("step05.input_dir"))
         lbl_in.setToolTip(
-            "Step 4와 동일한 AS!4 TIF 폴더를 입력으로 사용합니다.\n"
-            "Step 3에서 설정한 입력 폴더가 자동으로 사용됩니다."
+            "Step 2 Lucky Stacking 출력 TIF 폴더입니다.\n"
+            "cascade로 자동 설정됩니다."
         )
         fl.addRow(lbl_in, self._input_lbl)
+
+        self._quality_lbl = QLineEdit()
+        self._quality_lbl.setReadOnly(True)
+        self._quality_lbl.setStyleSheet(_READONLY_STYLE)
+        lbl_q = QLabel(S("step05.quality_dir"))
+        lbl_q.setToolTip(
+            "Step 4가 생성한 품질 점수 CSV 파일이 있는 폴더입니다.\n"
+            "Step 4 완료 후 자동으로 설정됩니다.\n"
+            "이 폴더가 있어야 '최적값 자동탐색' 버튼이 활성화됩니다."
+        )
+        fl.addRow(lbl_q, self._quality_lbl)
 
         self._output_lbl = QLineEdit()
         self._output_lbl.setReadOnly(True)
@@ -357,8 +368,11 @@ class Step05Panel(BasePanel):
             self._input_lbl.setText(inp)
             self._input_dir = Path(inp)
         if out:
-            self._output_lbl.setText(str(Path(out) / "step05_derotated"))
-            self._output_dir = Path(out)
+            p = Path(out)
+            if hasattr(self, "_quality_lbl"):
+                self._quality_lbl.setText(str(p / "step04_quality"))
+            self._output_lbl.setText(str(p / "step05_derotated"))
+            self._output_dir = p
 
         # Store for sweep worker
         filters_str = data.get("filters", "IR,R,G,B,CH4")

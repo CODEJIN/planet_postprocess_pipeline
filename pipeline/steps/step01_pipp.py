@@ -34,6 +34,9 @@ Return value::
 """
 from __future__ import annotations
 
+import multiprocessing as _mp
+import threading as _threading
+from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor, as_completed as _as_completed
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -66,33 +69,68 @@ def run(config: PipelineConfig, progress_callback=None) -> Dict[str, Dict]:
         out_dir.mkdir(parents=True, exist_ok=True)
         print(f"  Output → {out_dir}")
 
-    print(f"  Found {len(ser_files)} SER file(s) in {ser_dir}")
+    n_files = len(ser_files)
+    print(f"  Found {n_files} SER file(s) in {ser_dir}")
 
-    # Pre-read frame counts so we can report cumulative progress
-    frame_counts: List[int] = []
-    if progress_callback is not None:
-        for sp in ser_files:
-            try:
-                r = ser_io.SERReader(sp)
-                frame_counts.append(r.header["FrameCount"])
-                r.close()
-            except Exception:
-                frame_counts.append(0)
-        total_frames = sum(frame_counts)
-    else:
-        total_frames = 0
+    # ── Worker count: cap at 4 to avoid disk I/O contention ──────────────────
+    _cfg_workers = int(getattr(config.pipp, "n_workers", 0))
+    _cpu         = _mp.cpu_count() or 1
+    _step1_max   = min(4, _cfg_workers if _cfg_workers > 0 else _cpu)
+    _step1_max   = max(1, _step1_max)
 
     results: Dict[str, Dict] = {}
-    frames_offset = 0
-    for idx, ser_path in enumerate(ser_files):
-        result = _process_one(
-            ser_path, out_dir, config,
-            progress_callback=progress_callback,
-            frames_offset=frames_offset,
-            total_frames=total_frames,
-        )
-        results[ser_path.stem] = result
-        frames_offset += frame_counts[idx] if progress_callback else 0
+
+    if _step1_max == 1 or n_files == 1:
+        # ── Sequential path (original behaviour) ─────────────────────────────
+        frame_counts: List[int] = []
+        if progress_callback is not None:
+            for sp in ser_files:
+                try:
+                    r = ser_io.SERReader(sp)
+                    frame_counts.append(r.header["FrameCount"])
+                    r.close()
+                except Exception:
+                    frame_counts.append(0)
+            total_frames = sum(frame_counts)
+        else:
+            total_frames = 0
+
+        frames_offset = 0
+        for idx, ser_path in enumerate(ser_files):
+            result = _process_one(
+                ser_path, out_dir, config,
+                progress_callback=progress_callback,
+                frames_offset=frames_offset,
+                total_frames=total_frames,
+            )
+            results[ser_path.stem] = result
+            frames_offset += frame_counts[idx] if progress_callback else 0
+
+    else:
+        # ── Parallel path: up to _step1_max files simultaneously ─────────────
+        print(f"  [Step1] Parallel mode: {_step1_max} workers", flush=True)
+        _lock      = _threading.Lock()
+        _completed = [0]
+
+        def _run_one(ser_path: Path):
+            result = _process_one(
+                ser_path, out_dir, config,
+                progress_callback=None,   # suppress per-frame progress in parallel
+                frames_offset=0,
+                total_frames=0,
+            )
+            with _lock:
+                _completed[0] += 1
+                done = _completed[0]
+            if progress_callback is not None:
+                progress_callback(done, n_files)
+            return ser_path.stem, result
+
+        with _ThreadPoolExecutor(max_workers=_step1_max) as executor:
+            futs = [executor.submit(_run_one, sp) for sp in ser_files]
+            for fut in _as_completed(futs):
+                stem, result = fut.result()
+                results[stem] = result
 
     total_in  = sum(r["input_frames"]    for r in results.values())
     total_out = sum(r["accepted_frames"] for r in results.values())

@@ -53,6 +53,7 @@ def _import_steps():
     """Lazy-import step modules (avoids startup cost)."""
     from pipeline.steps import (
         step01_pipp,
+        step02_lucky_stack,
         step03_wavelet_sharpen,
         step04_quality_assess,
         step05_derotate_stack,
@@ -64,6 +65,7 @@ def _import_steps():
     )
     return {
         "01": step01_pipp,
+        "02": step02_lucky_stack,
         "03": step03_wavelet_sharpen,
         "04": step04_quality_assess,
         "05": step05_derotate_stack,
@@ -165,6 +167,8 @@ class StepRunner(QThread):
 
             if step_id == "01":
                 r = mods["01"].run(cfg, progress_callback=pcb)
+            elif step_id == "02":
+                r = mods["02"].run(cfg, progress_callback=pcb)
             elif step_id == "03":
                 r = mods["03"].run(cfg, progress_callback=pcb)
             elif step_id == "04":

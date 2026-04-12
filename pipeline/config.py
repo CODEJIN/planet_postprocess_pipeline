@@ -368,6 +368,10 @@ class LuckyStackConfig:
     # 1 = single pass (fast); 2 = one refinement pass (recommended).
     n_iterations: int = 2
 
+    # Parallelism: number of CPU workers for the frame stacking loop.
+    # 0 = auto (all logical cores); 1 = single-threaded (no fork overhead).
+    n_workers: int = 0
+
     # Experimental — see docstring
     intra_video_derotate: bool = False
 
@@ -394,6 +398,10 @@ class PippConfig:
     window_size: int = 100
     aspect_ratio_limit: float = 0.2
     straight_edge_limit: float = 0.5
+    # Parallel file processing: number of SER files processed simultaneously.
+    # Capped at 4 in step01_pipp.py regardless of this value (I/O contention).
+    # 0 = auto (min(4, cpu_count)); 1 = sequential.
+    n_workers: int = 0
 
 
 # ── Top-level pipeline config ─────────────────────────────────────────────────
@@ -406,6 +414,8 @@ class PipelineConfig:
     output_base_dir: Path = field(default_factory=lambda: Path("/data/astro_test/output"))
     # When set, step01_pipp writes here instead of output_base_dir/step01_pipp/
     step01_output_dir: Optional[Path] = None
+    # When set, step02 reads SER files from here (GUI panel choice, highest priority)
+    step02_ser_dir: Optional[Path] = None
     # When set, step02_lucky_stack writes here instead of output_base_dir/step02_lucky_stack/
     step02_output_dir: Optional[Path] = None
     # When set, step03 writes here instead of output_base_dir/step03_wavelet_preview/
