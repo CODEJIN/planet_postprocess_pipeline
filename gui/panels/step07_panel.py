@@ -140,25 +140,21 @@ class Step07Panel(BasePanel):
         self._input_lbl.setReadOnly(True)
         self._input_lbl.setStyleSheet(_READONLY_STYLE)
         lbl_in = QLabel(S("step07.input_dir"))
-        lbl_in.setToolTip("Step 2 Lucky Stacking 출력 TIF 폴더 (자동 설정)")
+        lbl_in.setToolTip(S("step07.input_dir.tooltip"))
         fl.addRow(lbl_in, self._input_lbl)
 
         self._output_lbl = QLineEdit()
         self._output_lbl.setReadOnly(True)
         self._output_lbl.setStyleSheet(_READONLY_STYLE)
         lbl_out = QLabel(S("step07.output_dir"))
-        lbl_out.setToolTip("웨이블릿 미리보기 PNG가 저장될 폴더 (자동 설정)")
+        lbl_out.setToolTip(S("step07.output_dir.tooltip"))
         fl.addRow(lbl_out, self._output_lbl)
         left_layout.addWidget(folder_widget)
 
         # Wavelet amounts label
         amounts_label = QLabel(S("step07.amounts"))
         amounts_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        amounts_label.setToolTip(
-            "L1~L6은 웨이블릿 분해 레이어의 선명화 강도입니다.\n"
-            "L1 = 가장 미세한 디테일, L6 = 가장 큰 구조.\n"
-            "행성 촬영에는 L1~L3만 활성화하는 것을 권장합니다."
-        )
+        amounts_label.setToolTip(S("step07.amounts.tooltip"))
         left_layout.addWidget(amounts_label)
 
         # Slider rows — on_change triggers debounced preview update
@@ -197,10 +193,7 @@ class Step07Panel(BasePanel):
         self._border_taper.setSingleStep(5)
         self._border_taper.setValue(0)
         lbl_taper = QLabel(S("step07.border_taper"))
-        lbl_taper.setToolTip(
-            "이미지 가장자리에 부드러운 경계를 적용합니다.\n"
-            "0 = 비활성 (권장). 링잉 아티팩트가 심할 때만 사용하세요."
-        )
+        lbl_taper.setToolTip(S("step07.border_taper.tooltip"))
         taper_form.addRow(lbl_taper, self._border_taper)
         left_layout.addWidget(taper_widget)
         left_layout.addStretch()

@@ -237,63 +237,33 @@ class Step04Panel(BasePanel):
         self._input_lbl.setReadOnly(True)
         self._input_lbl.setStyleSheet(_READONLY_STYLE)
         lbl_in = QLabel(S("step04.input_dir"))
-        lbl_in.setToolTip(
-            "Step 2 Lucky Stacking 출력 TIF 폴더입니다.\n"
-            "cascade로 자동 설정됩니다."
-        )
+        lbl_in.setToolTip(S("step04.input_dir.tooltip"))
         fl.addRow(lbl_in, self._input_lbl)
 
         self._quality_lbl = QLineEdit()
         self._quality_lbl.setReadOnly(True)
         self._quality_lbl.setStyleSheet(_READONLY_STYLE)
         lbl_q = QLabel(S("step04.quality_dir"))
-        lbl_q.setToolTip(
-            "Step 3가 생성한 품질 점수 CSV 파일이 있는 폴더입니다.\n"
-            "Step 3 완료 후 자동으로 설정됩니다.\n"
-            "이 폴더가 있어야 '최적값 자동탐색' 버튼이 활성화됩니다."
-        )
+        lbl_q.setToolTip(S("step04.quality_dir.tooltip"))
         fl.addRow(lbl_q, self._quality_lbl)
 
         self._output_lbl = QLineEdit()
         self._output_lbl.setReadOnly(True)
         self._output_lbl.setStyleSheet(_READONLY_STYLE)
         lbl_out = QLabel(S("step04.output_dir"))
-        lbl_out.setToolTip(
-            "De-rotation 스태킹된 TIF 마스터 이미지가 저장될 폴더입니다.\n"
-            "자동으로 설정됩니다."
-        )
+        lbl_out.setToolTip(S("step04.output_dir.tooltip"))
         fl.addRow(lbl_out, self._output_lbl)
 
         # Warp scale
-        _tip_warp = (
-            "De-rotation 워프의 강도 계수입니다.\n"
-            "\n"
-            "【원리】\n"
-            "행성은 구체이므로 같은 자전각도라도 원반 중심부(지구 방향)\n"
-            "는 많이 이동하고, 가장자리(시선 수직 방향)는 거의 안 움직입니다.\n"
-            "이 깊이(depth)에 비례한 위치별 보정이 구면 워프입니다.\n"
-            "  drift(x,y) = warp_scale × Δλ × depth(x,y)\n"
-            "\n"
-            "【값의 의미】\n"
-            "0.0 = 보정 없음 (모든 픽셀에 동일한 이동, WinJUPOS 방식)\n"
-            "1.0 = 이론적 완전 구체 보정\n"
-            "0.8 = 실험 최적값 (목성, 일반 시잉 조건)\n"
-            "\n"
-            "【조절이 의미 있는 경우】\n"
-            "· 시잉이 매우 좋은 날 → 1.0~1.2 시도\n"
-            "· 합성 후 동·서 limb 근처에서 필터 간 색수차가 심하면\n"
-            "  0.6~0.9 범위에서 줄여보세요\n"
-            "· 시잉이 나쁜 날은 어떤 값이든 결과 차이가 거의 없습니다"
-        )
         self._warp_scale = QDoubleSpinBox()
         self._warp_scale.setStyleSheet(_SPINBOX_STYLE)
         self._warp_scale.setRange(0.0, 2.0)
         self._warp_scale.setDecimals(2)
         self._warp_scale.setSingleStep(0.01)
         self._warp_scale.setValue(0.80)
-        self._warp_scale.setToolTip(_tip_warp)
+        self._warp_scale.setToolTip(S("step04.warp_scale.tooltip"))
         lbl_warp = QLabel(S("step04.warp_scale"))
-        lbl_warp.setToolTip(_tip_warp)
+        lbl_warp.setToolTip(S("step04.warp_scale.tooltip"))
         fl.addRow(lbl_warp, self._warp_scale)
 
         # ── Auto-sweep button row ─────────────────────────────────────────────
@@ -306,11 +276,7 @@ class Step04Panel(BasePanel):
         self._sweep_btn = QPushButton(S("step04.sweep_btn"))
         self._sweep_btn.setStyleSheet(_BTN_STYLE)
         self._sweep_btn.setFixedWidth(130)
-        self._sweep_btn.setToolTip(
-            "현재 Step 3 데이터를 바탕으로 스택 선명도가 최대가 되는\n"
-            "warp_scale 값을 자동으로 탐색합니다.\n"
-            "약 2~4초 소요. Step 3이 완료되어 있어야 합니다."
-        )
+        self._sweep_btn.setToolTip(S("step04.sweep_btn.tooltip"))
         self._sweep_btn.clicked.connect(self._on_sweep_clicked)
 
         self._sweep_result = QLabel("")
@@ -323,32 +289,24 @@ class Step04Panel(BasePanel):
         fl.addRow("", sweep_widget)
 
         # Min quality threshold
-        _tip_mq = (
-            "이 값 이하의 품질 점수를 가진 프레임은 스태킹에서 제외됩니다.\n"
-            "0.0 = 모든 프레임 포함. 나쁜 날씨 시 0.3~0.5로 올려보세요."
-        )
         self._min_quality = QDoubleSpinBox()
         self._min_quality.setStyleSheet(_SPINBOX_STYLE)
         self._min_quality.setRange(0.0, 1.0)
         self._min_quality.setDecimals(2)
         self._min_quality.setSingleStep(0.05)
         self._min_quality.setValue(0.05)
-        self._min_quality.setToolTip(_tip_mq)
+        self._min_quality.setToolTip(S("step04.min_quality.tooltip"))
         lbl_mq = QLabel(S("step04.min_quality"))
-        lbl_mq.setToolTip(_tip_mq)
+        lbl_mq.setToolTip(S("step04.min_quality.tooltip"))
         fl.addRow(lbl_mq, self._min_quality)
 
         # Normalize brightness
-        _tip_norm = (
-            "스태킹 전 각 프레임의 밝기를 정규화합니다.\n"
-            "시잉 변화로 인한 밝기 차이가 큰 경우 활성화하세요."
-        )
         self._normalize = QCheckBox()
         self._normalize.setStyleSheet(_CHECK_STYLE)
         self._normalize.setChecked(False)
-        self._normalize.setToolTip(_tip_norm)
+        self._normalize.setToolTip(S("step04.normalize.tooltip"))
         lbl_norm = QLabel(S("step04.normalize"))
-        lbl_norm.setToolTip(_tip_norm)
+        lbl_norm.setToolTip(S("step04.normalize.tooltip"))
         fl.addRow(lbl_norm, self._normalize)
 
         idx = self._form_layout.count() - 1

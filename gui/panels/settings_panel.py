@@ -130,71 +130,42 @@ class SettingsPanel(QWidget):
             return l
 
         # Planet preset
-        _tip_planet = (
-            "행성 프리셋을 선택하면 아래 목표명, Horizons ID,\n"
-            "자전 주기가 자동으로 설정됩니다."
-        )
         self._planet_combo = QComboBox()
         self._planet_combo.setStyleSheet(_COMBO_STYLE)
-        self._planet_combo.setToolTip(_tip_planet)
+        self._planet_combo.setToolTip(S("settings.planet.tooltip"))
         for pname in _PLANET_PRESETS:
             self._planet_combo.addItem(
                 S(f"settings.planet.{pname.lower()}") if pname != "Custom" else S("settings.planet.custom"),
                 pname,
             )
         self._planet_combo.currentIndexChanged.connect(self._on_planet_changed)
-        fl.addRow(_lbl(S("settings.planet"), _tip_planet), self._planet_combo)
+        fl.addRow(_lbl(S("settings.planet"), S("settings.planet.tooltip")), self._planet_combo)
 
         # Target
-        _tip_target = (
-            "파이프라인 내부에서 행성을 식별하는 짧은 이름입니다.\n"
-            "예: Jup (목성), Sat (토성), Mar (화성),\n"
-            "    Ura (천왕성), Nep (해왕성), Mer (수성), Ven (금성)\n"
-            "파일명 패턴 매칭에도 사용됩니다."
-        )
         self._target = QLineEdit()
         self._target.setStyleSheet(_INPUT_STYLE)
         self._target.setPlaceholderText("Jup")
-        self._target.setToolTip(_tip_target)
-        fl.addRow(_lbl(S("settings.target"), _tip_target), self._target)
+        self._target.setToolTip(S("settings.target.tooltip"))
+        fl.addRow(_lbl(S("settings.target"), S("settings.target.tooltip")), self._target)
 
         # Horizons ID
-        _tip_hor = (
-            "JPL Horizons의 천체 ID입니다.\n"
-            "목성=599, 토성=699, 화성=499\n"
-            "천왕성=799, 해왕성=899, 수성=199, 금성=299\n"
-            "Step 5에서 자동으로 북극 방향각(NP.ang)을 조회하는 데 사용됩니다."
-        )
         self._horizons_id = QLineEdit()
         self._horizons_id.setStyleSheet(_INPUT_STYLE)
         self._horizons_id.setPlaceholderText("599")
-        self._horizons_id.setToolTip(_tip_hor)
-        fl.addRow(_lbl(S("settings.horizons_id"), _tip_hor), self._horizons_id)
+        self._horizons_id.setToolTip(S("settings.horizons_id.tooltip"))
+        fl.addRow(_lbl(S("settings.horizons_id"), S("settings.horizons_id.tooltip")), self._horizons_id)
 
         # Rotation period
-        _tip_rot = (
-            "행성의 자전 주기(시간)입니다.\n"
-            "목성: 9.9281h  /  토성: 10.56h  /  화성: 24.6229h\n"
-            "천왕성: 17.24h  /  해왕성: 16.11h\n"
-            "수성: 1407.6h  /  금성: 5832.5h\n"
-            "De-rotation 보정의 핵심 파라미터입니다.\n"
-            "※ 수성·금성은 자전이 매우 느려 단일 관측 세션에서\n"
-            "  De-rotation 효과는 사실상 없습니다."
-        )
         self._rotation_period = QDoubleSpinBox()
         self._rotation_period.setStyleSheet(_SPINBOX_STYLE)
         self._rotation_period.setRange(0.1, 6000.0)
         self._rotation_period.setDecimals(4)
         self._rotation_period.setSingleStep(0.01)
         self._rotation_period.setValue(9.9281)
-        self._rotation_period.setToolTip(_tip_rot)
-        fl.addRow(_lbl(S("settings.rotation_period"), _tip_rot), self._rotation_period)
+        self._rotation_period.setToolTip(S("settings.rotation_period.tooltip"))
+        fl.addRow(_lbl(S("settings.rotation_period"), S("settings.rotation_period.tooltip")), self._rotation_period)
 
         # Camera mode (above filters so the user sees why filters is disabled)
-        _tip_cam = (
-            "모노 카메라: 필터별로 별도 영상을 촬영합니다. (기본)\n"
-            "컬러 카메라: 단일 Bayer RGB 영상 — 필터 목록이 자동으로 'COLOR'로 설정됩니다."
-        )
         mode_widget = QWidget()
         mode_widget.setStyleSheet("background: transparent;")
         mode_layout = QHBoxLayout(mode_widget)
@@ -205,40 +176,33 @@ class SettingsPanel(QWidget):
         self._radio_mono.setStyleSheet(f"color: {_TEXT_COLOR};")
         self._radio_color.setStyleSheet(f"color: {_TEXT_COLOR};")
         self._radio_mono.setChecked(True)
-        self._radio_mono.setToolTip(_tip_cam)
-        self._radio_color.setToolTip(_tip_cam)
+        self._radio_mono.setToolTip(S("settings.camera_mode.tooltip"))
+        self._radio_color.setToolTip(S("settings.camera_mode.tooltip"))
         self._camera_group = QButtonGroup(self)
         self._camera_group.addButton(self._radio_mono,  0)
         self._camera_group.addButton(self._radio_color, 1)
         mode_layout.addWidget(self._radio_mono)
         mode_layout.addWidget(self._radio_color)
         mode_layout.addStretch()
-        fl.addRow(_lbl(S("settings.camera_mode"), _tip_cam), mode_widget)
+        fl.addRow(_lbl(S("settings.camera_mode"), S("settings.camera_mode.tooltip")), mode_widget)
         # Connect AFTER adding to layout so _on_camera_changed can access self._filters
         self._radio_mono.toggled.connect(self._on_camera_changed)
 
         # Filters (below camera mode; auto-managed when color is selected)
-        _tip_fil = (
-            "사용하는 필터 목록을 쉼표로 구분하여 입력하세요.\n"
-            "예: IR,R,G,B,CH4\n"
-            "컬러 카메라 선택 시 자동으로 'COLOR'로 설정되고 비활성화됩니다.\n"
-            "여기서 입력한 순서대로 Step 7 채널 드롭다운에 표시됩니다."
-        )
         self._filters = QLineEdit()
         self._filters.setStyleSheet(_INPUT_STYLE)
         self._filters.setPlaceholderText("IR,R,G,B,CH4")
-        self._filters.setToolTip(_tip_fil)
-        self._filters_lbl = _lbl(S("settings.filters"), _tip_fil)
+        self._filters.setToolTip(S("settings.filters.tooltip"))
+        self._filters_lbl = _lbl(S("settings.filters"), S("settings.filters.tooltip"))
         fl.addRow(self._filters_lbl, self._filters)
 
         # Language
-        _tip_lang = "GUI 인터페이스 언어를 선택합니다.\n언어 변경은 재시작 후에 적용됩니다."
         self._lang_combo = QComboBox()
         self._lang_combo.setStyleSheet(_COMBO_STYLE)
-        self._lang_combo.setToolTip(_tip_lang)
+        self._lang_combo.setToolTip(S("settings.language.tooltip"))
         self._lang_combo.addItem("한국어", "ko")
         self._lang_combo.addItem("English", "en")
-        fl.addRow(_lbl(S("settings.language"), _tip_lang), self._lang_combo)
+        fl.addRow(_lbl(S("settings.language"), S("settings.language.tooltip")), self._lang_combo)
 
         # ── Performance ───────────────────────────────────────────────────────
         _sep2 = QFrame()
@@ -247,13 +211,7 @@ class SettingsPanel(QWidget):
         fl.addRow(_sep2)
 
         _cpu_n = _mp.cpu_count() or 1
-        _tip_wk = (
-            f"파이프라인에서 사용할 최대 CPU 코어 수입니다.\n"
-            f"현재 시스템: {_cpu_n}개 논리 코어\n\n"
-            f"• Step 1 (PIPP): 최대 4개 코어 — I/O 병목으로 그 이상은 무의미\n"
-            f"• Step 2 (Lucky Stack): 지정한 전체 코어 사용\n\n"
-            f"자동 = Step 1: min(4, 전체코어), Step 2: 전체코어"
-        )
+        _tip_wk = S("settings.max_workers.tooltip").format(n=_cpu_n)
         self._max_workers = QSpinBox()
         self._max_workers.setStyleSheet(
             "QSpinBox { background: #3c3c3c; color: #d4d4d4; border: 1px solid #555;"

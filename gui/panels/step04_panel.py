@@ -111,109 +111,68 @@ class Step03Panel(BasePanel):
         self._input_lbl.textChanged.connect(self._on_input_changed)
         self._input_lbl.editingFinished.connect(self.dirs_changed)
         lbl_in = QLabel(S("step03.input_dir"))
-        lbl_in.setToolTip(
-            "Step 3가 품질을 평가할 TIF 파일 폴더입니다.\n"
-            "Step 2 Lucky Stacking 출력 폴더와 동일합니다.\n"
-            "cascade로 자동 설정되지만 직접 변경할 수 있습니다."
-        )
+        lbl_in.setToolTip(S("step03.input_dir.tooltip"))
         fl.addRow(lbl_in, _dir_row(self, self._input_lbl))
 
         self._output_lbl = QLineEdit()
         self._output_lbl.setReadOnly(True)
         self._output_lbl.setStyleSheet(_READONLY_STYLE)
         lbl_out = QLabel(S("step03.output_dir"))
-        lbl_out.setToolTip(
-            "품질 점수 CSV, 윈도우 추천 JSON이 저장될 폴더입니다.\n"
-            "자동으로 설정됩니다."
-        )
+        lbl_out.setToolTip(S("step03.output_dir.tooltip"))
         fl.addRow(lbl_out, self._output_lbl)
 
         # Window frames
-        _tip_win = (
-            "De-rotation 윈도우의 프레임 수입니다.\n"
-            "1 프레임 = 필터 한 사이클(IR→R→G→B→CH4 한 바퀴) = Step 8의 프레임 단위와 동일\n"
-            "실제 윈도우 길이 = 프레임 수 × 필터 사이클 시간\n"
-            "예: 3프레임 × 225초 = 675초(약 11분)\n\n"
-            "이 구간에서 모든 필터의 품질 점수가 동시에 높은 윈도우를 찾습니다.\n"
-            "목성 권장: 2~4프레임 / 화성·토성: 3~6프레임"
-        )
         self._window_frames = QSpinBox()
         self._window_frames.setStyleSheet(_INT_SPINBOX_STYLE)
         self._window_frames.setRange(1, 20)
         self._window_frames.setSingleStep(1)
         self._window_frames.setValue(3)
-        self._window_frames.setToolTip(_tip_win)
+        self._window_frames.setToolTip(S("step03.window_frames.tooltip"))
         lbl_win = QLabel(S("step03.window_frames"))
-        lbl_win.setToolTip(_tip_win)
+        lbl_win.setToolTip(S("step03.window_frames.tooltip"))
         fl.addRow(lbl_win, self._window_frames)
 
         # Cycle seconds
-        _tip_cyc = (
-            "필터 한 사이클(IR→R→G→B→CH4→IR)에 걸리는 시간(초)입니다.\n"
-            "실제 촬영 패턴에 맞춰 입력하세요.\n"
-            "예: 45초 × 5필터 = 225초\n\n"
-            "이 값은 Step 4의 de-rotation 윈도우 길이 계산에만 사용됩니다.\n"
-            "Step 8의 사이클 시간은 Step 8 패널에서 별도로 설정합니다."
-        )
         self._cycle_seconds = QSpinBox()
         self._cycle_seconds.setStyleSheet(_INT_SPINBOX_STYLE)
         self._cycle_seconds.setRange(10, 600)
         self._cycle_seconds.setSingleStep(15)
         self._cycle_seconds.setValue(225)
-        self._cycle_seconds.setToolTip(_tip_cyc)
+        self._cycle_seconds.setToolTip(S("step03.cycle_seconds.tooltip"))
         self._lbl_cyc = QLabel(S("step03.cycle_seconds"))
-        self._lbl_cyc.setToolTip(_tip_cyc)
+        self._lbl_cyc.setToolTip(S("step03.cycle_seconds.tooltip"))
         fl.addRow(self._lbl_cyc, self._cycle_seconds)
 
         # n_windows
-        _tip_nwin = (
-            "찾을 최적 윈도우 개수입니다.\n"
-            "1 = 가장 좋은 윈도우 하나만 사용 (기본, Step 5 스태킹)\n"
-            "2~3 = 여러 윈도우를 찾아 Step 8 시계열 합성에 활용\n"
-            "단독 스태킹이 목적이면 1로 두세요."
-        )
         self._n_windows = QSpinBox()
         self._n_windows.setStyleSheet(_INT_SPINBOX_STYLE)
         self._n_windows.setRange(1, 10)
         self._n_windows.setSingleStep(1)
         self._n_windows.setValue(1)
-        self._n_windows.setToolTip(_tip_nwin)
+        self._n_windows.setToolTip(S("step03.n_windows.tooltip"))
         lbl_nwin = QLabel(S("step03.n_windows"))
-        lbl_nwin.setToolTip(_tip_nwin)
+        lbl_nwin.setToolTip(S("step03.n_windows.tooltip"))
         fl.addRow(lbl_nwin, self._n_windows)
 
         # Allow overlap checkbox
-        _tip_overlap = (
-            "체크 시: 여러 윈도우가 시간 범위를 겹칠 수 있습니다.\n"
-            "체크 해제 시: 각 윈도우는 서로 겹치지 않는 시간대에서 선택됩니다 (기본).\n\n"
-            "윈도우 개수 ≥ 2일 때만 의미가 있습니다.\n"
-            "비활성 상태(기본)에서는 시간적으로 고르게 분산된 윈도우를 찾습니다."
-        )
         self._allow_overlap = QCheckBox()
         self._allow_overlap.setStyleSheet(_CHECK_STYLE)
         self._allow_overlap.setChecked(False)
-        self._allow_overlap.setToolTip(_tip_overlap)
+        self._allow_overlap.setToolTip(S("step03.allow_overlap.tooltip"))
         lbl_overlap = QLabel(S("step03.allow_overlap"))
-        lbl_overlap.setToolTip(_tip_overlap)
+        lbl_overlap.setToolTip(S("step03.allow_overlap.tooltip"))
         fl.addRow(lbl_overlap, self._allow_overlap)
 
         # Min quality threshold
-        _tip_mq = (
-            "이 품질 점수 미만인 프레임을 윈도우 탐색에서 제외합니다.\n"
-            "0.0 = 전체 프레임 사용 (기본, 비활성)\n"
-            "0.2~0.3 = 명백히 나쁜 프레임(구름, 흔들림) 제거\n"
-            "너무 높게 설정하면 프레임 수가 부족해질 수 있습니다.\n"
-            "※ 스태킹 비율이 아닙니다 — Step 5에서 별도로 설정합니다."
-        )
         self._min_quality = QDoubleSpinBox()
         self._min_quality.setStyleSheet(_SPINBOX_STYLE)
         self._min_quality.setRange(0.0, 1.0)
         self._min_quality.setDecimals(2)
         self._min_quality.setSingleStep(0.05)
         self._min_quality.setValue(0.05)
-        self._min_quality.setToolTip(_tip_mq)
+        self._min_quality.setToolTip(S("step03.min_quality.tooltip"))
         lbl_mq = QLabel(S("step03.min_quality"))
-        lbl_mq.setToolTip(_tip_mq)
+        lbl_mq.setToolTip(S("step03.min_quality.tooltip"))
         fl.addRow(lbl_mq, self._min_quality)
 
         idx = self._form_layout.count() - 1
@@ -246,22 +205,14 @@ class Step03Panel(BasePanel):
         is_color = data.get("camera_mode", "mono") == "color"
         if is_color:
             self._lbl_cyc.setText(S("step03.cycle_seconds_color"))
-            self._cycle_seconds.setToolTip(
-                "RGB 프레임 한 장 촬영에 걸리는 시간(초)입니다.\n"
-                "윈도우 길이 = 프레임 수 × 이 값\n"
-                "예: 프레임 수 3 × 45초 = 135초(약 2.25분)"
-            )
+            self._cycle_seconds.setToolTip(S("step03.cycle_seconds_color.tooltip"))
+            self._lbl_cyc.setToolTip(S("step03.cycle_seconds_color.tooltip"))
             if not data.get("cycle_seconds"):
                 self._cycle_seconds.setValue(45)
         else:
             self._lbl_cyc.setText(S("step03.cycle_seconds"))
-            self._cycle_seconds.setToolTip(
-                "필터 한 사이클(IR→R→G→B→CH4→IR)에 걸리는 시간(초)입니다.\n"
-                "실제 촬영 패턴에 맞춰 입력하세요.\n"
-                "예: 45초 × 5필터 = 225초\n\n"
-                "이 값은 Step 4의 de-rotation 윈도우 길이 계산에만 사용됩니다.\n"
-                "Step 8의 사이클 시간은 Step 8 패널에서 별도로 설정합니다."
-            )
+            self._cycle_seconds.setToolTip(S("step03.cycle_seconds.tooltip"))
+            self._lbl_cyc.setToolTip(S("step03.cycle_seconds.tooltip"))
         # New key: window_frames. Old keys: window_cycles, window_seconds (convert on load).
         if "window_frames" in data:
             self._window_frames.setValue(int(data["window_frames"]))

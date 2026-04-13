@@ -345,6 +345,18 @@ class LuckyStackConfig:
     # Marginally below theoretical minimum but empirically optimal (wider sigma over-smooths).
     ap_sigma_factor: float = 0.9     # σ = ap_step × 0.9 = 14.4px (April-11 code optimal)
 
+    # Adaptive AP grid (try14+: LoG scale detection + dynamic AP sizes + wide KR)
+    # When True, replaces the uniform 64px grid with a local-scale-aware sparse AP
+    # set (8-11 APs at mixed sizes 64–128px) selected by LoG energy + cross-size NMS.
+    # Max AP size scales with disk_radius (max = disk_radius × 1.28 rounded to 8px),
+    # so larger telescopes automatically get proportionally larger AP patches.
+    # ap_kr_sigma: Gaussian KR smoothing sigma; 64px covers sparse AP gaps across
+    #   a ~200px disk (vs legacy 14.4px which was sized for ~122 dense APs).
+    # ap_candidate_step: dense candidate search step before NMS (pixels).
+    use_adaptive_ap: bool = True
+    ap_kr_sigma: float = 64.0        # KR sigma for adaptive warp maps (px)
+    ap_candidate_step: int = 8       # candidate grid search step (px)
+
     # Stacking
     quality_weight_power: float = 3.0    # raised 2.0→3.0: stronger suppression of marginal frames
 
@@ -371,6 +383,14 @@ class LuckyStackConfig:
     # Parallelism: number of CPU workers for the frame stacking loop.
     # 0 = auto (all logical cores); 1 = single-threaded (no fork overhead).
     n_workers: int = 0
+
+    # Post-stack sub-pixel smoothing.
+    # GaussianBlur(sigma) applied to the final stacked image BEFORE wavelet sharpening.
+    # Suppresses interpolation aliasing from INTER_LINEAR remap that concentrates at
+    # wavelet level-1 (1-2px) and is amplified 29× by the sharpening step.
+    # σ=0.9: CH4 noise 5.6×→1.1× vs AS!4, L2 (2-4px real detail) 87% preserved.
+    # 0.0 = disabled (legacy behaviour, pre-try05).
+    stack_blur_sigma: float = 0.9
 
     # Experimental — see docstring
     intra_video_derotate: bool = False

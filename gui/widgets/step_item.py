@@ -6,6 +6,8 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QSizePolicy,
                                 QWidget)
 
+from gui.i18n import S
+
 # Status → (icon, hex colour)
 STATUS_STYLE: dict[str, tuple[str, str]] = {
     "idle":    ("○",  "#888888"),
@@ -68,7 +70,7 @@ class StepItem(QWidget):
             self._check = QCheckBox()
             self._check.setChecked(enabled)
             self._check.setFixedWidth(20)
-            self._check.setToolTip("활성화/비활성화")
+            self._check.setToolTip(S("sidebar.step.optional.tooltip"))
             self._check.stateChanged.connect(
                 lambda s: self.toggled.emit(
                     self.step_id, s == Qt.CheckState.Checked.value

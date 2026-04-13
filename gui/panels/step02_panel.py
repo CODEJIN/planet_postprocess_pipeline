@@ -78,7 +78,7 @@ class Step02Panel(BasePanel):
     STEP_ID   = "02"
     TITLE_KEY = "step02.title"
     DESC_KEY  = "step02.desc"
-    OPTIONAL  = False
+    OPTIONAL  = True
 
     # Emitted after output dir changes so Step 3 can pick it up as input.
     dirs_changed = Signal()
@@ -115,26 +115,22 @@ class Step02Panel(BasePanel):
         self._ser_dir = QLineEdit()
         self._ser_dir.setStyleSheet(_INPUT_EMPTY_STYLE)
         self._ser_dir.setPlaceholderText(S("step02.ser_dir.placeholder"))
-        self._ser_dir.setToolTip(
-            "PIPP 처리된 SER 파일이 있는 폴더입니다.\n"
-            "Step 1을 실행했다면 자동으로 설정됩니다."
-        )
+        self._ser_dir.setToolTip(S("step02.ser_dir.tooltip"))
         self._ser_dir.textChanged.connect(self._on_ser_dir_changed)
         self._ser_dir.editingFinished.connect(self._on_ser_editing_finished)
         lbl_ser = QLabel(S("step02.ser_dir"))
+        lbl_ser.setToolTip(S("step02.ser_dir.tooltip"))
         fl.addRow(lbl_ser, _dir_row(self, self._ser_dir))
 
         # ── Step02 output directory ───────────────────────────────────────────
         self._output_step2 = QLineEdit()
         self._output_step2.setStyleSheet(_INPUT_STYLE)
         self._output_step2.setPlaceholderText("자동 설정됩니다")
-        self._output_step2.setToolTip(
-            "스태킹된 TIF 파일이 저장될 폴더입니다.\n"
-            "출력 폴더는 Step 3의 입력으로 자동 연결됩니다."
-        )
+        self._output_step2.setToolTip(S("step02.output_dir.tooltip"))
         self._output_step2.textEdited.connect(self._on_output_manually_edited)
         self._output_step2.editingFinished.connect(self.dirs_changed)
         lbl_out = QLabel(S("step02.output_dir"))
+        lbl_out.setToolTip(S("step02.output_dir.tooltip"))
         fl.addRow(lbl_out, _dir_row(self, self._output_step2))
 
         # ── top_percent (displayed as %) ──────────────────────────────────────
@@ -146,10 +142,7 @@ class Step02Panel(BasePanel):
         self._top_percent.setValue(25)
         self._top_percent.setFixedWidth(80)
         lbl_top = QLabel(S("step02.top_percent"))
-        lbl_top.setToolTip(
-            "품질 점수 기준 상위 N%의 프레임만 스태킹에 사용합니다.\n"
-            "낮을수록 더 선명하지만 노이즈가 많아집니다 (AS!4 기본값: 25%)."
-        )
+        lbl_top.setToolTip(S("step02.top_percent.tooltip"))
         top_row = QHBoxLayout()
         top_row.setSpacing(4)
         top_row.addWidget(self._top_percent)
@@ -165,10 +158,7 @@ class Step02Panel(BasePanel):
         self._ap_size.setFixedWidth(80)
         self._ap_size.valueChanged.connect(self._on_ap_params_changed)
         lbl_ap = QLabel(S("step02.ap_size"))
-        lbl_ap.setToolTip(
-            "로컬 정렬에 사용할 패치(AP) 크기입니다 (픽셀).\n"
-            "64px = AS!4 기본값. 32px = 더 세밀, 더 느림."
-        )
+        lbl_ap.setToolTip(S("step02.ap_size.tooltip"))
         ap_row = QHBoxLayout()
         ap_row.setSpacing(4)
         ap_row.addWidget(self._ap_size)
@@ -182,11 +172,7 @@ class Step02Panel(BasePanel):
         self._n_iterations.setValue(2)
         self._n_iterations.setFixedWidth(80)
         lbl_iter = QLabel(S("step02.n_iterations"))
-        lbl_iter.setToolTip(
-            "스태킹 반복 횟수입니다.\n"
-            "2회 = 첫 스택을 reference로 재사용 → AP 정밀도 향상 (권장).\n"
-            "1회 = 빠르지만 정확도 낮음."
-        )
+        lbl_iter.setToolTip(S("step02.n_iterations.tooltip"))
         iter_row = QHBoxLayout()
         iter_row.setSpacing(4)
         iter_row.addWidget(self._n_iterations)

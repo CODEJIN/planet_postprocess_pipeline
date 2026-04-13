@@ -300,14 +300,7 @@ class MainWindow(QMainWindow):
         run_all_layout.setContentsMargins(8, 8, 8, 8)
         self._btn_run_all = QPushButton(S("app.run_all"))
         self._btn_run_all.setFixedHeight(34)
-        self._btn_run_all.setToolTip(
-            "Step 3 ~ 10을 순서대로 자동 실행합니다.\n\n"
-            "• Step 01 (PIPP)과 Step 02 (AS!4)는 수동 작업이라 제외됩니다.\n"
-            "  → AS!4 완료 후 이 버튼을 누르면 Step 03부터 진행됩니다.\n"
-            "• 체크 해제된 선택적 스텝(08, 09, 10)은 건너뜁니다.\n"
-            "• 한 스텝이 실패하면 이후 스텝은 실행되지 않습니다.\n"
-            "• 실행 전 현재 설정이 자동으로 저장됩니다."
-        )
+        self._btn_run_all.setToolTip(S("app.run_all.tooltip"))
         self._btn_run_all.setStyleSheet(
             "QPushButton { background: #2d6a4f; color: white; border-radius: 5px;"
             " font-weight: bold; border: none; }"

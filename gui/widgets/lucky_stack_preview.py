@@ -119,9 +119,10 @@ class _Worker(QObject):
     @Slot()
     def run(self) -> None:
         try:
+            from collections import Counter
             from pipeline.modules import ser_io
             from pipeline.modules.derotation import find_disk_center
-            from pipeline.modules.lucky_stack import generate_ap_grid, LuckyStackConfig
+            from pipeline.modules.lucky_stack import generate_adaptive_ap_grid, LuckyStackConfig
 
             with ser_io.SERReader(self._path) as reader:
                 total   = int(reader.header["FrameCount"])
@@ -139,14 +140,16 @@ class _Worker(QObject):
             cx, cy, semi_a, semi_b, angle_deg = find_disk_center(gray)
             disk_radius = semi_a  # semi_major is the larger (equatorial) axis
 
-            # Generate AP grid using current params
+            # Generate adaptive AP grid (try14+: LoG energy + cross-size NMS)
+            # ap_size is the *minimum* AP size; actual sizes are auto-selected per location.
             cfg = LuckyStackConfig(
-                ap_size               = self._ap_size,
-                ap_step               = self._ap_step,
-                ap_min_brightness     = self._min_bright,
-                ap_min_contrast       = self._min_cont,
+                ap_size           = self._ap_size,
+                ap_min_brightness = self._min_bright,
+                ap_min_contrast   = self._min_cont,
+                use_adaptive_ap   = True,
             )
-            aps = generate_ap_grid(cx, cy, disk_radius, gray, cfg)
+            aps = generate_adaptive_ap_grid(cx, cy, disk_radius, gray, cfg)
+            # aps: List[Tuple[int, int, int]] → (ax, ay, ap_size)
 
             # ── Draw overlay ──────────────────────────────────────────────────
             overlay, scale = _fit_to(disp.copy(), _PANEL_SIZE)
@@ -168,13 +171,13 @@ class _Worker(QObject):
             # Find the AP closest to disk centre to draw as a sample patch box
             sample_ap = None
             if aps:
-                dists = [(ax - cx)**2 + (ay - cy)**2 for ax, ay in aps]
+                dists = [(ax - cx)**2 + (ay - cy)**2 for ax, ay, _ in aps]
                 sample_ap = aps[int(np.argmin(dists))]
 
-            # Example AP patch rectangle (blue, shows ap_size scale)
+            # Example AP patch rectangle (blue, shows actual ap_size of that AP)
             if sample_ap is not None:
-                sax, say = int(sample_ap[0] * sx), int(sample_ap[1] * sy)
-                half_px  = max(1, int((self._ap_size / 2) * s_avg))
+                sax, say, sap_sz = int(sample_ap[0] * sx), int(sample_ap[1] * sy), sample_ap[2]
+                half_px = max(1, int((sap_sz / 2) * s_avg))
                 cv2.rectangle(
                     overlay,
                     (sax - half_px, say - half_px),
@@ -182,25 +185,28 @@ class _Worker(QObject):
                     (80, 140, 255), 1,
                 )
 
-            # AP dots (green filled)
-            dot_r = max(2, int(2.5 * s_avg))
-            for ax, ay in aps:
-                cv2.circle(
-                    overlay,
-                    (int(ax * sx), int(ay * sy)),
-                    dot_r,
-                    (60, 240, 100), -1,
-                )
+            # AP circles — outline radius = ap_size/2, color: green(small) → yellow(large)
+            all_sizes = sorted(set(sz for _, _, sz in aps)) if aps else [self._ap_size]
+            sz_min, sz_max = all_sizes[0], all_sizes[-1]
+            for ax, ay, ap_sz in aps:
+                t = (ap_sz - sz_min) / (sz_max - sz_min) if sz_max > sz_min else 0.0
+                color = (int(60 + t * 180), int(240 - t * 20), int(100 - t * 40))
+                px_x, px_y = int(ax * sx), int(ay * sy)
+                circle_r = max(4, int((ap_sz / 2) * s_avg))
+                cv2.circle(overlay, (px_x, px_y), circle_r, color, 1)   # patch extent
+                cv2.circle(overlay, (px_x, px_y), 2, color, -1)          # center dot
 
             # Labels
             font  = cv2.FONT_HERSHEY_SIMPLEX
             fsc   = 0.38
             thick = 1
-            cv2.putText(overlay, "AP grid", (4, 14), font, fsc, (60, 240, 100), thick, cv2.LINE_AA)
-            cv2.putText(overlay, "Disk",    (4, 26), font, fsc, (0, 210, 255),  thick, cv2.LINE_AA)
+            cv2.putText(overlay, "AP (adaptive)", (4, 14), font, fsc, (60, 240, 100), thick, cv2.LINE_AA)
+            cv2.putText(overlay, "Disk",          (4, 26), font, fsc, (0, 210, 255),  thick, cv2.LINE_AA)
 
+            size_counts = Counter(sz for _, _, sz in aps)
+            size_str = " ".join(f"{sz}px×{cnt}" for sz, cnt in sorted(size_counts.items()))
             status = (
-                f"AP: {len(aps)}개 · 반경: {disk_radius:.0f}px · "
+                f"AP: {len(aps)}개  [{size_str}] · 반경: {disk_radius:.0f}px · "
                 f"프레임 {mid_idx + 1}/{total} · {self._path.name}"
             )
 
@@ -259,8 +265,8 @@ class LuckyStackPreviewWidget(QWidget):
         root.addWidget(self._img_lbl)
 
         self._legend_lbl = QLabel(
-            '<span style="color:#3cf064">●</span> 유효 AP'
-            '　<span style="color:#50a0ff">■</span> AP 패치 (중앙 1개)'
+            '<span style="color:#3cf064">○</span> AP 크기 (소→대: 녹→황)'
+            '　<span style="color:#50a0ff">■</span> 중앙 AP 패치'
             '　<span style="color:#00d2ff">○</span> 디스크 경계'
         )
         self._legend_lbl.setStyleSheet("font-size: 9px; color: #888;")

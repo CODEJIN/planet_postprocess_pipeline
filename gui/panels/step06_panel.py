@@ -138,24 +138,21 @@ class Step05Panel(BasePanel):
         self._input_lbl.setReadOnly(True)
         self._input_lbl.setStyleSheet(_READONLY_STYLE)
         lbl_in = QLabel(S("step05.input_dir"))
-        lbl_in.setToolTip("Step 4 De-rotation 결과물이 있는 폴더 (자동 설정)")
+        lbl_in.setToolTip(S("step05.input_dir.tooltip"))
         fl.addRow(lbl_in, self._input_lbl)
 
         self._output_lbl = QLineEdit()
         self._output_lbl.setReadOnly(True)
         self._output_lbl.setStyleSheet(_READONLY_STYLE)
         lbl_out = QLabel(S("step05.output_dir"))
-        lbl_out.setToolTip("웨이블릿 마스터 이미지가 저장될 폴더 (자동 설정)")
+        lbl_out.setToolTip(S("step05.output_dir.tooltip"))
         fl.addRow(lbl_out, self._output_lbl)
         left_layout.addWidget(folder_widget)
 
         # Section label
         amounts_label = QLabel(S("step05.amounts"))
         amounts_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        amounts_label.setToolTip(
-            "스태킹된 마스터 이미지에 적용할 웨이블릿 선명화 강도입니다.\n"
-            "마스터 이미지는 노이즈가 훨씬 낮으므로 더 강하게 적용해도 안전합니다."
-        )
+        amounts_label.setToolTip(S("step05.amounts.tooltip"))
         left_layout.addWidget(amounts_label)
 
         # Wavelet slider rows — on_change triggers debounced preview update

@@ -8,7 +8,7 @@
 2. [Main Window Layout](#2-main-window-layout)
 3. [Global Settings](#3-global-settings)
 4. [Step 01 — PIPP Preprocessing](#4-step-01--pipp-preprocessing)
-5. [Step 02 — AutoStakkert!4](#5-step-02--autostakkert4)
+5. [Step 02 — Lucky Stacking](#5-step-02--lucky-stacking)
 6. [Step 03 — Quality Assessment & Window Detection](#6-step-03--quality-assessment--window-detection)
 7. [Step 04 — De-rotation Stacking](#7-step-04--de-rotation-stacking)
 8. [Step 05 — Wavelet Master Sharpening](#8-step-05--wavelet-master-sharpening)
@@ -24,7 +24,7 @@
 
 ## 1. Overview
 
-This tool automates the planetary imaging post-processing pipeline. Starting from SER videos preprocessed with PIPP, it accepts AutoStakkert!4 stacking results and guides you through wavelet sharpening → quality assessment → de-rotation stacking → RGB compositing → time-series animation → summary grid generation.
+This tool automates the planetary imaging post-processing pipeline. Starting from raw SER video capture, it guides you through PIPP preprocessing → Lucky Stacking → quality assessment → de-rotation stacking → wavelet sharpening → RGB compositing → time-series animation → summary grid generation, all from within the GUI.
 
 ### 1.1 Camera Modes
 
@@ -46,7 +46,7 @@ Raw SER Videos (from Firecapture)
 [Step 01] PIPP Preprocessing     ← SER → Cropped SER (Optional)
          │
          ▼
-[Step 02] AutoStakkert!4         ← Manual external execution
+[Step 02] Lucky Stacking         ← SER → TIF stacking (Optional)
          │
          ▼
 [Step 03] Quality Assessment     ← Optimal time window detection (Required)
@@ -174,22 +174,28 @@ The preview automatically refreshes when ROI size or minimum diameter changes.
 
 ---
 
-## 5. Step 02 — AutoStakkert!4
+## 5. Step 02 — Lucky Stacking
 
 ![Step 02 panel](images_en/step02.png)
-*Figure 5-1: Step 02 panel — AutoStakkert!4 manual execution guide*
+*Figure 5-1: Step 02 panel — Lucky Stacking configuration*
 
-AutoStakkert!4 is an external program that cannot be executed directly by the pipeline. This step is an informational panel guiding you on how to run AS!4.
+Selects the best frames from SER files and stacks them into TIF files. Processing is fully automated within the pipeline — no external program required. When Step 01 is enabled, its SER output folder is automatically connected as input.
 
-> **Optional Step**: Skip this step if AS!4 stacking is already complete.
+> **Optional Step**: If TIF stacks have already been created by an external tool, skip this step and specify the folder directly in Step 03.
 
-### How to Proceed
+### 5.1 Parameters
 
-1. Follow the instructions in this panel and **run AutoStakkert!4 separately**.
-2. Use Step 01's output folder (PIPP-processed SER files) as the AS!4 input.
-3. Once AS!4 stacking is complete, click **"Done, Continue"** to proceed to the next step.
+| Parameter | Default | Range | Description |
+|-----------|---------|-------|-------------|
+| **SER Input Folder** | (Required) | — | Folder containing the SER files to Lucky Stack. When Step 01 is enabled, the Step 01 output folder is connected automatically. Browse with the `...` button or type the path directly. |
+| **Output Folder** | Auto-set | — | Folder where Lucky Stacking result TIF files are saved. Automatically set to `step02_lucky_stack` relative to the SER input folder. |
+| **Top Frame % (%)** | 25 % | 5–100 % (step 5) | Only the top N% of frames by quality score are used for stacking. Lower value = stricter selection (sharper result, lower noise); higher value = more frames included (higher SNR). Use 10–25% on nights of good seeing, 50–75% on nights of poor seeing. |
+| **AP Size (px)** | 64 | 32–128 (step 32) | Alignment Point size. The size of the sub-region used as the alignment reference. **64px = default (recommended)**. 32px = finer alignment (slower), 128px = broader reference area (faster). |
+| **Iterations** | 2 | 1–3 | Number of Lucky Stacking iterations. Each iteration refines the AP alignment reference using the previous stack result. 2 iterations is recommended for a good quality/speed balance. |
 
-The path to AS!4's output TIF files is specified directly in Step 03.
+### 5.2 Live Preview
+
+The right panel shows the first frame from the selected SER folder along with the AP (Alignment Point) grid overlay. The grid refreshes automatically when AP size is changed.
 
 ---
 
@@ -206,7 +212,7 @@ Automatically evaluates the image quality of each TIF frame and detects the opti
 
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
-| **Input Folder** | Auto-set | — | Automatically set to the AS!4 TIF folder. |
+| **Input Folder** | Auto-set | — | Automatically set to the Step 02 Lucky Stacking TIF folder. |
 | **Output Folder** | Auto-set | — | Quality score CSVs and window recommendation JSON are saved here. |
 | **Window (frames)** | 3 | 1–20 | De-rotation window length expressed as **number of filter cycles**. 1 frame = one complete filter cycle (IR→R→G→B→CH4). Actual window time = frames × filter cycle time. Example: 3 frames × 225s = 675s (~11 min). **Jupiter: 2–4 frames / Mars, Saturn: 3–6 frames** |
 | **Filter cycle (sec)** | 225 | 10–600 (step 15) | Time in seconds for one complete filter cycle (IR→R→G→B→CH4→IR). Set this to match your actual capture cadence. Example: 45s × 5 filters = 225s. **This value is used only for Step 03 window length calculation.** Step 08 has its own independent cycle time setting. |
@@ -237,7 +243,7 @@ Stacks frames within the optimal windows detected in Step 03, correcting for pla
 
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
-| **Input Folder** | Auto-set | — | Automatically set to the same AS!4 TIF folder as Step 03. |
+| **Input Folder** | Auto-set | — | Automatically set to the same Step 02 Lucky Stacking TIF folder as Step 03. |
 | **Output Folder** | Auto-set | — | De-rotation stacked master TIF files are saved here. |
 | **Warp Scale** | 0.80 | 0.0–2.0 (step 0.01) | Spherical distortion correction strength. Because a planet is a sphere, the disc centre moves significantly with rotation while the limb barely moves. Warp scale controls the magnitude of this depth-dependent per-pixel correction. **0.0** = no correction (uniform shift), **1.0** = theoretical full sphere correction, **0.80** = recommended for Jupiter in typical seeing. On nights of exceptional seeing, try 1.0–1.2. |
 | **Min Quality Threshold** | 0.05 | 0.0–1.0 (step 0.05) | Frames below this quality score are excluded from stacking. Raise to 0.3–0.5 when seeing conditions are poor to more strictly filter bad frames. |
@@ -372,7 +378,7 @@ In color camera mode, **automatic white balance (WB) + chromatic aberration (CA)
 ![Step 07 panel](images_en/step07.png)
 *Figure 10-1: Step 07 panel — Wavelet sharpening configuration*
 
-Applies wavelet sharpening to TIF files output by AutoStakkert!4 and converts them to PNG format. These PNGs are used as source data for Step 08 time-series compositing.
+Applies wavelet sharpening to TIF files output by Step 02 Lucky Stacking and converts them to PNG format. These PNGs are used as source data for Step 08 time-series compositing.
 
 > **Optional Step**: Run this step when time-series compositing (Step 08) is needed.
 
@@ -380,7 +386,7 @@ Applies wavelet sharpening to TIF files output by AutoStakkert!4 and converts th
 
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
-| **AS!4 TIF Folder** | (Required) | — | The folder where AutoStakkert!4 saved TIF files. Processes all `.tif` / `.TIF` files in this folder. |
+| **Input Folder** | Auto-set | — | Automatically set to the Step 02 Lucky Stacking TIF folder. |
 | **Output Base Folder** | (Required) | — | Parent folder where all step results are saved. Input/output folders for Steps 07 and beyond are automatically configured under this directory. |
 | **Border Taper (px)** | 0 | 0–100 (step 5) | Applies a soft fade to image edges. 0 = disabled (recommended). |
 
@@ -514,10 +520,28 @@ The right panel shows before/after levels adjustment previews. The preview autom
 ![Run All](images_en/run_all.png)
 *Figure 14-1: Pipeline running state*
 
-Clicking the **"▶ Run 3~10"** button in the left sidebar automatically runs Steps 03 through 10 in sequence.
+Clicking the Run All button in the left sidebar automatically executes all enabled steps in sequence.
 
-- Steps 01 and 02 are excluded from automatic execution as they depend on external tools (PIPP, AS!4).
-- If an error occurs during execution, the pipeline halts at that step and an error message is printed to the log.
+### 14.1 Start Point
+
+The button label changes dynamically based on whether Steps 01 and 02 are enabled.
+
+| Condition | Button Label | Start Point | Validated Input |
+|-----------|-------------|-------------|-----------------|
+| Step 01 ✓ | **▶ Run from Step 1** | Step 01 | SER files (SER input folder) |
+| Step 01 ✗, Step 02 ✓ | **▶ Run from Step 2** | Step 02 | SER files (Step 02 SER folder) |
+| Step 01 ✗, Step 02 ✗ | **▶ Run from Step 3** | Step 03 | TIF files (input folder) |
+
+> **Note**: Enabling Step 01 automatically enables and locks Step 02's checkbox.
+
+### 14.2 Execution Flow
+
+1. **Input validation**: Checks that input files exist in the starting step's folder. Aborts with a warning if none are found.
+2. **Confirmation dialog**: Displays the list of steps to run, the number of input files, and the output path for each step. Click "Run" to proceed.
+3. **Step-by-step execution**: Only enabled steps are executed; disabled optional steps are skipped.
+4. **Error handling**: If an error occurs during execution, the pipeline halts at that step and an error message is printed to the log.
+
+> **Step 09 dependency**: Enabling Step 09 (Animated GIF) automatically enables Step 08 (Time-Series Composite).
 
 ---
 

@@ -74,56 +74,46 @@ class Step10Panel(BasePanel):
         self._input_lbl.setReadOnly(True)
         self._input_lbl.setStyleSheet(_READONLY_STYLE)
         lbl_in = QLabel(S("step10.input_dir"))
-        lbl_in.setToolTip("Step 7 RGB 합성 결과 폴더 (자동 설정)")
+        lbl_in.setToolTip(S("step10.input_dir.tooltip"))
         fl.addRow(lbl_in, self._input_lbl)
 
         self._output_lbl = QLineEdit()
         self._output_lbl.setReadOnly(True)
         self._output_lbl.setStyleSheet(_READONLY_STYLE)
         lbl_out = QLabel(S("step10.output_dir"))
-        lbl_out.setToolTip("요약 그리드 PNG가 저장될 폴더 (자동 설정)")
+        lbl_out.setToolTip(S("step10.output_dir.tooltip"))
         fl.addRow(lbl_out, self._output_lbl)
 
-        _tip_bp = (
-            "이 값 이하의 픽셀을 순수 검정으로 처리합니다.\n"
-            "배경 노이즈를 억제하고 행성 배경을 깔끔하게 만듭니다. (0.0~0.5)"
-        )
         self._black_point = QDoubleSpinBox()
         self._black_point.setStyleSheet(_SPINBOX_STYLE)
         self._black_point.setRange(0.0, 0.5)
         self._black_point.setDecimals(2)
         self._black_point.setSingleStep(0.01)
         self._black_point.setValue(0.04)
-        self._black_point.setToolTip(_tip_bp)
+        self._black_point.setToolTip(S("step10.black_point.tooltip"))
         lbl_bp = QLabel(S("step10.black_point"))
-        lbl_bp.setToolTip(_tip_bp)
+        lbl_bp.setToolTip(S("step10.black_point.tooltip"))
         fl.addRow(lbl_bp, self._black_point)
 
-        _tip_gamma = (
-            "감마 보정값입니다.\n"
-            "1.0 = 선형 (보정 없음)  /  < 1.0 = 밝아짐  /  > 1.0 = 어두워짐\n"
-            "행성 표면 디테일 강조를 위해 0.8~1.0 범위를 권장합니다."
-        )
         self._gamma = QDoubleSpinBox()
         self._gamma.setStyleSheet(_SPINBOX_STYLE)
         self._gamma.setRange(0.1, 3.0)
         self._gamma.setDecimals(2)
         self._gamma.setSingleStep(0.05)
         self._gamma.setValue(0.9)
-        self._gamma.setToolTip(_tip_gamma)
+        self._gamma.setToolTip(S("step10.gamma.tooltip"))
         lbl_gamma = QLabel(S("step10.gamma"))
-        lbl_gamma.setToolTip(_tip_gamma)
+        lbl_gamma.setToolTip(S("step10.gamma.tooltip"))
         fl.addRow(lbl_gamma, self._gamma)
 
-        _tip_cell = "요약 그리드에서 각 이미지 셀의 크기(px)입니다. (100~1024px 범위)"
         self._cell_size = QSpinBox()
         self._cell_size.setStyleSheet(_INT_SPINBOX_STYLE)
         self._cell_size.setRange(100, 1024)
         self._cell_size.setSingleStep(50)
         self._cell_size.setValue(300)
-        self._cell_size.setToolTip(_tip_cell)
+        self._cell_size.setToolTip(S("step10.cell_size.tooltip"))
         lbl_cell = QLabel(S("step10.cell_size"))
-        lbl_cell.setToolTip(_tip_cell)
+        lbl_cell.setToolTip(S("step10.cell_size.tooltip"))
         fl.addRow(lbl_cell, self._cell_size)
 
         left_layout.addWidget(form_widget)

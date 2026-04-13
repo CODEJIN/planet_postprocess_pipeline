@@ -101,69 +101,48 @@ class Step01Panel(BasePanel):
         fl.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         # SER input directory
-        _tip_ser = (
-            "SER 영상 파일이 있는 촬영 폴더를 지정합니다.\n"
-            "하위 폴더를 포함하여 모든 .SER 파일을 검색합니다.\n"
-            "예: D:\\Capture\\260402\\"
-        )
         self._ser_dir = QLineEdit()
         self._ser_dir.setStyleSheet(_INPUT_STYLE)
         self._ser_dir.setPlaceholderText(S("step01.ser_dir.placeholder"))
-        self._ser_dir.setToolTip(_tip_ser)
+        self._ser_dir.setToolTip(S("step01.ser_dir.tooltip"))
         self._ser_dir.textChanged.connect(self._on_ser_dir_changed)
         self._ser_dir.editingFinished.connect(self._auto_set_step1_output)
         lbl_ser = QLabel(S("step01.ser_dir"))
-        lbl_ser.setToolTip(_tip_ser)
+        lbl_ser.setToolTip(S("step01.ser_dir.tooltip"))
         fl.addRow(lbl_ser, _dir_row(self, self._ser_dir))
 
         # Output directory
-        _tip_out = (
-            "PIPP 처리된 SER 파일이 저장될 폴더입니다.\n"
-            "전역 설정의 출력 기준 폴더 아래에 자동으로 설정됩니다.\n\n"
-            "이 경로를 AutoStakkert 4의 입력 폴더로 지정하면\n"
-            "PIPP 처리 결과를 바로 스태킹할 수 있습니다."
-        )
         self._output_step1 = QLineEdit()
         self._output_step1.setStyleSheet(_INPUT_STYLE)
         self._output_step1.setPlaceholderText("자동 설정됩니다")
         self._output_step1.textEdited.connect(self._on_output_manually_edited)
         self._output_step1.editingFinished.connect(self.dirs_changed)
         lbl_out = QLabel(S("step01.output_dir"))
-        lbl_out.setToolTip(_tip_out)
+        lbl_out.setToolTip(S("step01.output_dir.tooltip"))
         fl.addRow(lbl_out, _dir_row(self, self._output_step1))
 
         # ROI size
-        _tip_roi = (
-            "PIPP 처리 후 출력할 정사각형 크롭 크기(px)입니다.\n"
-            "행성 원반보다 충분히 크게 설정하세요.\n"
-            "448~512px이 목성에 일반적입니다."
-        )
         self._roi_size = QSpinBox()
         self._roi_size.setStyleSheet(_SPINBOX_STYLE)
         self._roi_size.setRange(64, 1024)
         self._roi_size.setSingleStep(16)
         self._roi_size.setValue(448)
-        self._roi_size.setToolTip(_tip_roi)
+        self._roi_size.setToolTip(S("step01.roi_size.tooltip"))
         self._roi_size.valueChanged.connect(self._on_params_changed)
         lbl_roi = QLabel(S("step01.roi_size"))
-        lbl_roi.setToolTip(_tip_roi)
+        lbl_roi.setToolTip(S("step01.roi_size.tooltip"))
         fl.addRow(lbl_roi, self._roi_size)
 
         # Min diameter
-        _tip_diam = (
-            "유효한 행성으로 인정할 최소 원반 지름(px)입니다.\n"
-            "이보다 작은 원반이 감지되면 해당 프레임은 제거됩니다.\n"
-            "대기 요동으로 인한 순간 소실 프레임을 걸러냅니다."
-        )
         self._min_diameter = QSpinBox()
         self._min_diameter.setStyleSheet(_SPINBOX_STYLE)
         self._min_diameter.setRange(10, 500)
         self._min_diameter.setSingleStep(5)
         self._min_diameter.setValue(50)
-        self._min_diameter.setToolTip(_tip_diam)
+        self._min_diameter.setToolTip(S("step01.min_diameter.tooltip"))
         self._min_diameter.valueChanged.connect(self._on_params_changed)
         lbl_diam = QLabel(S("step01.min_diameter"))
-        lbl_diam.setToolTip(_tip_diam)
+        lbl_diam.setToolTip(S("step01.min_diameter.tooltip"))
         fl.addRow(lbl_diam, self._min_diameter)
 
         left_layout.addWidget(form_widget)

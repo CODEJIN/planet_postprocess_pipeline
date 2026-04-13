@@ -96,9 +96,7 @@ def score_frames(
 
     for i, idx in enumerate(sampled_idx):
         frame = reader.get_frame(idx).astype(np.float32) / 255.0
-        # Mild Gaussian denoise before Laplacian (suppress shot noise)
-        frame_b = cv2.GaussianBlur(frame, (0, 0), 1.2)
-        sampled_scores.append(laplacian_var(frame_b, mask))
+        sampled_scores.append(laplacian_var(frame, mask))
         if progress_callback is not None and i % 50 == 0:
             progress_callback(idx, n_frames)
 
@@ -195,6 +193,149 @@ def generate_ap_grid(
             valid_aps.append((ax, ay))
 
     return valid_aps
+
+
+# ── 3b. Adaptive AP grid (try14: LoG scale detection + dynamic AP sizes) ──────
+
+_HANN_CACHE: Dict[int, np.ndarray] = {}
+
+
+def _get_hann(ap_size: int) -> np.ndarray:
+    """Return a cached 2-D Hann window for the given patch size."""
+    if ap_size not in _HANN_CACHE:
+        _HANN_CACHE[ap_size] = _make_hann2d(ap_size)
+    return _HANN_CACHE[ap_size]
+
+
+def local_log_energy(patch: np.ndarray, sigma: float) -> float:
+    """Local Laplacian-of-Gaussian energy at scale sigma.
+
+    Computes sigma^2 * mean(LoG^2) on the interior of the patch
+    (margin = sigma*1.5) to exclude edge effects from the patch boundary.
+    Higher values indicate stronger local feature energy at that scale.
+    """
+    blur = cv2.GaussianBlur(patch, (0, 0), sigma)
+    lap  = cv2.Laplacian(blur, cv2.CV_32F)
+    margin = max(1, int(sigma * 1.5))
+    h, w = lap.shape
+    center = lap[margin: h - margin, margin: w - margin]
+    if center.size == 0:
+        return 0.0
+    return float((sigma ** 2) * np.mean(center ** 2))
+
+
+def build_ap_size_candidates(disk_radius: float) -> List[int]:
+    """Compute AP size candidates scaled to the planet disk radius.
+
+    Maximum AP size = disk_radius * 1.28 (AP_half / disk_radius ≈ 0.64),
+    rounded down to 8px. This ensures the largest AP covers the same fraction
+    of the disk regardless of telescope scale:
+      r=100px → max=128px   r=200px → max=256px   r=300px → max=384px
+
+    Size steps:  24–64 at 8px intervals (fine), 64+ at 16px intervals (coarse).
+    """
+    max_ap_size = int(disk_radius * 1.28) // 8 * 8
+    max_ap_size = max(max_ap_size, 64)
+
+    fine   = list(range(24, 65, 8))               # 24,32,40,48,56,64
+    coarse = list(range(80, max_ap_size + 1, 16)) # 80,96,...,max
+    return fine + coarse
+
+
+def generate_adaptive_ap_grid(
+    disk_cx: float,
+    disk_cy: float,
+    disk_radius: float,
+    reference: np.ndarray,
+    cfg,
+) -> List[Tuple[int, int, int]]:
+    """Generate AP positions with per-point locally optimal AP size.
+
+    Algorithm (try14 approach):
+      1. Build AP size candidates scaled to disk_radius.
+      2. Dense candidate search at ap_candidate_step spacing within disk.
+      3. Per candidate: compute LoG energy at each size; select the size
+         with highest energy as the natural scale for that position.
+      4. NMS: sort by energy descending; winner's ap_size//2 radius suppresses
+         ALL nearby candidates regardless of their size (cross-size suppression).
+         This prevents multiple conflicting measurements at the same location.
+
+    Returns list of (ax, ay, ap_size) triples.
+    """
+    H, W = reference.shape[:2]
+    min_ap_size     = cfg.ap_size           # use ap_size as minimum (default 64)
+    candidate_step  = int(getattr(cfg, "ap_candidate_step", 8))
+    min_brightness  = getattr(cfg, "ap_min_brightness", 0.196)
+    min_contrast    = cfg.ap_min_contrast
+
+    all_sizes = build_ap_size_candidates(disk_radius)
+    ap_sizes  = [s for s in all_sizes if s >= min_ap_size]
+    if not ap_sizes:
+        ap_sizes = [min_ap_size]
+
+    sigmas   = {sz: sz / 4.0 for sz in ap_sizes}
+    scan_half = max(ap_sizes) // 2   # narrow scan: search boundary = largest AP half
+
+    raw: List[Dict] = []
+
+    for ay in range(scan_half, H - scan_half, candidate_step):
+        for ax in range(scan_half, W - scan_half, candidate_step):
+            dist = np.sqrt((ax - disk_cx) ** 2 + (ay - disk_cy) ** 2)
+            if dist >= disk_radius:
+                continue
+
+            # Brightness / contrast filter on the minimum-size patch
+            mh = min_ap_size // 2
+            base_patch = reference[ay - mh : ay + mh, ax - mh : ax + mh]
+            if float(base_patch.mean()) < min_brightness:
+                continue
+            if float(base_patch.std()) < min_contrast:
+                continue
+
+            # LoG energy at each candidate size
+            energies: Dict[int, float] = {}
+            for sz in ap_sizes:
+                half = sz // 2
+                y0, y1 = ay - half, ay + half
+                x0, x1 = ax - half, ax + half
+                if y0 < 0 or y1 > H or x0 < 0 or x1 > W:
+                    continue
+                patch = reference[y0:y1, x0:x1]
+                if patch.shape != (sz, sz):
+                    continue
+                energies[sz] = local_log_energy(patch, sigmas[sz])
+
+            if not energies:
+                continue
+
+            natural_size = max(energies, key=energies.get)
+            best_energy  = energies[natural_size]
+            if best_energy < 1e-8:
+                continue
+
+            raw.append({
+                "ax": ax, "ay": ay,
+                "ap_size": natural_size,
+                "score": best_energy,
+            })
+
+    # NMS: cross-size suppression — winner's ap_size//2 radius removes all nearby
+    raw.sort(key=lambda c: c["score"], reverse=True)
+    kept: List[Dict] = []
+    suppressed: set = set()
+    for i, c in enumerate(raw):
+        if i in suppressed:
+            continue
+        kept.append(c)
+        nms_r = c["ap_size"] // 2
+        for j, c2 in enumerate(raw):
+            if j <= i or j in suppressed:
+                continue
+            d = np.sqrt((c["ax"] - c2["ax"]) ** 2 + (c["ay"] - c2["ay"]) ** 2)
+            if d < nms_r:
+                suppressed.add(j)
+
+    return [(c["ax"], c["ay"], c["ap_size"]) for c in kept]
 
 
 # ── 4. Per-AP shift estimation ─────────────────────────────────────────────────
@@ -314,6 +455,73 @@ def _compute_warp_maps(
     return map_dx, map_dy, n_good
 
 
+# ── 5a. Adaptive warp maps (variable AP sizes + wide KR) ──────────────────────
+
+def _compute_adaptive_warp_maps(
+    frame_aligned: np.ndarray,
+    reference: np.ndarray,
+    ap_positions: List[Tuple[int, int, int]],
+    cfg,
+) -> Tuple[np.ndarray, np.ndarray, int]:
+    """Adaptive-AP version of Gaussian kernel regression warp maps.
+
+    Uses per-AP size (from generate_adaptive_ap_grid) and cfg.ap_kr_sigma (64px)
+    for wide KR smoothing that covers the sparse AP set across the disk.
+
+    Args:
+        ap_positions: list of (ax, ay, ap_size) triples.
+        cfg:          LuckyStackConfig with ap_kr_sigma, ap_confidence_threshold,
+                      ap_search_range fields.
+
+    Returns:
+        (map_dx, map_dy, n_good_aps)
+    """
+    H, W = frame_aligned.shape[:2]
+
+    shift_x = np.zeros((H, W), dtype=np.float32)
+    shift_y = np.zeros((H, W), dtype=np.float32)
+    weight  = np.zeros((H, W), dtype=np.float32)
+    n_good  = 0
+
+    for ax, ay, ap_size in ap_positions:
+        half = ap_size // 2
+        y0, y1 = ay - half, ay + half
+        x0, x1 = ax - half, ax + half
+        if y0 < 0 or y1 > H or x0 < 0 or x1 > W:
+            continue
+
+        ref_patch = reference[y0:y1, x0:x1].astype(np.float32)
+        frm_patch = frame_aligned[y0:y1, x0:x1].astype(np.float32)
+        hann      = _get_hann(ap_size)
+
+        dx, dy, conf = _estimate_ap_shift(ref_patch, frm_patch, hann, cfg)
+        if dx is None:
+            continue
+
+        shift_x[ay, ax] = float(dx) * conf
+        shift_y[ay, ax] = float(dy) * conf
+        weight[ay, ax]  = conf
+        n_good += 1
+
+    if n_good < 3:
+        zero = np.zeros((H, W), dtype=np.float32)
+        return zero, zero, n_good
+
+    kr_sigma = float(getattr(cfg, "ap_kr_sigma", 64.0))
+    ksize = int(6.0 * kr_sigma + 1) | 1
+
+    sw_x = cv2.GaussianBlur(shift_x * weight, (ksize, ksize), kr_sigma)
+    sw_y = cv2.GaussianBlur(shift_y * weight, (ksize, ksize), kr_sigma)
+    sw   = cv2.GaussianBlur(weight,            (ksize, ksize), kr_sigma)
+
+    coverage_threshold = float(np.max(sw)) * 0.05
+    coverage_ok = sw >= coverage_threshold
+
+    map_dx = np.where(coverage_ok, sw_x / np.maximum(sw, 1e-9), 0.0).astype(np.float32)
+    map_dy = np.where(coverage_ok, sw_y / np.maximum(sw, 1e-9), 0.0).astype(np.float32)
+    return map_dx, map_dy, n_good
+
+
 # ── 5b. Worker state + worker function for multiprocessing ────────────────────
 # _WORKER_STATE is set in the parent process immediately before Pool creation.
 # fork workers inherit it via copy-on-write — no large-array pickling needed.
@@ -347,6 +555,8 @@ def _worker_process_chunk(chunk_indices: List[int]) -> tuple:
     n_global_only = 0
     query_pts = np.empty((0, 2), dtype=np.float64)
 
+    adaptive_mode = _WORKER_STATE.get("adaptive_mode", False)
+
     for local_i in chunk_indices:
         frame = frames[local_i]                   # float32 [0, 1]
         idx   = int(selected_indices[local_i])    # original index for score lookup
@@ -363,9 +573,14 @@ def _worker_process_chunk(chunk_indices: List[int]) -> tuple:
         frame_aligned = apply_shift(frame, dx_g, dy_g)
 
         # ── AP warp maps ──────────────────────────────────────────────────
-        map_dx, map_dy, n_good = _compute_warp_maps(
-            frame_aligned, reference, ap_positions, hann2d, query_pts, cfg
-        )
+        if adaptive_mode:
+            map_dx, map_dy, n_good = _compute_adaptive_warp_maps(
+                frame_aligned, reference, ap_positions, cfg
+            )
+        else:
+            map_dx, map_dy, n_good = _compute_warp_maps(
+                frame_aligned, reference, ap_positions, hann2d, query_pts, cfg
+            )
         if n_good < 3:
             n_global_only += 1
 
@@ -447,7 +662,9 @@ def apply_warp_and_stack(
     H, W = reference.shape[:2]
     n_selected = len(selected_frames)
 
-    hann2d    = _make_hann2d(cfg.ap_size)
+    # Detect adaptive mode: ap_positions are (ax, ay, ap_size) triples
+    adaptive_mode = bool(ap_positions) and len(ap_positions[0]) == 3
+    hann2d    = None if adaptive_mode else _make_hann2d(cfg.ap_size)
     xx_base   = np.tile(np.arange(W, dtype=np.float32), (H, 1))
     yy_base   = np.tile(np.arange(H, dtype=np.float32)[:, None], (1, W))
     query_pts = np.empty((0, 2), dtype=np.float64)  # API compat only
@@ -475,6 +692,7 @@ def apply_warp_and_stack(
             "disk_radius":      disk_radius,
             "xx_base":          xx_base,
             "yy_base":          yy_base,
+            "adaptive_mode":    adaptive_mode,
         }
 
         # Split frame indices into equal-sized chunks
@@ -562,9 +780,14 @@ def apply_warp_and_stack(
             frame_aligned = apply_shift(frame, dx_g, dy_g)
 
             # ── AP warp maps ──────────────────────────────────────────────
-            map_dx, map_dy, n_good = _compute_warp_maps(
-                frame_aligned, reference, ap_positions, hann2d, query_pts, cfg
-            )
+            if adaptive_mode:
+                map_dx, map_dy, n_good = _compute_adaptive_warp_maps(
+                    frame_aligned, reference, ap_positions, cfg
+                )
+            else:
+                map_dx, map_dy, n_good = _compute_warp_maps(
+                    frame_aligned, reference, ap_positions, hann2d, query_pts, cfg
+                )
             if n_good < 3:
                 n_global_only += 1
 
@@ -732,11 +955,26 @@ def lucky_stack_ser(
             # ── Phase 4: AP grid ──────────────────────────────────────────
             # On iteration > 0, the reference is the previous stacked result
             # (much higher SNR → more accurate AP shifts).
-            ap_positions = generate_ap_grid(disk_cx, disk_cy, disk_radius, reference, cfg)
+            use_adaptive = bool(getattr(cfg, "use_adaptive_ap", True))
+            if use_adaptive:
+                ap_positions = generate_adaptive_ap_grid(
+                    disk_cx, disk_cy, disk_radius, reference, cfg
+                )
+                from collections import Counter as _Counter
+                ap_size_info = _Counter(sz for _, _, sz in ap_positions)
+                ap_desc = " ".join(
+                    f"{sz}px×{ap_size_info[sz]}" for sz in sorted(ap_size_info)
+                )
+            else:
+                ap_positions = generate_ap_grid(
+                    disk_cx, disk_cy, disk_radius, reference, cfg
+                )
+                ap_desc = f"size={cfg.ap_size}px"
             t3 = time.perf_counter()
             print(
                 f"  [4/5] AP grid: {len(ap_positions)} points  "
                 f"({t3-t2:.2f}s)"
+                + (f"  [{ap_desc}]" if ap_desc else "")
                 + (f"  [{iter_label}]" if iter_label else ""),
                 flush=True,
             )
@@ -777,6 +1015,11 @@ def lucky_stack_ser(
             # the stack is aligned to the original reference coordinate system.
             if iteration < n_iter - 1:
                 reference = stacked  # float32 [0,1]; already clipped
+
+    # Post-stack sub-pixel smoothing (try05: suppresses INTER_LINEAR aliasing at L1).
+    if cfg.stack_blur_sigma > 0.0:
+        stacked = cv2.GaussianBlur(stacked, (0, 0), cfg.stack_blur_sigma)
+        stacked = np.clip(stacked, 0.0, 1.0)
 
     t_total = time.perf_counter() - t0
     print(f"\n  Total: {t_total:.1f}s  ({n_iter} iteration{'s' if n_iter>1 else ''})", flush=True)

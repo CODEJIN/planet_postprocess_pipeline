@@ -18,11 +18,11 @@ Supports both **monochrome cameras** (filter wheel, multi-filter SER) and **colo
 - **Planetary de-rotation** via JPL Horizons ephemeris (astroquery), with warp-scale auto-tune
 - **Wavelet sharpening** (à trous algorithm, WaveSharp-compatible 0–500 scale) with limb feather control
 - **Flexible multi-channel compositing**: user-defined RGB/LRGB specs (RGB, IR-RGB, CH4-G-IR, and custom)
-- **Independent time-series compositing**: Step 08 has its own composite specs, separate from Step 07
-- **Auto white balance + chromatic aberration correction** for color camera mode (Steps 07 & 08)
+- **Independent time-series compositing**: Step 08 has its own composite specs, separate from Step 06
+- **Auto white balance + chromatic aberration correction** for color camera mode (Steps 06 & 08)
 - **Time-series animation**: sliding-window stacking with quality weighting + animated GIF export
 - **Summary contact sheet**: all windows × composites in a single image
-- **Live preview widgets**: wavelet (Step 06), RGB composite (Step 07), levels (Step 10), color correction (Step 07 color)
+- **Live preview widgets**: wavelet (Steps 05 & 07), RGB composite (Step 06), levels (Step 10), color correction (Step 06 color)
 - **Bilingual UI**: Korean / English (switchable at runtime)
 - **Standalone executable**: ships as a single binary via PyInstaller (no Python required)
 
@@ -32,16 +32,16 @@ Supports both **monochrome cameras** (filter wheel, multi-filter SER) and **colo
 
 | Step | Name | Description |
 |------|------|-------------|
-| 01 | PIPP Preprocessing | Reject clipped/deformed frames, center-align, crop to square ROI |
-| 02 | AutoStakkert! 4 | *(External)* Manual stacking — run AS!4 on Step 01 output |
-| 03 | Wavelet Preview | Apply wavelet sharpening to all TIF stacks; export filter PNGs |
-| 04 | Quality Assessment | Score each TIF; find optimal time windows across all filters |
-| 05 | De-rotation Stack | Spherical-warp de-rotation + quality-weighted mean stack; warp-scale auto-tune |
-| 06 | Wavelet Master | Final wavelet sharpening on de-rotated master stacks with limb feathering |
-| 07 | RGB Composite | User-defined multi-channel composites per window; auto WB+CA for color mode |
-| 08 | Time-Series Composite | Sliding-window stacks with independent composite specs; global filter normalisation |
-| 09 | Animated GIF | Assemble time-series frames into animated GIFs |
-| 10 | Summary Grid | Contact sheet with black-point + gamma levels adjustment |
+| 01 | PIPP Preprocessing | Reject clipped/deformed frames, center-align, crop to square ROI (Optional) |
+| 02 | Lucky Stacking | Select best SER frames by quality score and stack to TIF (Optional) |
+| 03 | Quality Assessment | Score each TIF; find optimal time windows across all filters |
+| 04 | De-rotation Stack | Spherical-warp de-rotation + quality-weighted mean stack; warp-scale auto-tune |
+| 05 | Wavelet Master | Final wavelet sharpening on de-rotated master stacks with limb feathering |
+| 06 | RGB Composite | User-defined multi-channel composites per window; auto WB+CA for color mode |
+| 07 | Wavelet Preview | Apply wavelet sharpening to individual TIF stacks; export per-filter PNGs (Optional) |
+| 08 | Time-Series Composite | Sliding-window stacks with independent composite specs; global filter normalisation (Optional) |
+| 09 | Animated GIF | Assemble time-series frames into animated GIFs (Optional) |
+| 10 | Summary Grid | Contact sheet with black-point + gamma levels adjustment (Optional) |
 
 ---
 
@@ -122,16 +122,17 @@ Both scripts use a shared PyInstaller spec (`astro_pipeline.spec`) that collects
 
 ```
 <output_dir>/
-├── step01_pipp/              # Cropped SER + rejection stats
-├── step03_wavelet_preview/   # Per-filter PNG previews (IR/R/G/B/CH4)
-├── step04_quality/           # Quality CSV, window JSON, rankings
-├── step05_derotated/         # De-rotated 16-bit TIFs per window
-├── step06_wavelet_master/    # Master-sharpened PNGs per window
-├── step07_rgb_composite/     # RGB/IR-RGB/CH4-G-IR composites
+├── step03_quality/           # Quality CSV, window JSON, rankings
+├── step04_derotated/         # De-rotated 16-bit TIFs per window
+├── step05_wavelet_master/    # Master-sharpened PNGs per window
+├── step06_rgb_composite/     # RGB/IR-RGB/CH4-G-IR composites per window
+├── step07_wavelet_preview/   # Per-filter PNG previews (IR/R/G/B/CH4)
 ├── step08_series/            # Time-series composite frames
 ├── step09_gif/               # Animated GIFs
 └── step10_summary_grid/      # Final contact sheet PNG
 ```
+
+> Steps 01 (PIPP) and 02 (Lucky Stacking) use their own user-configured output folders, separate from `<output_dir>`.
 
 ---
 
@@ -139,16 +140,16 @@ Both scripts use a shared PyInstaller spec (`astro_pipeline.spec`) that collects
 
 ```
 SER files
-  └─► Step 01 (PIPP crop)
-        └─► [AS!4 external stacking]
-              └─► Step 03 (wavelet preview)
-                    └─► Step 04 (quality score)
-                          ├─► Step 05 (de-rotation stack)
-                          │     └─► Step 06 (wavelet master)
-                          │           └─► Step 07 (RGB composite)
-                          │                 └─► Step 10 (summary grid)
-                          └─► Step 08 (time-series)
-                                └─► Step 09 (animated GIF)
+  └─► Step 01 (PIPP crop, optional)
+        └─► Step 02 (Lucky Stacking, optional)
+              └─► Step 03 (quality assessment)
+                    └─► Step 04 (de-rotation stack)
+                          └─► Step 05 (wavelet master)
+                                └─► Step 06 (RGB composite)
+                                      └─► Step 10 (summary grid, optional)
+              └─► Step 07 (wavelet preview, optional)
+                    └─► Step 08 (time-series composite, optional)
+                          └─► Step 09 (animated GIF, optional)
 ```
 
 ---
@@ -156,8 +157,10 @@ SER files
 ## Typical Usage
 
 1. Capture SER files with your planetary camera (e.g., Firecapture)
-2. Run **Step 01** to reject bad frames and crop to planet ROI
-3. Stack with **AutoStakkert! 4** externally
-4. Run **Steps 03–04** to preview and score stacks
-5. Run **Steps 05–07** for final de-rotated composites
-6. *(Optional)* Run **Steps 08–10** for time-series animation and summary
+2. *(Optional)* Run **Step 01** to reject bad frames and crop to planet ROI
+3. *(Optional)* Run **Step 02** (Lucky Stacking) to select the best frames and stack to TIF
+4. Run **Steps 03–06** for quality assessment, de-rotation stacking, wavelet sharpening, and RGB compositing
+5. *(Optional)* Run **Step 07** (Wavelet Preview) then **Steps 08–09** for time-series animation
+6. *(Optional)* Run **Step 10** for a summary contact sheet
+
+Alternatively, use the **▶ Run All** button which automatically executes all enabled steps in sequence from the configured start point (Step 1, 2, or 3), with input validation and a confirmation dialog before starting.
