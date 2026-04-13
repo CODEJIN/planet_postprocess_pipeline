@@ -2,7 +2,10 @@
   "app.title": "Planetary Imaging Pipeline",
   "app.lang_toggle": "한국어",
   "app.settings": "Settings",
-  "app.run_all": "▶  Run 3~10",
+  "app.run_all": "▶  Batch Run",
+  "app.run_all.from1": "▶  Run from Step 1",
+  "app.run_all.from2": "▶  Run from Step 2",
+  "app.run_all.from3": "▶  Run from Step 3",
   "app.status.ready": "Ready",
   "app.status.running": "Running",
 

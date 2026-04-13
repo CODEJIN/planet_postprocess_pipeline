@@ -116,6 +116,11 @@ class StepItem(QWidget):
             self._check.setChecked(False)
             self._check.blockSignals(False)
 
+    def set_checkbox_locked(self, locked: bool) -> None:
+        """Prevent or allow user from toggling the checkbox (grays it out visually)."""
+        if self._check is not None:
+            self._check.setEnabled(not locked)
+
     # ── Style ─────────────────────────────────────────────────────────────────
 
     def _update_style(self) -> None:

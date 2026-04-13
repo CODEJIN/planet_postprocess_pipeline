@@ -12,7 +12,7 @@ from typing import Any
 SESSION_DIR  = Path.home() / ".astropipe"
 SESSION_FILE = SESSION_DIR / "session.json"
 
-SESSION_VERSION = 7   # bump when _DEFAULTS or migration logic changes
+SESSION_VERSION = 8   # bump when _DEFAULTS or migration logic changes
 
 # Default values written on first run
 _DEFAULTS: dict[str, Any] = {
@@ -35,10 +35,10 @@ _DEFAULTS: dict[str, Any] = {
     "lucky_n_workers":    0,   # kept for migration compat; UI uses global_max_workers
     "global_max_workers": 0,   # 0=auto (all cores); Step 1 caps at 4, Step 2 uses all
     "save_mono_frames": False,
-    # Which optional steps are enabled
-    "enabled_steps":    {"01": True, "02": True, "03": True, "04": True,
-                         "05": True, "06": True, "07": True,
-                         "08": False, "09": False, "10": True},
+    # Which optional steps are enabled (01=PIPP off by default; 02=LuckyStack on)
+    "enabled_steps":    {"01": False, "02": True,  "03": True, "04": True,
+                         "05": True,  "06": True,  "07": False,
+                         "08": True,  "09": True,  "10": False},
     # Last known status of each step
     "step_status":      {},
 }
@@ -107,6 +107,10 @@ def _migrate(data: dict[str, Any]) -> dict[str, Any]:
     # v6→v7: series_amounts added (Step 8 wavelet independent from Step 6).
     # No migration needed — load_session() falls back to _SERIES_WAVELET_DEFAULTS
     # when the key is absent, so old sessions get the correct default automatically.
+
+    # v7→v8: Steps 01 and 02 are now optional (checkbox in sidebar).
+    # No data migration needed — existing sessions keep their enabled_steps values,
+    # and the merge logic in load() fills in new defaults for missing keys.
 
     data["session_version"] = SESSION_VERSION
     return data

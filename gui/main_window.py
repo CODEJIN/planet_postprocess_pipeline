@@ -171,8 +171,8 @@ DARK_STYLE = _build_dark_style()
 
 _STEP_DEFS = [
     # (step_id, i18n_key, optional)
-    ("01", "sidebar.step01", False),
-    ("02", "sidebar.step02", False),
+    ("01", "sidebar.step01", True),
+    ("02", "sidebar.step02", True),
     ("03", "sidebar.step03", False),
     ("04", "sidebar.step04", False),
     ("05", "sidebar.step05", False),
@@ -279,8 +279,8 @@ class MainWindow(QMainWindow):
                 sep.setStyleSheet("color: #444; margin: 4px 8px;")
                 step_list_layout.addWidget(sep)
 
-            # Steps 08 and 09 default to enabled even though they are optional
-            _default_on = {"08", "09"}
+            # Steps 02, 08, 09 default to enabled even though they are optional
+            _default_on = {"02", "08", "09"}
             enabled = enabled_steps.get(step_id, True if step_id in _default_on else not optional)
             item = StepItem(step_id, S(label), optional=optional, enabled=enabled)
             item.clicked.connect(self._on_step_clicked)
@@ -476,7 +476,7 @@ class MainWindow(QMainWindow):
         # Apply enabled step states — iterate ALL steps (not just saved ones)
         # so that visual state and checkbox are fully reset after a session reset.
         enabled_steps = self._session_data.get("enabled_steps", {})
-        _default_on = {"08", "09"}
+        _default_on = {"02", "08", "09"}
         for step_id, _label, optional in _STEP_DEFS:
             enabled = enabled_steps.get(
                 step_id,
@@ -504,6 +504,15 @@ class MainWindow(QMainWindow):
             panel = self._step_panels.get(sid)
             if panel and hasattr(panel, "load_session"):
                 panel.load_session(self._session_data)
+
+        # Enforce Step 01→02 lock: if Step 01 is enabled, lock Step 02 checkbox
+        if self._enabled_steps.get("01", False):
+            item02 = self._step_items.get("02")
+            if item02:
+                item02.set_checkbox_locked(True)
+
+        # Update batch run button label based on starting step
+        self._update_run_all_button()
 
         # Update status bar
         output_dir = self._session_data.get("output_dir", "")
@@ -543,6 +552,27 @@ class MainWindow(QMainWindow):
         self._enabled_steps[step_id] = enabled
         if step_id in self._step_items:
             self._step_items[step_id].set_enabled_visual(enabled)
+
+        # Step 01 (PIPP) checked → force Step 02 ON and lock its checkbox
+        if step_id == "01":
+            item02 = self._step_items.get("02")
+            if item02 and item02._check is not None:
+                if enabled:
+                    item02._check.blockSignals(True)
+                    item02._check.setChecked(True)
+                    item02._check.blockSignals(False)
+                    item02.set_enabled_visual(True)
+                    item02.set_checkbox_locked(True)
+                    self._enabled_steps["02"] = True
+                else:
+                    item02.set_checkbox_locked(False)
+            self._update_run_all_button()
+            return
+
+        if step_id == "02":
+            self._update_run_all_button()
+            return
+
         # Step 09 (GIF) requires Step 08 (series) output — enforce dependency
         if step_id == "08":
             item09 = self._step_items.get("09")
@@ -566,6 +596,16 @@ class MainWindow(QMainWindow):
                 item08 = self._step_items.get("08")
                 if item08 is not None and item08._check is not None:
                     item08._check.setChecked(True)  # triggers _on_step_toggled("08", True)
+
+    def _update_run_all_button(self) -> None:
+        """Update batch run button label based on the current starting step."""
+        if self._enabled_steps.get("01", False):
+            key = "app.run_all.from1"
+        elif self._enabled_steps.get("02", True):
+            key = "app.run_all.from2"
+        else:
+            key = "app.run_all.from3"
+        self._btn_run_all.setText(S(key))
 
     def _advance_to_next(self, current_step_id: str) -> None:
         """Show the panel after the given step in the sidebar order."""
@@ -704,42 +744,37 @@ class MainWindow(QMainWindow):
         self._runner.start()
 
     def _on_run_all(self) -> None:
-        """Run steps 03-10 in order (01 requires PIPP setup, 02 is manual AS!4)."""
+        """Batch run: determine starting step from checkbox state, validate, confirm, then run."""
         if self._runner and self._runner.isRunning():
             return
 
-        # Validate Step 3 input folder has TIF files before starting
-        step03 = self._step_panels.get("03")
-        if step03:
-            updates = step03.get_config_updates()
-            input_dir = updates.get("input_dir", "").strip()
-            if not input_dir:
-                QMessageBox.warning(
-                    self,
-                    "입력 폴더 없음",
-                    "Step 3의 TIF 입력 폴더를 설정해주세요.\n\n"
-                    "Step 3 패널에서 폴더를 지정한 후 다시 시도하세요.",
-                )
-                return
-            input_path = Path(input_dir)
-            tif_files = list(input_path.glob("*.tif")) + list(input_path.glob("*.TIF"))
-            if not input_path.exists() or not tif_files:
-                QMessageBox.warning(
-                    self,
-                    "TIF 파일 없음",
-                    f"입력 폴더에 TIF 파일이 없습니다:\n{input_dir}\n\n"
-                    "Lucky Stacking(Step 2) 완료 후 TIF 파일 경로를 설정한 후 다시 시도하세요.",
-                )
-                return
+        self.save_session()
+        d = self._session_data
 
-        steps = [
-            sid for sid, _label, _opt in _STEP_DEFS
-            if sid not in ("01", "02") and self._enabled_steps.get(sid, True)
-        ]
+        # 1. Determine starting step
+        if self._enabled_steps.get("01", False):
+            start_from = "01"
+        elif self._enabled_steps.get("02", True):
+            start_from = "02"
+        else:
+            start_from = "03"
+
+        # 2. Validate input files exist
+        ok, err_title, err_msg = self._validate_batch_input(start_from, d)
+        if not ok:
+            QMessageBox.warning(self, err_title, err_msg)
+            return
+
+        # 3. Build ordered step list
+        steps = self._build_batch_steps(start_from)
         if not steps:
             return
 
-        # Reset status icons for all steps that will be re-run
+        # 4. Show confirmation dialog
+        if not self._show_batch_confirm(steps, start_from, d):
+            return
+
+        # 5. Reset status icons and launch runner
         for sid in steps:
             if sid in self._step_items:
                 self._step_items[sid].set_status("idle")
@@ -753,6 +788,133 @@ class MainWindow(QMainWindow):
         self._runner.start()
         self._btn_run_all.setEnabled(False)
         self._status_label.setText(S("app.status.running"))
+
+    def _validate_batch_input(self, start_from: str, d: dict) -> tuple[bool, str, str]:
+        """Check that the starting input folder has the expected files."""
+        if start_from == "01":
+            path_str = d.get("ser_input_dir", "").strip()
+            label = "Step 1 SER 폴더"
+            patterns = ("*.ser", "*.SER")
+        elif start_from == "02":
+            path_str = (d.get("step02_ser_dir", "") or d.get("ser_input_dir", "")).strip()
+            label = "Step 2 SER 폴더"
+            patterns = ("*.ser", "*.SER")
+        else:
+            path_str = d.get("input_dir", "").strip()
+            label = "Step 3 TIF 폴더"
+            patterns = ("*.tif", "*.TIF")
+
+        if not path_str:
+            return False, "입력 폴더 없음", f"{label}를 설정해주세요."
+        p = Path(path_str)
+        files = [f for pat in patterns for f in p.glob(pat)]
+        if not p.exists() or not files:
+            return False, "입력 파일 없음", f"{label}에 파일이 없습니다:\n{path_str}"
+        return True, "", ""
+
+    def _build_batch_steps(self, start_from: str) -> list[str]:
+        """Build the ordered list of steps to execute for batch run."""
+        all_ids = [sid for sid, _, _ in _STEP_DEFS]
+        start_idx = all_ids.index(start_from)
+        result = []
+        for i, (sid, _, optional) in enumerate(_STEP_DEFS):
+            if i < start_idx:
+                continue
+            if optional and not self._enabled_steps.get(sid, False):
+                continue
+            result.append(sid)
+        return result
+
+    def _show_batch_confirm(self, steps: list[str], start_from: str, d: dict) -> bool:
+        """Show a confirmation dialog listing what will run and where outputs go."""
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout
+
+        # Input summary with file count
+        if start_from in ("01", "02"):
+            inp_path = (
+                d.get("ser_input_dir", "")
+                if start_from == "01"
+                else (d.get("step02_ser_dir", "") or d.get("ser_input_dir", ""))
+            )
+            p = Path(inp_path)
+            n = len([f for pat in ("*.ser", "*.SER") for f in p.glob(pat)])
+            inp_summary = f"입력: {inp_path}  (SER × {n})"
+        else:
+            inp_path = d.get("input_dir", "")
+            p = Path(inp_path)
+            n = len([f for pat in ("*.tif", "*.TIF") for f in p.glob(pat)])
+            inp_summary = f"입력: {inp_path}  (TIF × {n})"
+
+        out_base = d.get("output_dir", "")
+
+        def _out(step_id: str) -> str:
+            if step_id == "01":
+                return d.get("step01_output_dir", "(미설정)")
+            if step_id == "02":
+                return d.get("step02_output_dir", "(미설정)")
+            _names = {
+                "03": "step03_quality",
+                "04": "step04_derotated",
+                "05": "step05_wavelet_master",
+                "06": "step06_rgb_composite",
+                "07": "step07_wavelet_preview",
+                "08": "step08_series_composite",
+                "09": "step09_gif",
+                "10": "step10_summary_grid",
+            }
+            if out_base and step_id in _names:
+                return f"{out_base}/{_names[step_id]}"
+            return "(미설정)"
+
+        _step_names = {
+            "01": "PIPP 전처리",
+            "02": "Lucky Stacking",
+            "03": "품질 평가",
+            "04": "De-rotation 스태킹",
+            "05": "Wavelet 마스터",
+            "06": "RGB 합성",
+            "07": "Wavelet 미리보기",
+            "08": "시계열 합성",
+            "09": "애니메이션 GIF",
+            "10": "요약 그리드",
+        }
+
+        all_ids = [sid for sid, _, _ in _STEP_DEFS]
+        start_idx = all_ids.index(start_from)
+
+        lines = [inp_summary, ""]
+        for sid, _, optional in _STEP_DEFS:
+            if all_ids.index(sid) < start_idx:
+                continue
+            name = _step_names.get(sid, sid)
+            if sid in steps:
+                lines.append(f"  ✓  Step {sid} — {name}")
+                lines.append(f"       → {_out(sid)}")
+            elif optional:
+                lines.append(f"  —  Step {sid} — {name}  (건너뜀)")
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("일괄 실행 확인")
+        dlg.setMinimumWidth(520)
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 12)
+        lbl = QLabel("\n".join(lines))
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet(
+            "font-family: monospace; font-size: 11px; color: #d4d4d4;"
+            " background: transparent;"
+        )
+        layout.addWidget(lbl)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("실행")
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+        return dlg.exec() == QDialog.DialogCode.Accepted
 
     def _connect_runner(self, runner: StepRunner) -> None:
         runner.log_line.connect(self._log_widget.append_line)

@@ -2,7 +2,10 @@
   "app.title": "행성 촬영 파이프라인",
   "app.lang_toggle": "English",
   "app.settings": "설정",
-  "app.run_all": "▶  3~10 자동 실행",
+  "app.run_all": "▶  일괄 실행",
+  "app.run_all.from1": "▶  Step 1부터 실행",
+  "app.run_all.from2": "▶  Step 2부터 실행",
+  "app.run_all.from3": "▶  Step 3부터 실행",
   "app.status.ready": "준비",
   "app.status.running": "실행 중",
 
