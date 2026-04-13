@@ -1,4 +1,5 @@
-# AstroPipeline
+# PlanetFlow
+[![DOI](https://zenodo.org/badge/1205747035.svg)](https://doi.org/10.5281/zenodo.19556083)
 
 **Planetary imaging post-processing pipeline with GUI**
 
