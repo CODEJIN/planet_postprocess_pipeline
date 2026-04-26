@@ -148,29 +148,27 @@ def score_frames_local(
     sampled_idx: List[int] = list(range(0, n_frames, score_step))
     sampled_scores: List[float] = []
 
+    _ksize = int(getattr(cfg, "quality_gradient_ksize", 3))
+    _nr    = int(getattr(cfg, "quality_noise_robust", 0))
+    _nr_sigma = _nr * 0.5 if _nr > 0 else 0.0
+
     for i, idx in enumerate(sampled_idx):
         frame = reader.get_frame(idx).astype(np.float32) / 255.0
+        # Opt-C: full-frame Sobel (once per frame) instead of per-AP-patch.
+        # Noise Robust blur applied to full frame when NR>0.
+        if _nr > 0:
+            frame = cv2.GaussianBlur(frame, (0, 0), _nr_sigma)
+        gx_full = cv2.Sobel(frame, cv2.CV_32F, 1, 0, ksize=_ksize)
+        gy_full = cv2.Sobel(frame, cv2.CV_32F, 0, 1, ksize=_ksize)
+        mag2 = gx_full ** 2 + gy_full ** 2
+
         patch_scores: List[float] = []
         for ap in ap_positions:
             ax, ay = int(ap[0]), int(ap[1])
             half = int(ap[2]) // 2 if len(ap) >= 3 else default_half
             if ay - half < 0 or ay + half > H or ax - half < 0 or ax + half > W:
                 continue
-            patch = frame[ay - half: ay + half, ax - half: ax + half]
-            # Use MAX gradient magnitude within patch (CV ~6%) vs mean (CV ~1.4%).
-            # Max captures the sharpest feature in each AP; seeing variations affect
-            # peak gradient far more than average gradient, giving 4× more frame
-            # discrimination than mean-based approaches.
-            _ksize = int(getattr(cfg, "quality_gradient_ksize", 3))
-            # try55: Noise Robust pre-scoring blur — blur ONLY for quality scoring,
-            # not for stacking. Matches AS!4's noise_robust parameter (NR=3 → σ=1.5px).
-            _nr = int(getattr(cfg, "quality_noise_robust", 0))
-            if _nr > 0:
-                _sigma = _nr * 0.5
-                patch = cv2.GaussianBlur(patch, (0, 0), _sigma)
-            gx = cv2.Sobel(patch, cv2.CV_32F, 1, 0, ksize=_ksize)
-            gy = cv2.Sobel(patch, cv2.CV_32F, 0, 1, ksize=_ksize)
-            patch_scores.append(float((gx ** 2 + gy ** 2).max()))
+            patch_scores.append(float(mag2[ay - half: ay + half, ax - half: ax + half].max()))
         sampled_scores.append(float(np.mean(patch_scores)) if patch_scores else 0.0)
         if progress_callback is not None and i % 50 == 0:
             progress_callback(idx, n_frames)
@@ -945,6 +943,85 @@ def _precompute_ap_ref_data(
     return precomp
 
 
+def _batch_ncc_shifts(
+    frame: np.ndarray,
+    ap_positions: List,
+    ref_precomp: List,
+    cfg: LuckyStackConfig,
+) -> List[Optional[Tuple[Optional[float], Optional[float], float]]]:
+    """Batch NCC shift estimation: one rfft2 call per AP-size group per frame.
+
+    Groups APs by size, stacks patches, and processes each group with a single
+    batched rfft2/irfft2 pair instead of N_aps individual calls.
+
+    Returns a list indexed by ap_position index:
+      None              — not processed (OOB or missing precomp); caller falls
+                          back to serial _estimate_ap_shift_precomp.
+      (None, None, 0.0) — processed but rejected (low confidence or OOB shift).
+      (dx, dy, conf)    — accepted shift estimate.
+    """
+    H, W = frame.shape[:2]
+    _ncc_thr_cfg = float(getattr(cfg, "ncc_confidence_threshold", -1.0))
+    ncc_thr = cfg.ap_confidence_threshold if _ncc_thr_cfg < 0.0 else _ncc_thr_cfg
+    search_range = cfg.ap_search_range
+
+    results: List[Optional[Tuple]] = [None] * len(ap_positions)
+
+    # Group valid AP indices by size
+    size_groups: Dict[int, List[int]] = {}
+    for i, ap in enumerate(ap_positions):
+        if i >= len(ref_precomp) or ref_precomp[i] is None:
+            continue
+        ap_sz = int(ap[2]) if len(ap) >= 3 else cfg.ap_size
+        half = ap_sz // 2
+        ax, ay = int(ap[0]), int(ap[1])
+        if ay - half < 0 or ay + half > H or ax - half < 0 or ax + half > W:
+            continue
+        size_groups.setdefault(ap_sz, []).append(i)
+
+    for sz, ap_indices in size_groups.items():
+        half = sz // 2
+        hann = _get_hann(sz)
+        N = sz * sz
+
+        patches: List[np.ndarray] = []
+        F1_list: List[np.ndarray] = []
+        sigma_refs: List[float] = []
+        for i in ap_indices:
+            ap = ap_positions[i]
+            ax, ay = int(ap[0]), int(ap[1])
+            patches.append(frame[ay - half: ay + half, ax - half: ax + half].astype(np.float32))
+            F1_list.append(ref_precomp[i]["F1"])
+            sigma_refs.append(ref_precomp[i]["sigma_ref"])
+
+        # Keep float32 for mean/hann step to match serial path precision
+        P = np.stack(patches)                                          # (n, sz, sz)
+        P_zm = (P - P.mean(axis=(-2, -1), keepdims=True)) * hann      # float32
+        stds = P_zm.std(axis=(-2, -1))                                 # (n,)
+
+        F1_stack = np.stack(F1_list)                                   # (n, sz, sz//2+1)
+        F2_batch = np.fft.rfft2(P_zm.astype(np.float64))               # (n, sz, sz//2+1)
+        cc_batch = np.fft.irfft2(np.conj(F1_stack) * F2_batch, s=(sz, sz))  # (n, sz, sz)
+
+        sig_refs_arr = np.array(sigma_refs, dtype=np.float64)
+        norms = N * sig_refs_arr * stds.astype(np.float64)             # (n,)
+
+        for k, i in enumerate(ap_indices):
+            norm = float(norms[k])
+            if norm < 1e-12:
+                results[i] = (None, None, 0.0)
+                continue
+            cc = (cc_batch[k] / norm).astype(np.float32)
+            dx, dy, peak = _qsf_refine(cc)
+            confidence = float(np.clip(peak, 0.0, 1.0))
+            if abs(dx) > search_range or abs(dy) > search_range or confidence < ncc_thr:
+                results[i] = (None, None, 0.0)
+                continue
+            results[i] = (dx, dy, confidence)
+
+    return results
+
+
 def _estimate_ap_shift_precomp(
     frm_patch: np.ndarray,
     pc: Dict,
@@ -1074,17 +1151,20 @@ def _build_per_ap_quality_map(
     q_map = np.zeros((H, W), dtype=np.float32)
     w_map = np.ones((H, W), dtype=np.float32)   # uniform 1.0 at each AP to normalize
 
+    # Opt-C: full-frame Sobel once (with optional NR blur).
+    _frame = warped_frame
+    if _nr > 0:
+        _frame = cv2.GaussianBlur(_frame, (0, 0), _nr * 0.5)
+    gx_full = cv2.Sobel(_frame, cv2.CV_32F, 1, 0, ksize=_ksize)
+    gy_full = cv2.Sobel(_frame, cv2.CV_32F, 0, 1, ksize=_ksize)
+    mag2_full = gx_full ** 2 + gy_full ** 2
+
     for ap in ap_positions:
         ax, ay = int(ap[0]), int(ap[1])
         half = int(ap[2]) // 2 if len(ap) >= 3 else cfg.ap_size // 2
         if ay - half < 0 or ay + half > H or ax - half < 0 or ax + half > W:
             continue
-        patch = warped_frame[ay - half: ay + half, ax - half: ax + half]
-        if _nr > 0:
-            patch = cv2.GaussianBlur(patch, (0, 0), _nr * 0.5)
-        gx = cv2.Sobel(patch, cv2.CV_32F, 1, 0, ksize=_ksize)
-        gy = cv2.Sobel(patch, cv2.CV_32F, 0, 1, ksize=_ksize)
-        q = float((gx ** 2 + gy ** 2).max()) ** _power
+        q = float(mag2_full[ay - half: ay + half, ax - half: ax + half].max()) ** _power
         q_map[ay, ax] = q
 
     # Gaussian KR: interpolate per-AP quality to full resolution
@@ -1145,15 +1225,24 @@ def _compute_warp_maps(
     shift_y = np.zeros((H, W), dtype=np.float32)
     weight   = np.zeros((H, W), dtype=np.float32)
 
+    # Opt-2: batch rfft2 — one call per frame instead of N_aps calls
+    _use_ncc = bool(getattr(cfg, "use_ncc", False))
+    batch_shifts = (
+        _batch_ncc_shifts(frame_aligned, ap_positions, ref_precomp, cfg)
+        if _use_ncc and ref_precomp is not None else None
+    )
+
     n_good = 0
     for i, (ax, ay) in enumerate(ap_positions):
-        frm_patch = frame_aligned[ay - half : ay + half, ax - half : ax + half].astype(np.float32)
-
-        if ref_precomp is not None and i < len(ref_precomp) and ref_precomp[i] is not None:
-            dx, dy, conf = _estimate_ap_shift_precomp(frm_patch, ref_precomp[i], hann2d, cfg)
+        if batch_shifts is not None and batch_shifts[i] is not None:
+            dx, dy, conf = batch_shifts[i]
         else:
-            ref_patch = reference[ay - half : ay + half, ax - half : ax + half].astype(np.float32)
-            dx, dy, conf = _estimate_ap_shift(ref_patch, frm_patch, hann2d, cfg)
+            frm_patch = frame_aligned[ay - half : ay + half, ax - half : ax + half].astype(np.float32)
+            if ref_precomp is not None and i < len(ref_precomp) and ref_precomp[i] is not None:
+                dx, dy, conf = _estimate_ap_shift_precomp(frm_patch, ref_precomp[i], hann2d, cfg)
+            else:
+                ref_patch = reference[ay - half : ay + half, ax - half : ax + half].astype(np.float32)
+                dx, dy, conf = _estimate_ap_shift(ref_patch, frm_patch, hann2d, cfg)
         if dx is None:
             continue
 
@@ -1227,6 +1316,13 @@ def _compute_adaptive_warp_maps(
     weight  = np.zeros((H, W), dtype=np.float32)
     n_good  = 0
 
+    # Opt-2: batch rfft2 — one call per size group per frame
+    _use_ncc = bool(getattr(cfg, "use_ncc", False))
+    batch_shifts = (
+        _batch_ncc_shifts(frame_aligned, ap_positions, ref_precomp, cfg)
+        if _use_ncc and ref_precomp is not None else None
+    )
+
     for i, (ax, ay, ap_size) in enumerate(ap_positions):
         half = ap_size // 2
         y0, y1 = ay - half, ay + half
@@ -1237,7 +1333,9 @@ def _compute_adaptive_warp_maps(
         frm_patch = frame_aligned[y0:y1, x0:x1].astype(np.float32)
         hann      = _get_hann(ap_size)
 
-        if ref_precomp is not None and i < len(ref_precomp) and ref_precomp[i] is not None:
+        if batch_shifts is not None and batch_shifts[i] is not None:
+            dx, dy, conf = batch_shifts[i]
+        elif ref_precomp is not None and i < len(ref_precomp) and ref_precomp[i] is not None:
             dx, dy, conf = _estimate_ap_shift_precomp(frm_patch, ref_precomp[i], hann, cfg)
         else:
             ref_patch = reference[y0:y1, x0:x1].astype(np.float32)
@@ -1457,16 +1555,18 @@ def _spatial_per_ap_quality_stack(
         frame_aligned = apply_shift(frame, dx_g, dy_g)
 
         # ── Per-AP Sobel quality on globally-aligned frame ────────────────────
+        # Opt-C: full-frame Sobel once, then sample per AP.
+        gx_full = cv2.Sobel(frame_aligned, cv2.CV_32F, 1, 0, ksize=_ksize)
+        gy_full = cv2.Sobel(frame_aligned, cv2.CV_32F, 0, 1, ksize=_ksize)
+        mag2_full = gx_full ** 2 + gy_full ** 2
+
         q_map = np.zeros((H, W), dtype=np.float32)
         for ap in ap_positions:
             ax, ay = int(ap[0]), int(ap[1])
             half = (int(ap[2]) if len(ap) >= 3 else cfg.ap_size) // 2
             if ay - half < 0 or ay + half > H or ax - half < 0 or ax + half > W:
                 continue
-            patch = frame_aligned[ay - half: ay + half, ax - half: ax + half]
-            gx = cv2.Sobel(patch, cv2.CV_32F, 1, 0, ksize=_ksize)
-            gy = cv2.Sobel(patch, cv2.CV_32F, 0, 1, ksize=_ksize)
-            q = float((gx ** 2 + gy ** 2).max()) ** _per_ap_pow
+            q = float(mag2_full[ay - half: ay + half, ax - half: ax + half].max()) ** _per_ap_pow
             q_map[ay, ax] = q
 
         # Gaussian KR → smooth spatial quality weight map for this frame
@@ -1582,32 +1682,63 @@ def _per_ap_independent_stack(
     n_workers = int(getattr(cfg, "n_workers", 1))
     if n_workers <= 0:
         n_workers = _mp.cpu_count()
-    n_workers = max(1, n_workers)
-    _fork_ok  = "fork" in _mp.get_all_start_methods()
+    n_ser = max(1, int(getattr(cfg, "n_ser_parallel", 1)))
+    n_workers = max(1, n_workers // n_ser)
 
-    if n_workers > 1 and _fork_ok:
-        global _WORKER_STATE
-        _WORKER_STATE = {
-            "frames":       selected_frames,
-            "reference":    reference,
-            "ap_positions": ap_positions,
-            "cfg":          cfg,
-            "disk_cx":      disk_cx,
-            "disk_cy":      disk_cy,
-            "disk_radius":  disk_radius,
-        }
+    # progress total = n_sel (Pass 1 frames) + n_ap (Pass 2 APs)
+    _prog_total = n_sel + n_ap
+    print(f"    [Pass 1] global align + scoring: {n_sel} frames × {n_ap} APs"
+          f"  (n_workers={n_workers})", flush=True)
+
+    # Closure captures all read-only arrays directly — threads share memory,
+    # no pickling or fork needed.  cv2.Sobel / limb_center_align release GIL.
+    def _pass1_chunk(chunk_indices: List[int]) -> Tuple[np.ndarray, np.ndarray]:
+        shifts_c = np.zeros((len(chunk_indices), 2), dtype=np.float32)
+        scores_c = np.zeros((len(chunk_indices), n_ap), dtype=np.float32)
+        for li, i in enumerate(chunk_indices):
+            frame = selected_frames[i]
+            dx_g, dy_g = limb_center_align(disk_cx, disk_cy, frame, fixed_threshold=_stab_thresh)
+            if abs(dx_g) > disk_radius * 0.5 or abs(dy_g) > disk_radius * 0.5:
+                dx_g, dy_g = subpixel_align(reference, frame)
+            shifts_c[li] = (dx_g, dy_g)
+            aligned = apply_shift(frame, dx_g, dy_g)
+            if _score_metric != "log_disk":
+                gx = cv2.Sobel(aligned, cv2.CV_32F, 1, 0, ksize=_ksize)
+                gy = cv2.Sobel(aligned, cv2.CV_32F, 0, 1, ksize=_ksize)
+                mag2 = gx ** 2 + gy ** 2
+            for j, ap in enumerate(ap_positions):
+                ax, ay = int(ap[0]), int(ap[1])
+                half = (int(ap[2]) if len(ap) >= 3 else cfg.ap_size) // 2
+                if ay - half < 0 or ay + half > H or ax - half < 0 or ax + half > W:
+                    continue
+                patch = aligned[ay - half: ay + half, ax - half: ax + half]
+                if _score_metric == "log_disk":
+                    pf = patch.astype(np.float32)
+                    pm = float(pf.max())
+                    if pm > 1e-9:
+                        pf /= pm
+                    mask_p = pf > _log_thr
+                    if mask_p.sum() < 5:
+                        scores_c[li, j] = 0.0
+                    else:
+                        bl = cv2.GaussianBlur(pf, (0, 0), _log_sigma)
+                        lp = cv2.Laplacian(bl, cv2.CV_32F, ksize=3)
+                        scores_c[li, j] = float(lp[mask_p].var())
+                else:
+                    scores_c[li, j] = float(mag2[ay - half: ay + half, ax - half: ax + half].max())
+        return shifts_c, scores_c
+
+    if n_workers > 1:
         all_idx  = list(range(n_sel))
         chunk_sz = max(1, (n_sel + n_workers - 1) // n_workers)
         chunks   = [all_idx[k:k + chunk_sz] for k in range(0, n_sel, chunk_sz)]
-        ctx      = _mp.get_context("fork")
-        with ctx.Pool(n_workers) as pool:
-            results = pool.map(_per_ap_pass1_worker, chunks)
-        for chunk_idx, (shifts_chunk, scores_chunk) in zip(chunks, results):
-            for li, i in enumerate(chunk_idx):
-                global_shifts[i] = shifts_chunk[li]
-                score_matrix[i]  = scores_chunk[li]
+        with _ThreadPoolExecutor(max_workers=n_workers) as executor:
+            for chunk_idx, (shifts_c, scores_c) in zip(chunks, executor.map(_pass1_chunk, chunks)):
+                for li, i in enumerate(chunk_idx):
+                    global_shifts[i] = shifts_c[li]
+                    score_matrix[i]  = scores_c[li]
         if progress_callback:
-            progress_callback(n_sel, n_sel * 2)
+            progress_callback(n_sel, _prog_total)
     else:
         for i, frame in enumerate(selected_frames):
             dx_g, dy_g = limb_center_align(
@@ -1618,6 +1749,10 @@ def _per_ap_independent_stack(
             global_shifts[i] = (dx_g, dy_g)
 
             aligned = apply_shift(frame, dx_g, dy_g)
+            if _score_metric != "log_disk":
+                gx_full = cv2.Sobel(aligned, cv2.CV_32F, 1, 0, ksize=_ksize)
+                gy_full = cv2.Sobel(aligned, cv2.CV_32F, 0, 1, ksize=_ksize)
+                mag2_full = gx_full ** 2 + gy_full ** 2
             for j, ap in enumerate(ap_positions):
                 ax, ay = int(ap[0]), int(ap[1])
                 half = (int(ap[2]) if len(ap) >= 3 else cfg.ap_size) // 2
@@ -1637,12 +1772,12 @@ def _per_ap_independent_stack(
                         lp = cv2.Laplacian(bl, cv2.CV_32F, ksize=3)
                         score_matrix[i, j] = float(lp[mask_p].var())
                 else:
-                    gx = cv2.Sobel(patch, cv2.CV_32F, 1, 0, ksize=_ksize)
-                    gy = cv2.Sobel(patch, cv2.CV_32F, 0, 1, ksize=_ksize)
-                    score_matrix[i, j] = float((gx ** 2 + gy ** 2).max())
+                    score_matrix[i, j] = float(mag2_full[ay - half: ay + half, ax - half: ax + half].max())
 
             if progress_callback and i % 100 == 0:
-                progress_callback(i, n_sel * 2)
+                progress_callback(i, _prog_total)
+
+    print(f"    [Pass 1] done", flush=True)
 
     # ── Intermediate: build sub-pixel globally-aligned frames ────────────────
     # Apply sub-pixel (bicubic) global shift to every selected frame so Pass 2
@@ -1653,89 +1788,118 @@ def _per_ap_independent_stack(
         aligned_frames[i] = apply_shift(frame, dx_g, dy_g)
 
     # ── Pass 2: per-AP independent patch stacking ────────────────────────────
-    accum  = np.zeros((H, W), dtype=np.float64)
-    weight = np.zeros((H, W), dtype=np.float64)
     n_top  = max(3, int(n_sel * sub_pct))
     frame_logs: List[Dict] = []
     _use_ncc_local = bool(getattr(cfg, "use_ncc", False))
+    print(f"    [Pass 2] per-AP stacking: {n_ap} APs, top {n_top}/{n_sel} frames each"
+          f"  (n_workers={n_workers})", flush=True)
 
-    for j, ap in enumerate(ap_positions):
+    # Process one AP fully: n_top-frame NCC + getRectSubPix + weighted sum.
+    # Returns the small stacked patch + clip coords so the main thread can
+    # scatter-add without allocating a full H×W canvas per worker.
+    #
+    # NCC path: ref FFT computed once per AP; all n_top frame patches are
+    # stacked and processed with a single batch rfft2 call, giving numpy a
+    # large GIL-free operation so ThreadPoolExecutor can run APs in parallel.
+    def _process_one_ap(j: int) -> Optional[Tuple]:
+        ap = ap_positions[j]
         ax, ay  = int(ap[0]), int(ap[1])
         ap_size = int(ap[2]) if len(ap) >= 3 else cfg.ap_size
         half    = ap_size // 2
         if ay - half < 0 or ay + half > H or ax - half < 0 or ax + half > W:
-            continue
-
-        # Blend region: 2× ap_size so patches extend well beyond the planet disk
-        # edge and into neighboring APs — eliminates frame-subset brightness seams
-        # that wavelet sharpening would amplify as a grid pattern.
-        blend_size = ap_size * 2
-        blend_half = blend_size // 2
-        sigma_blend = blend_size / 3.0   # ~ap_size*2/3; ≈0.61 weight at ap_step distance
+            return None
+        blend_size  = ap_size * 2
+        blend_half  = blend_size // 2
+        sigma_blend = blend_size / 3.0
         g1d_b = cv2.getGaussianKernel(blend_size, sigma_blend)
         gmask = (g1d_b @ g1d_b.T).astype(np.float64)
         gmask /= gmask.max()
-
         hann_ap   = _get_hann(ap_size)
         ref_patch = reference[ay - half: ay + half, ax - half: ax + half].astype(np.float32)
-
-        # Select top frames for this AP by local score
         ap_scores   = score_matrix[:, j]
         top_indices = np.argsort(ap_scores)[-n_top:]
-
         local_accum  = np.zeros((blend_size, blend_size), dtype=np.float64)
         local_weight = 0.0
 
-        for li in top_indices:
-            aligned_f = aligned_frames[li]  # sub-pixel globally aligned
-
-            frm_patch = aligned_f[ay - half: ay + half, ax - half: ax + half].astype(np.float32)
-
-            # Local shift at this AP (NCC or phaseCorrelate)
-            if _use_ncc_local:
-                dx_l, dy_l, _conf = _ncc_shift(
-                    ref_patch, frm_patch, hann_ap, cfg.ap_search_range
-                )
-                if dx_l is None:
+        if _use_ncc_local:
+            # Ref FFT: computed once for all n_top frames
+            ref_zm    = (ref_patch - ref_patch.mean()) * hann_ap
+            sigma_ref = float(ref_zm.std())
+            F1        = np.fft.rfft2(ref_zm.astype(np.float64))
+            N_patch   = ap_size * ap_size
+            # Batch extract frame patches: (n_top, ap_size, ap_size)
+            frm_patches = aligned_frames[top_indices, ay - half:ay + half, ax - half:ax + half].astype(np.float32)
+            frm_zm  = (frm_patches - frm_patches.mean(axis=(-2, -1), keepdims=True)) * hann_ap
+            stds    = frm_zm.std(axis=(-2, -1))                           # (n_top,)
+            F2_batch = np.fft.rfft2(frm_zm.astype(np.float64))            # (n_top, ap_size, ap_size//2+1)
+            cc_batch = np.fft.irfft2(np.conj(F1) * F2_batch, s=(ap_size, ap_size)).astype(np.float32)
+            norms_arr = (N_patch * sigma_ref * stds.astype(np.float64)).astype(np.float32)
+            search_r  = cfg.ap_search_range
+            for k, li in enumerate(top_indices):
+                norm = float(norms_arr[k])
+                if norm < 1e-12:
                     dx_l, dy_l = 0.0, 0.0
-            else:
-                (dx_l, dy_l), _ = cv2.phaseCorrelate(
-                    ref_patch * hann_ap, frm_patch * hann_ap
-                )
+                else:
+                    dx_l, dy_l, _conf = _qsf_refine(cc_batch[k] / norm)
+                    if abs(dx_l) > search_r or abs(dy_l) > search_r:
+                        dx_l, dy_l = 0.0, 0.0
+                patch = cv2.getRectSubPix(
+                    aligned_frames[li], (blend_size, blend_size), (float(ax) + dx_l, float(ay) + dy_l)
+                ).astype(np.float64)
+                w = max(float(ap_scores[li]) ** _power, 1e-9)
+                local_accum  += patch * w
+                local_weight += w
+        else:
+            for li in top_indices:
+                aligned_f = aligned_frames[li]
+                frm_patch = aligned_f[ay - half: ay + half, ax - half: ax + half].astype(np.float32)
+                (dx_l, dy_l), _ = cv2.phaseCorrelate(ref_patch * hann_ap, frm_patch * hann_ap)
                 dx_l, dy_l = float(dx_l), float(dy_l)
                 if abs(dx_l) > cfg.ap_search_range or abs(dy_l) > cfg.ap_search_range:
                     dx_l, dy_l = 0.0, 0.0
-
-            # Extract blend_size patch centered at the locally-shifted AP center
-            cx = float(ax) + dx_l
-            cy = float(ay) + dy_l
-            patch = cv2.getRectSubPix(
-                aligned_f, (blend_size, blend_size), (cx, cy)
-            ).astype(np.float64)
-
-            w = max(float(ap_scores[li]) ** _power, 1e-9)
-            local_accum  += patch * w
-            local_weight += w
+                patch = cv2.getRectSubPix(
+                    aligned_f, (blend_size, blend_size), (float(ax) + dx_l, float(ay) + dy_l)
+                ).astype(np.float64)
+                w = max(float(ap_scores[li]) ** _power, 1e-9)
+                local_accum  += patch * w
+                local_weight += w
 
         if local_weight < 1e-12:
-            continue
-
+            return None
         stacked_patch = local_accum / local_weight
+        y0c = ay - blend_half; y0g = 0
+        y1c = ay + blend_half; y1g = blend_size
+        x0c = ax - blend_half; x0g = 0
+        x1c = ax + blend_half; x1g = blend_size
+        if y0c < 0:  y0g -= y0c; y0c = 0
+        if y1c > H:  y1g -= (y1c - H); y1c = H
+        if x0c < 0:  x0g -= x0c; x0c = 0
+        if x1c > W:  x1g -= (x1c - W); x1c = W
+        return stacked_patch, gmask, y0c, y1c, x0c, x1c, y0g, y1g, x0g, x1g
 
-        # Blend onto canvas — clamp to image bounds and slice gmask accordingly
-        y0c = ay - blend_half;  y0g = 0
-        y1c = ay + blend_half;  y1g = blend_size
-        x0c = ax - blend_half;  x0g = 0
-        x1c = ax + blend_half;  x1g = blend_size
-        if y0c < 0:   y0g -= y0c; y0c = 0
-        if y1c > H:   y1g -= (y1c - H); y1c = H
-        if x0c < 0:   x0g -= x0c; x0c = 0
-        if x1c > W:   x1g -= (x1c - W); x1c = W
+    def _scatter(res: Optional[Tuple]) -> None:
+        if res is None:
+            return
+        stacked_patch, gmask, y0c, y1c, x0c, x1c, y0g, y1g, x0g, x1g = res
         accum [y0c:y1c, x0c:x1c] += stacked_patch[y0g:y1g, x0g:x1g] * gmask[y0g:y1g, x0g:x1g]
         weight[y0c:y1c, x0c:x1c] += gmask[y0g:y1g, x0g:x1g]
 
-        if progress_callback:
-            progress_callback(n_sel + j, n_sel * 2)
+    accum  = np.zeros((H, W), dtype=np.float64)
+    weight = np.zeros((H, W), dtype=np.float64)
+
+    if n_workers > 1:
+        with _ThreadPoolExecutor(max_workers=n_workers) as executor:
+            for j, res in enumerate(executor.map(_process_one_ap, range(n_ap))):
+                _scatter(res)
+                if progress_callback:
+                    progress_callback(n_sel + j + 1, _prog_total)
+    else:
+        for j in range(n_ap):
+            _scatter(_process_one_ap(j))
+            if progress_callback:
+                progress_callback(n_sel + j + 1, _prog_total)
+
+    print(f"    [Pass 2] done", flush=True)
 
     # Normalise; uncovered pixels → 0
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -1857,11 +2021,6 @@ def _fourier_quality_stack(
     n_ser = max(1, int(getattr(cfg, "n_ser_parallel", 1)))
     n_workers = max(1, n_workers // n_ser)
 
-    if n_workers > 1 and (_snr_mask or _rolloff_sig > 0.0 or _noise_floor_en):
-        print("  [Fourier] snr_mask/rolloff/noise_floor require n_workers=1 — disabling", flush=True)
-        _snr_mask = _noise_floor_en = False
-        _rolloff_sig = 0.0
-
     # ── B: Rolloff mask (compute once) ────────────────────────────────────
     _rolloff_mask: np.ndarray | None = None
     if _rolloff_sig > 0.0:
@@ -1881,9 +2040,11 @@ def _fourier_quality_stack(
         _sum_abs_F_sq = np.zeros((H, W), dtype=np.float64)
 
     # Closure captures all read-only data — no global state needed.
-    def _fourier_chunk(chunk_indices: List[int]) -> Tuple[np.ndarray, np.ndarray]:
-        local_accum  = np.zeros((H, W), dtype=np.complex128)
-        local_weight = np.zeros((H, W), dtype=np.float64)
+    def _fourier_chunk(chunk_indices: List[int]) -> Tuple:
+        local_accum      = np.zeros((H, W), dtype=np.complex128)
+        local_weight     = np.zeros((H, W), dtype=np.float64)
+        local_sum_abs    = np.zeros((H, W), dtype=np.float64) if _snr_mask else None
+        local_sum_abs_sq = np.zeros((H, W), dtype=np.float64) if _snr_mask else None
         for i in chunk_indices:
             if cancel_event is not None and cancel_event.is_set():
                 break
@@ -1893,23 +2054,31 @@ def _fourier_quality_stack(
                 dx_g, dy_g = subpixel_align(reference, frame)
             aligned = apply_shift(frame, dx_g, dy_g)
             F_n = np.fft.fft2(aligned.astype(np.float64))
+            abs_F = np.abs(F_n)
+            abs_F_eff = np.maximum(abs_F - _noise_floor, 0.0) if _noise_floor is not None else abs_F
             if _use_score:
                 q_scalar = max(float(scores[int(selected_indices[i])]) ** _score_power, 1e-9)
-                w_n = q_scalar * np.abs(F_n) ** power
+                w_n = q_scalar * abs_F_eff ** power
             else:
-                w_n = np.abs(F_n) ** power
+                w_n = abs_F_eff ** power
             local_accum  += w_n * F_n
             local_weight += w_n
-        return local_accum, local_weight
+            if _snr_mask:
+                local_sum_abs    += abs_F
+                local_sum_abs_sq += abs_F ** 2
+        return local_accum, local_weight, local_sum_abs, local_sum_abs_sq
 
     if n_workers > 1:
         all_idx  = list(range(n_sel))
         chunk_sz = max(1, (n_sel + n_workers - 1) // n_workers)
         chunks   = [all_idx[k:k + chunk_sz] for k in range(0, n_sel, chunk_sz)]
         with _ThreadPoolExecutor(max_workers=n_workers) as executor:
-            for local_accum, local_weight in executor.map(_fourier_chunk, chunks):
+            for local_accum, local_weight, local_sum_abs, local_sum_abs_sq in executor.map(_fourier_chunk, chunks):
                 accum_F  += local_accum
                 weight_F += local_weight
+                if _snr_mask:
+                    _sum_abs_F    += local_sum_abs
+                    _sum_abs_F_sq += local_sum_abs_sq
         if progress_callback:
             progress_callback(n_sel, n_sel)
     else:
@@ -1946,7 +2115,7 @@ def _fourier_quality_stack(
     output_F = np.where(weight_F > 1e-12, accum_F / weight_F, 0.0)
 
     # ── A: Apply spectral SNR mask ─────────────────────────────────────────
-    if _snr_mask and n_workers == 1:
+    if _snr_mask:
         _mean_abs = _sum_abs_F / n_sel
         _var_abs  = np.maximum(_sum_abs_F_sq / n_sel - _mean_abs ** 2, 0.0)
         _snr      = _mean_abs / (np.sqrt(_var_abs) + 1e-9)
@@ -2011,6 +2180,11 @@ def _per_ap_pass1_worker(chunk_indices: List[int]) -> Tuple[np.ndarray, np.ndarr
         shifts_chunk[li] = (dx_g, dy_g)
 
         aligned = apply_shift(frame, dx_g, dy_g)
+        # Opt-C: full-frame Sobel once per frame when using gradient metric.
+        if _score_metric != "log_disk":
+            gx_full = cv2.Sobel(aligned, cv2.CV_32F, 1, 0, ksize=_ksize)
+            gy_full = cv2.Sobel(aligned, cv2.CV_32F, 0, 1, ksize=_ksize)
+            mag2_full = gx_full ** 2 + gy_full ** 2
         for j, ap in enumerate(ap_positions):
             ax, ay = int(ap[0]), int(ap[1])
             half = (int(ap[2]) if len(ap) >= 3 else cfg.ap_size) // 2
@@ -2030,9 +2204,7 @@ def _per_ap_pass1_worker(chunk_indices: List[int]) -> Tuple[np.ndarray, np.ndarr
                     lp = cv2.Laplacian(bl, cv2.CV_32F, ksize=3)
                     scores_chunk[li, j] = float(lp[mask_p].var())
             else:
-                gx = cv2.Sobel(patch, cv2.CV_32F, 1, 0, ksize=_ksize)
-                gy = cv2.Sobel(patch, cv2.CV_32F, 0, 1, ksize=_ksize)
-                scores_chunk[li, j] = float((gx ** 2 + gy ** 2).max())
+                scores_chunk[li, j] = float(mag2_full[ay - half: ay + half, ax - half: ax + half].max())
 
     return shifts_chunk, scores_chunk
 
@@ -2791,18 +2963,21 @@ def lucky_stack_ser(
         n_workers_use = max(1, n_workers_use)
 
         # use_patch_blend and use_tps are sequential-path-only features.
-        # per_ap_selection now runs in both sequential and parallel paths.
-        # use_per_ap_stack manages its own internal sub-pool via _per_ap_pass1_worker.
+        # per_ap_selection / use_per_ap_stack / use_fourier_quality all manage
+        # their own internal thread pools — outer pre-load loop stays sequential.
         _needs_seq = (
             bool(getattr(cfg, "use_patch_blend", False))
             or bool(getattr(cfg, "use_tps", False))
             or bool(getattr(cfg, "use_per_ap_stack", False))
+            or bool(getattr(cfg, "per_ap_selection", False))
             or bool(getattr(cfg, "use_fourier_quality", False))
         )
         if _needs_seq and n_workers_use > 1:
             _seq_reason = (
                 "use_per_ap_stack (manages own sub-pool)"
                 if getattr(cfg, "use_per_ap_stack", False)
+                else "per_ap_selection (manages own sub-pool)"
+                if getattr(cfg, "per_ap_selection", False)
                 else "use_fourier_quality (manages own sub-pool)"
                 if getattr(cfg, "use_fourier_quality", False)
                 else "use_patch_blend/use_tps requires sequential path"
