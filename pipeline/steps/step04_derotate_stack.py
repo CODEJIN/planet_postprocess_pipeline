@@ -34,6 +34,7 @@ def run(
     config: PipelineConfig,
     results_03: dict,
     progress_callback=None,
+    cancel_event=None,
 ) -> Dict[str, List[Dict]]:
     """Run Step 4 de-rotation stacking.
 
@@ -80,6 +81,9 @@ def run(
 
     n_windows = len(windows)
     for win_idx, window in enumerate(windows, start=1):
+        if cancel_event is not None and cancel_event.is_set():
+            print("  [CANCELLED] Stopping Step 4.", flush=True)
+            break
         if progress_callback is not None:
             progress_callback(win_idx - 1, n_windows)
         t_center = window["center_time"]

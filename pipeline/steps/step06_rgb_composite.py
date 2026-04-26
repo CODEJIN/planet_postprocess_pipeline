@@ -212,6 +212,7 @@ def _color_passthrough(
 def run(
     config: PipelineConfig,
     results_05: Dict[str, List[Tuple[Optional[Path], str]]],
+    cancel_event=None,
 ) -> Dict[str, List[Tuple[Optional[Path], str]]]:
     """Run Step 6 for all windows produced by Step 5.
 
@@ -254,6 +255,9 @@ def run(
     total_written = 0
 
     for win_label, filter_entries in sorted(results_05.items()):
+        if cancel_event is not None and cancel_event.is_set():
+            print("  [CANCELLED] Stopping Step 6.", flush=True)
+            break
         filter_paths: Dict[str, Optional[Path]] = {
             filt: path for path, filt in filter_entries
         }

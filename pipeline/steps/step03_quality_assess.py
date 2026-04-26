@@ -27,6 +27,7 @@ def run(
     config: PipelineConfig,
     groups: Optional[Dict[str, List[Tuple[Path, dict]]]] = None,
     progress_callback=None,
+    cancel_event=None,
 ) -> dict:
     """Run Step 3 for all TIF files in *config.input_dir*.
 
@@ -68,6 +69,7 @@ def run(
         ten_w=config.quality.fourier_hf_weight,     # re-used for Tenengrad
         nv_w =config.quality.norm_variance_weight,
         progress_callback=progress_callback,
+        cancel_event=cancel_event,
     )
     scores = quality.normalise_scores(scores)
 

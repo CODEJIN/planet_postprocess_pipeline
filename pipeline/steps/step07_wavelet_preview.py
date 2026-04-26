@@ -32,7 +32,7 @@ from pipeline.modules import image_io, wavelet
 StepResult = Dict[str, List[Tuple[Optional[Path], dict]]]
 
 
-def run(config: PipelineConfig, progress_callback=None) -> StepResult:
+def run(config: PipelineConfig, progress_callback=None, cancel_event=None) -> StepResult:
     """Run Step 7 for all TIF files in *config.input_dir*.
 
     Args:
@@ -72,6 +72,9 @@ def run(config: PipelineConfig, progress_callback=None) -> StepResult:
     done = 0
 
     for filter_name in sorted(groups):
+        if cancel_event is not None and cancel_event.is_set():
+            print("  [CANCELLED] Stopping Step 7.", flush=True)
+            break
         entries = groups[filter_name]
         results[filter_name] = []
 

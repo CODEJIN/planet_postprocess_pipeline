@@ -36,6 +36,7 @@ from pipeline.modules.derotation import find_disk_center
 def run(
     config: PipelineConfig,
     results_04: dict,
+    cancel_event=None,
 ) -> Dict[str, List[Tuple[Optional[Path], str]]]:
     """Run Step 5 for all windows produced by Step 4.
 
@@ -71,6 +72,9 @@ def run(
     total_written = 0
 
     for win in windows:
+        if cancel_event is not None and cancel_event.is_set():
+            print("  [CANCELLED] Stopping Step 5.", flush=True)
+            break
         win_idx = win["window_index"]
         win_label = f"window_{win_idx:02d}"
         t_str = win["center_time"]

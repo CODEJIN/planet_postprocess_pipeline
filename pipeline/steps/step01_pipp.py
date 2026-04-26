@@ -48,7 +48,7 @@ from pipeline.modules import planet_detect, ser_io
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
-def run(config: PipelineConfig, progress_callback=None) -> Dict[str, Dict]:
+def run(config: PipelineConfig, progress_callback=None, cancel_event=None) -> Dict[str, Dict]:
     """Process all SER files found in ``config.ser_input_dir``."""
     ser_dir = config.ser_input_dir
     if not ser_dir.exists():
@@ -97,6 +97,9 @@ def run(config: PipelineConfig, progress_callback=None) -> Dict[str, Dict]:
 
         frames_offset = 0
         for idx, ser_path in enumerate(ser_files):
+            if cancel_event is not None and cancel_event.is_set():
+                print("  [CANCELLED] Stopping Step 1.", flush=True)
+                break
             result = _process_one(
                 ser_path, out_dir, config,
                 progress_callback=progress_callback,
@@ -127,10 +130,15 @@ def run(config: PipelineConfig, progress_callback=None) -> Dict[str, Dict]:
             return ser_path.stem, result
 
         with _ThreadPoolExecutor(max_workers=_step1_max) as executor:
-            futs = [executor.submit(_run_one, sp) for sp in ser_files]
+            futs = {executor.submit(_run_one, sp): sp for sp in ser_files}
             for fut in _as_completed(futs):
                 stem, result = fut.result()
                 results[stem] = result
+                if cancel_event is not None and cancel_event.is_set():
+                    print("  [CANCELLED] Stopping Step 1 after current batch.", flush=True)
+                    for pending in futs:
+                        pending.cancel()
+                    break
 
     total_in  = sum(r["input_frames"]    for r in results.values())
     total_out = sum(r["accepted_frames"] for r in results.values())

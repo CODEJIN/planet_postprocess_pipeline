@@ -584,6 +584,7 @@ def _run_color_series(
     config: PipelineConfig,
     results_07: Dict[str, List[Tuple[Optional[Path], dict]]],
     progress_callback=None,
+    cancel_event=None,
 ) -> Dict[str, List[Tuple[Optional[Path], str]]]:
     """Step 8 for color camera: group → stack → sharpen → auto-correct → save.
 
@@ -651,6 +652,9 @@ def _run_color_series(
     total_written = 0
 
     for frame_idx, center_bin in enumerate(bins, start=1):
+        if cancel_event is not None and cancel_event.is_set():
+            print("  [CANCELLED] Stopping Step 8 (color).", flush=True)
+            break
         mid = len(center_bin) // 2
         t_center   = center_bin[mid][1]["timestamp"]
         t_str      = t_center.strftime("%Y-%m-%d_%H-%M")
@@ -776,6 +780,7 @@ def run(
     config: PipelineConfig,
     results_07: Dict[str, List[Tuple[Optional[Path], dict]]],
     progress_callback=None,
+    cancel_event=None,
 ) -> Dict[str, List[Tuple[Optional[Path], str]]]:
     """Run Step 8 for all filter-cycle sets found in the raw TIF input.
 
@@ -793,7 +798,7 @@ def run(
     # Color camera: single-stream stacking + auto WB/CA correction
     if config.camera_mode == "color":
         print("  Color camera mode: stack → sharpen → auto-correct per frame")
-        return _run_color_series(config, results_07, progress_callback)
+        return _run_color_series(config, results_07, progress_callback, cancel_event=cancel_event)
 
     # Step 8 now reads raw TIFs directly, applying wavelet sharpening AFTER
     # stacking (stack → sharpen → composite).  This is physically correct:
@@ -889,6 +894,9 @@ def run(
     ]
 
     for frame_idx, cycle in enumerate(cycles, start=1):
+        if cancel_event is not None and cancel_event.is_set():
+            print("  [CANCELLED] Stopping Step 8.", flush=True)
+            break
         t_center    = cycle["center_time"]
         t_str       = t_center.strftime("%Y-%m-%d_%H-%M")
         frame_label = f"frame_{frame_idx:03d}_{t_str}"

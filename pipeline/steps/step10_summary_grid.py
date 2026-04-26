@@ -158,6 +158,7 @@ def run(
     config: PipelineConfig,
     results_06: Dict[str, List[Tuple[Optional[Path], str]]],
     results_04: dict,
+    cancel_event=None,
 ) -> Optional[Path]:
     """Build the summary contact sheet from Step 6 master composites.
 

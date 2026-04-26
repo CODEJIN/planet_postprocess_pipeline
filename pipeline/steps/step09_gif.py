@@ -180,6 +180,7 @@ def run(
     config: PipelineConfig,
     results_08: Dict[str, List[Tuple[Optional[Path], str]]],
     progress_callback=None,
+    cancel_event=None,
 ) -> Dict[str, Dict[str, Optional[Path]]]:
     """Build one GIF per composite type from Step 8 series.
 
@@ -237,6 +238,9 @@ def run(
     _current_unit = 0
 
     for comp_name, frame_paths in _sorted_composites:
+        if cancel_event is not None and cancel_event.is_set():
+            print("  [CANCELLED] Stopping Step 9.", flush=True)
+            break
         n = len(frame_paths)
         print(f"\n  [{comp_name}]  {n} frames", end="", flush=True)
 

@@ -12,12 +12,13 @@ from typing import Any
 SESSION_DIR  = Path.home() / ".astropipe"
 SESSION_FILE = SESSION_DIR / "session.json"
 
-SESSION_VERSION = 8   # bump when _DEFAULTS or migration logic changes
+SESSION_VERSION = 9   # bump when _DEFAULTS or migration logic changes
 
 # Default values written on first run
 _DEFAULTS: dict[str, Any] = {
     "session_version":  SESSION_VERSION,
-    "language":         "ko",
+    "active_profile":   None,   # last active profile name, or None
+    "language":         "en",
     "camera_mode":      "mono",   # "mono" | "color"
     "planet":           "Jupiter",
     "target":           "Jup",
@@ -32,7 +33,7 @@ _DEFAULTS: dict[str, Any] = {
     "lucky_top_percent":  0.25,
     "lucky_ap_size":      64,
     "lucky_n_iterations": 2,
-    "lucky_sigma_clip":       False,
+    "lucky_use_tps":          False,
     "lucky_use_as4_ap_grid":  False,
     "lucky_fourier_power":    1.0,
     "lucky_n_workers":    0,   # kept for migration compat; UI uses global_max_workers
@@ -115,6 +116,8 @@ def _migrate(data: dict[str, Any]) -> dict[str, Any]:
     # v7→v8: Steps 01 and 02 are now optional (checkbox in sidebar).
     # No data migration needed — existing sessions keep their enabled_steps values,
     # and the merge logic in load() fills in new defaults for missing keys.
+
+    # v8→v9: active_profile key added. No migration needed — merge logic handles it.
 
     data["session_version"] = SESSION_VERSION
     return data

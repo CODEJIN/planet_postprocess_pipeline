@@ -159,13 +159,16 @@ class Step10Panel(BasePanel):
             )
 
     def validate(self, config: dict, batch_mode: bool = False) -> list:
-        from gui.validation import ValidationIssue, count_files
+        from gui.validation import ValidationIssue
         issues = []
         if not batch_mode:
             out_base = config.get("output_dir", "").strip()
-            input_path = str(Path(out_base) / "step06_rgb_composite") if out_base else ""
-            if not count_files(input_path, "*.png", "*.PNG"):
-                issues.append(ValidationIssue("error", S("validate.no_rgb_png_step6")))
+            if out_base:
+                step06_dir = Path(out_base) / "step06_rgb_composite"
+                # PNGs are one level deep (step06_rgb_composite/win_xxxx/*.png)
+                found = any(step06_dir.rglob("*.png")) if step06_dir.exists() else False
+                if not found:
+                    issues.append(ValidationIssue("error", S("validate.no_rgb_png_step6")))
         return issues
 
     def output_paths(self) -> list[Path]:

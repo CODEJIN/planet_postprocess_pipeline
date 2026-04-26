@@ -171,27 +171,27 @@ class StepRunner(QThread):
             print(f"\n{'='*60}")
             print(f"=== Step {step_id} ===")
 
+            ce = self._cancel_event
             if step_id == "01":
-                r = mods["01"].run(cfg, progress_callback=pcb)
+                r = mods["01"].run(cfg, progress_callback=pcb, cancel_event=ce)
             elif step_id == "02":
-                r = mods["02"].run(cfg, progress_callback=pcb,
-                                   cancel_event=self._cancel_event)
+                r = mods["02"].run(cfg, progress_callback=pcb, cancel_event=ce)
             elif step_id == "03":
-                r = mods["03"].run(cfg, progress_callback=pcb)
+                r = mods["03"].run(cfg, progress_callback=pcb, cancel_event=ce)
             elif step_id == "04":
-                r = mods["04"].run(cfg, res.get("03", {}), progress_callback=pcb)
+                r = mods["04"].run(cfg, res.get("03", {}), progress_callback=pcb, cancel_event=ce)
             elif step_id == "05":
-                r = mods["05"].run(cfg, res.get("04", {}))
+                r = mods["05"].run(cfg, res.get("04", {}), cancel_event=ce)
             elif step_id == "06":
-                r = mods["06"].run(cfg, res.get("05", {}))
+                r = mods["06"].run(cfg, res.get("05", {}), cancel_event=ce)
             elif step_id == "07":
-                r = mods["07"].run(cfg, progress_callback=pcb)
+                r = mods["07"].run(cfg, progress_callback=pcb, cancel_event=ce)
             elif step_id == "08":
-                r = mods["08"].run(cfg, res.get("07", {}), progress_callback=pcb)
+                r = mods["08"].run(cfg, res.get("07", {}), progress_callback=pcb, cancel_event=ce)
             elif step_id == "09":
-                r = mods["09"].run(cfg, res.get("08", {}), progress_callback=pcb)
+                r = mods["09"].run(cfg, res.get("08", {}), progress_callback=pcb, cancel_event=ce)
             elif step_id == "10":
-                r = mods["10"].run(cfg, res.get("06", {}), res.get("04", {}))
+                r = mods["10"].run(cfg, res.get("06", {}), res.get("04", {}), cancel_event=ce)
             else:
                 print(f"  [WARN] Step {step_id} has no runner implementation.")
                 r = {}

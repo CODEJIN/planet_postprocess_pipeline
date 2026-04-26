@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from gui import session
 from gui import i18n
+from gui import profile_manager
 from gui.i18n import S
 from gui.panels.settings_panel import SettingsPanel
 from gui.panels.welcome_panel import WelcomePanel
@@ -237,6 +238,26 @@ class MainWindow(QMainWindow):
         title_layout.addWidget(self._app_title_lbl)
         sidebar_layout.addWidget(title_widget)
 
+        # Home entry
+        home_item = QWidget()
+        home_item.setStyleSheet(
+            "QWidget { background: transparent; padding: 2px; }"
+            "QWidget:hover { background: #2a2a2a; }"
+        )
+        home_item_layout = QHBoxLayout(home_item)
+        home_item_layout.setContentsMargins(8, 6, 8, 6)
+        home_icon = QLabel("⌂")
+        home_icon.setFixedWidth(18)
+        home_icon.setStyleSheet("color: #888;")
+        home_item_layout.addWidget(home_icon)
+        self._home_lbl = QLabel(S("app.home"))
+        self._home_lbl.setStyleSheet("color: #ccc;")
+        home_item_layout.addWidget(self._home_lbl)
+        home_item_layout.addStretch()
+        home_item.setCursor(Qt.CursorShape.PointingHandCursor)
+        home_item.mousePressEvent = lambda _e: self._show_panel("welcome")
+        sidebar_layout.addWidget(home_item)
+
         # Settings entry
         settings_item = QWidget()
         settings_item.setStyleSheet(
@@ -330,8 +351,7 @@ class MainWindow(QMainWindow):
 
         # Settings panel (index 1)
         self._settings_panel = SettingsPanel()
-        self._settings_panel._btn_save.clicked.connect(self._on_settings_saved)
-        self._settings_panel._btn_reset.clicked.connect(self._reset_session)
+        self._connect_settings_signals()
         self._stack.addWidget(self._settings_panel)
         self._panel_index: dict[str, int] = {"welcome": 0, "settings": 1}
 
@@ -440,6 +460,17 @@ class MainWindow(QMainWindow):
         # overwrite unsaved changes, e.g. a language switch before save_session)
         self._apply_session_data()
 
+    # ── Settings panel signal wiring ──────────────────────────────────────────
+
+    def _connect_settings_signals(self) -> None:
+        """Connect all signals from the (possibly rebuilt) settings panel."""
+        self._settings_panel._btn_save.clicked.connect(self._on_settings_saved)
+        self._settings_panel._btn_reset.clicked.connect(self._reset_session)
+        self._settings_panel.profile_selected.connect(self._on_profile_selected)
+        self._settings_panel.profile_save_requested.connect(self._on_profile_save)
+        self._settings_panel.profile_save_as_requested.connect(self._on_profile_save_as)
+        self._settings_panel.profile_delete_requested.connect(self._on_profile_delete)
+
     # ── Session management ────────────────────────────────────────────────────
 
     def _reset_session(self) -> None:
@@ -462,6 +493,7 @@ class MainWindow(QMainWindow):
         """Load session from disk and apply to all panels."""
         self._session_data = session.load()
         self._apply_session_data()
+        self._refresh_profile_ui()
 
     def _apply_session_data(self) -> None:
         """Apply self._session_data to all panels without reading from disk.
@@ -534,6 +566,59 @@ class MainWindow(QMainWindow):
 
         self._session_data = data
         session.save(data)
+
+        # Auto-save to active profile whenever session is saved
+        active = data.get("active_profile")
+        if active:
+            profile_manager.save_profile(active, data)
+
+    # ── Profile management ────────────────────────────────────────────────────
+
+    def _refresh_profile_ui(self) -> None:
+        """Sync the profile combo in settings panel with disk state."""
+        active = self._session_data.get("active_profile")
+        self._settings_panel.refresh_profile_list(
+            profile_manager.list_profiles(), active
+        )
+
+    def _on_profile_selected(self, name: str) -> None:
+        """User picked a profile from the dropdown (empty string = Unsaved)."""
+        if not name:
+            self._session_data["active_profile"] = None
+            session.save(self._session_data)
+            return
+        data = profile_manager.load_profile(name)
+        for k, v in data.items():
+            self._session_data[k] = v
+        self._session_data["active_profile"] = name
+        self._apply_session_data()
+        session.save(self._session_data)
+
+    def _on_profile_save(self) -> None:
+        """Save current settings to the active profile."""
+        name = self._session_data.get("active_profile")
+        if not name:
+            return
+        self.save_session()
+        self._refresh_profile_ui()
+
+    def _on_profile_save_as(self, name: str) -> None:
+        """Save current settings as a new named profile and switch to it."""
+        self.save_session()
+        profile_manager.save_profile(name, self._session_data)
+        self._session_data["active_profile"] = name
+        session.save(self._session_data)
+        self._refresh_profile_ui()
+
+    def _on_profile_delete(self) -> None:
+        """Delete the active profile and reset to Unsaved state."""
+        name = self._session_data.get("active_profile")
+        if not name:
+            return
+        profile_manager.delete_profile(name)
+        self._session_data["active_profile"] = None
+        session.save(self._session_data)
+        self._refresh_profile_ui()
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
@@ -718,13 +803,13 @@ class MainWindow(QMainWindow):
             self._stack.removeWidget(self._settings_panel)
             self._settings_panel.deleteLater()
             self._settings_panel = SettingsPanel()
-            self._settings_panel._btn_save.clicked.connect(self._on_settings_saved)
-            self._settings_panel._btn_reset.clicked.connect(self._reset_session)
+            self._connect_settings_signals()
             self._stack.insertWidget(1, self._settings_panel)
 
             # Update window title and static sidebar labels
             self.setWindowTitle(S("app.title"))
             self._app_title_lbl.setText(S("app.title"))
+            self._home_lbl.setText(S("app.home"))
             self._settings_lbl.setText(S("app.settings"))
 
             # Update log widget buttons
@@ -738,6 +823,7 @@ class MainWindow(QMainWindow):
 
             # Rebuild step panels (applies _session_data in-memory, not from disk)
             self._rebuild_step_panels()
+            self._refresh_profile_ui()
 
         # 2. Refresh panels with the updated session (updates _is_color in step06/07/08)
         for sid in ("01", "03", "04", "05", "06", "07", "08", "09", "10"):
@@ -970,6 +1056,8 @@ class MainWindow(QMainWindow):
             panel.set_status(status)
         if panel and hasattr(panel, "set_running"):
             panel.set_running(False)
+        # Keep step_status in sync for session persistence
+        self._session_data.setdefault("step_status", {})[step_id] = status
         if ok:
             if results is not None:
                 self._results[step_id] = results
@@ -1065,7 +1153,7 @@ class MainWindow(QMainWindow):
             n_iterations          = int(d.get("lucky_n_iterations", 2)),
             n_workers             = _global_workers,   # Step 2 uses all available cores
             n_ser_parallel        = int(d.get("lucky_n_ser_parallel", 1)),
-            sigma_clip            = bool(d.get("lucky_sigma_clip", False)),
+            use_tps               = bool(d.get("lucky_use_tps", False)),
             use_as4_ap_grid       = bool(d.get("lucky_use_as4_ap_grid", False)),
             fourier_quality_power = float(d.get("lucky_fourier_power", 1.0)),
         )

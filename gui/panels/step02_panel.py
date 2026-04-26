@@ -13,6 +13,7 @@ from typing import Any
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -181,23 +182,30 @@ class Step02Panel(BasePanel):
         iter_row.addStretch()
         fl.addRow(lbl_iter, iter_row)
 
-        # ── sigma_clip ────────────────────────────────────────────────────────
+        # ── warp_method ───────────────────────────────────────────────────────
         _chk_style = ("QCheckBox { color: #d4d4d4; }"
                       "QCheckBox::indicator:checked"
                       " { background: #4da6ff; border-color: #4da6ff; }"
                       "QCheckBox::indicator:unchecked"
                       " { background: #2a2a2a; border-color: #555; }")
-        self._sigma_clip = QCheckBox()
-        self._sigma_clip.setChecked(False)
-        self._sigma_clip.setStyleSheet(_chk_style)
-        lbl_sigma = QLabel(S("step02.sigma_clip"))
-        lbl_sigma.setToolTip(S("step02.sigma_clip.tooltip"))
-        self._sigma_clip.setToolTip(S("step02.sigma_clip.tooltip"))
-        sigma_row = QHBoxLayout()
-        sigma_row.setSpacing(4)
-        sigma_row.addWidget(self._sigma_clip)
-        sigma_row.addStretch()
-        fl.addRow(lbl_sigma, sigma_row)
+        _combo_style = ("QComboBox { background: #2a2a2a; color: #d4d4d4;"
+                        " border: 1px solid #555; border-radius: 3px; padding: 2px 6px; }"
+                        "QComboBox::drop-down { border: none; }"
+                        "QComboBox QAbstractItemView { background: #2a2a2a; color: #d4d4d4;"
+                        " selection-background-color: #3a3a5a; }")
+        self._warp_method = QComboBox()
+        self._warp_method.setStyleSheet(_combo_style)
+        self._warp_method.addItem(S("step02.warp_method.gaussian_kr"), userData="gaussian_kr")
+        self._warp_method.addItem(S("step02.warp_method.tps"),         userData="tps")
+        self._warp_method.setFixedWidth(140)
+        lbl_warp = QLabel(S("step02.warp_method"))
+        lbl_warp.setToolTip(S("step02.warp_method.tooltip"))
+        self._warp_method.setToolTip(S("step02.warp_method.tooltip"))
+        warp_row = QHBoxLayout()
+        warp_row.setSpacing(4)
+        warp_row.addWidget(self._warp_method)
+        warp_row.addStretch()
+        fl.addRow(lbl_warp, warp_row)
 
         # ── fourier_quality_power ─────────────────────────────────────────────
         self._fourier_power = QDoubleSpinBox()
@@ -263,7 +271,7 @@ class Step02Panel(BasePanel):
             "lucky_top_percent":      self._top_percent.value() / 100.0,
             "lucky_ap_size":          self._ap_size.value(),
             "lucky_n_iterations":     self._n_iterations.value(),
-            "lucky_sigma_clip":       self._sigma_clip.isChecked(),
+            "lucky_use_tps":          self._warp_method.currentData() == "tps",
             "lucky_use_as4_ap_grid":  self._use_as4_ap_grid.isChecked(),
             "lucky_fourier_power":    self._fourier_power.value(),
             "lucky_n_ser_parallel":   self._n_ser_parallel.value(),
@@ -298,7 +306,8 @@ class Step02Panel(BasePanel):
         self._top_percent.setValue(int(round(top_pct * 100)))
         self._ap_size.setValue(int(data.get("lucky_ap_size", 64)))
         self._n_iterations.setValue(int(data.get("lucky_n_iterations", 1)))
-        self._sigma_clip.setChecked(bool(data.get("lucky_sigma_clip", False)))
+        _use_tps = bool(data.get("lucky_use_tps", False))
+        self._warp_method.setCurrentIndex(1 if _use_tps else 0)
         self._use_as4_ap_grid.setChecked(bool(data.get("lucky_use_as4_ap_grid", False)))
         self._fourier_power.setValue(float(data.get("lucky_fourier_power", 1.0)))
         self._n_ser_parallel.setValue(int(data.get("lucky_n_ser_parallel", 1)))

@@ -1,12 +1,14 @@
 """Welcome / home panel — shown on startup instead of Settings."""
 from __future__ import annotations
 
+import multiprocessing
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QPainter
+from PySide6.QtGui import QPainter
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QFrame,
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+
 from gui.i18n import S
 
 # Logo path — works both in development and PyInstaller frozen builds
@@ -28,16 +31,47 @@ _LOGO_PATH = str(
     else _HERE.parent / "icons" / "logo_planetflow.svg"
 )
 
-# Step IDs for the pipeline status display
-_STEP_IDS = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10"]
+def _collect_system_info() -> dict[str, str]:
+    """Collect CPU / RAM / GPU info once at panel creation."""
+    info: dict[str, str] = {}
 
-_STATUS_COLOR = {
-    "success": ("#2d6b30", "#4caf50", "#a5d6a7"),  # bg, border, text
-    "error":   ("#6b2020", "#f44336", "#ef9a9a"),
-    "running": ("#1a3a6b", "#2196f3", "#90caf9"),
-    "skipped": ("#2a2a2a", "#555",    "#666"),
-    "":        ("#282828", "#3c3c3c", "#555"),
-}
+    # CPU
+    info["cpu"] = f"{multiprocessing.cpu_count()} cores"
+
+    # RAM — read /proc/meminfo on Linux; fall back silently
+    try:
+        meminfo: dict[str, int] = {}
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                k, v = line.split(":")
+                meminfo[k.strip()] = int(v.strip().split()[0])  # kB
+        total = meminfo.get("MemTotal", 0) / 1024 / 1024
+        avail = meminfo.get("MemAvailable", 0) / 1024 / 1024
+        info["ram"] = f"{avail:.1f} GB / {total:.1f} GB"
+    except Exception:
+        info["ram"] = ""
+
+    # GPU — try nvidia-smi (non-blocking, 3 s timeout)
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            gpus = []
+            for line in r.stdout.strip().splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 2:
+                    name, mem_mb = parts[0], int(parts[1])
+                    gpus.append(f"{name} ({mem_mb // 1024} GB)")
+            info["gpu"] = "  |  ".join(gpus) if gpus else ""
+        else:
+            info["gpu"] = ""
+    except Exception:
+        info["gpu"] = ""
+
+    return info
 
 class _SvgWidget(QWidget):
     """Transparent SVG renderer — no background fill, so the card surface shows through."""
@@ -77,7 +111,7 @@ class WelcomePanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setStyleSheet("background: #1e1e1e;")
-        self._step_dots: dict[str, QLabel] = {}
+        self._sysinfo = _collect_system_info()
         self._build_ui()
 
     # ── UI construction ───────────────────────────────────────────────────────
@@ -89,7 +123,7 @@ class WelcomePanel(QWidget):
 
         # Centre card
         card = QWidget()
-        card.setFixedWidth(620)
+        card.setFixedWidth(560)
         card.setStyleSheet(
             "background: #252526; border: 1px solid #3c3c3c; border-radius: 8px;"
         )
@@ -97,9 +131,9 @@ class WelcomePanel(QWidget):
         card_layout.setSpacing(16)
         card_layout.setContentsMargins(40, 28, 40, 28)
 
-        # PlanetFlow logo (SVG, 4:1 aspect → 512×128)
+        # PlanetFlow logo (SVG, 4:1 aspect → 480×120)
         logo = _SvgWidget(_LOGO_PATH)
-        logo.setFixedSize(512, 128)
+        logo.setFixedSize(480, 120)
         card_layout.addWidget(logo, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # Subtitle
@@ -112,44 +146,58 @@ class WelcomePanel(QWidget):
 
         card_layout.addWidget(_sep())
 
-        # Pipeline status label
-        self._status_header = QLabel(S("welcome.pipeline_status"))
-        self._status_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._status_header.setStyleSheet(
-            "color: #888; font-size: 11px; background: transparent; border: none;"
-        )
-        card_layout.addWidget(self._status_header)
+        # Info rows
+        info_widget = QWidget()
+        info_widget.setStyleSheet("background: transparent;")
+        info_layout = QGridLayout(info_widget)
+        info_layout.setContentsMargins(0, 4, 0, 4)
+        info_layout.setHorizontalSpacing(16)
+        info_layout.setVerticalSpacing(10)
+        info_layout.setColumnStretch(1, 1)
 
-        # Step dots — 2 rows × 5
-        dots_widget = QWidget()
-        dots_widget.setStyleSheet("background: transparent;")
-        grid = QGridLayout(dots_widget)
-        grid.setSpacing(6)
-        grid.setContentsMargins(0, 0, 0, 0)
+        def _key_lbl(text: str) -> QLabel:
+            l = QLabel(text)
+            l.setStyleSheet(
+                "color: #666; font-size: 11px; background: transparent; border: none;"
+            )
+            l.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            return l
 
-        for i, step_id in enumerate(_STEP_IDS):
-            dot = QLabel(S(f"step.short.{step_id}"))
-            dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            dot.setFixedSize(86, 42)
-            dot.setWordWrap(False)
-            dot.setStyleSheet(_dot_style(""))
-            dot.setFont(QFont("Arial", 8))
-            self._step_dots[step_id] = dot
-            grid.addWidget(dot, i // 5, i % 5)
+        def _val_lbl() -> QLabel:
+            l = QLabel("—")
+            l.setStyleSheet(
+                "color: #ccc; font-size: 11px; background: transparent; border: none;"
+            )
+            l.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            l.setWordWrap(True)
+            return l
 
-        card_layout.addWidget(dots_widget, alignment=Qt.AlignmentFlag.AlignCenter)
+        none_str = S("welcome.info.none")
 
-        # Legend
-        legend = QLabel(
-            f'<span style="color:#4caf50">●</span> {S("welcome.legend.done")}'
-            f'　<span style="color:#f44336">●</span> {S("welcome.legend.error")}'
-            f'　<span style="color:#3c3c3c">●</span> {S("welcome.legend.idle")}'
-        )
-        legend.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        legend.setStyleSheet(
-            "color: #555; font-size: 10px; background: transparent; border: none;"
-        )
-        card_layout.addWidget(legend)
+        self._key_profile = _key_lbl(S("welcome.info.profile"))
+        self._val_profile  = _val_lbl()
+        info_layout.addWidget(self._key_profile, 0, 0)
+        info_layout.addWidget(self._val_profile,  0, 1)
+
+        self._key_cpu = _key_lbl(S("welcome.info.cpu"))
+        val_cpu = _val_lbl()
+        val_cpu.setText(self._sysinfo.get("cpu") or none_str)
+        info_layout.addWidget(self._key_cpu, 1, 0)
+        info_layout.addWidget(val_cpu,       1, 1)
+
+        self._key_ram = _key_lbl(S("welcome.info.ram"))
+        val_ram = _val_lbl()
+        val_ram.setText(self._sysinfo.get("ram") or none_str)
+        info_layout.addWidget(self._key_ram, 2, 0)
+        info_layout.addWidget(val_ram,       2, 1)
+
+        self._key_gpu = _key_lbl(S("welcome.info.gpu"))
+        val_gpu = _val_lbl()
+        val_gpu.setText(self._sysinfo.get("gpu") or none_str)
+        info_layout.addWidget(self._key_gpu, 3, 0)
+        info_layout.addWidget(val_gpu,       3, 1)
+
+        card_layout.addWidget(info_widget)
 
         card_layout.addWidget(_sep())
 
@@ -177,16 +225,17 @@ class WelcomePanel(QWidget):
     # ── Public API ────────────────────────────────────────────────────────────
 
     def load_session(self, data: dict[str, Any]) -> None:
-        """Update step status dots from session data."""
-        step_status = data.get("step_status", {})
-        for step_id, dot in self._step_dots.items():
-            status = step_status.get(step_id, "")
-            dot.setStyleSheet(_dot_style(status))
+        """Update profile row from session data (system info is static)."""
+        profile = data.get("active_profile") or S("welcome.info.none")
+        self._val_profile.setText(profile)
 
     def retranslate(self) -> None:
         """Re-apply i18n strings after language change."""
         self._subtitle_lbl.setText(S("welcome.subtitle"))
-        self._status_header.setText(S("welcome.pipeline_status"))
+        self._key_profile.setText(S("welcome.info.profile"))
+        self._key_cpu.setText(S("welcome.info.cpu"))
+        self._key_ram.setText(S("welcome.info.ram"))
+        self._key_gpu.setText(S("welcome.info.gpu"))
         self._btn_settings.setText("⚙  " + S("app.settings"))
         self._btn_resume.setText("▶  " + S("welcome.btn_resume"))
 
@@ -201,9 +250,3 @@ def _sep() -> QFrame:
     return f
 
 
-def _dot_style(status: str) -> str:
-    bg, border, text = _STATUS_COLOR.get(status, _STATUS_COLOR[""])
-    return (
-        f"background: {bg}; color: {text}; border: 1px solid {border};"
-        f" border-radius: 4px; font-size: 8px;"
-    )

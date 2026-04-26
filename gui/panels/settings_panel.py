@@ -4,7 +4,7 @@ from __future__ import annotations
 import multiprocessing as _mp
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -13,8 +13,10 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -25,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui.i18n import S
+from gui import profile_manager
 
 # Planet preset data: name → (target, horizons_id, rotation_period_hours)
 _PLANET_PRESETS: dict[str, tuple[str, str, float]] = {
@@ -66,11 +69,38 @@ _BTN_RESET = (
     " font-weight: bold; padding: 6px 20px; }"
     "QPushButton:hover { background: #b91c1c; }"
 )
+_BTN_SMALL_SAVE = (
+    "QPushButton { background: #2d6a4f; color: white; border-radius: 4px;"
+    " font-size: 11px; padding: 3px 10px; border: none; }"
+    "QPushButton:hover { background: #40916c; }"
+    "QPushButton:disabled { background: #2a3a33; color: #666; border: none; }"
+)
+_BTN_SMALL = (
+    "QPushButton { background: #3c3c3c; color: #d4d4d4; border: 1px solid #555;"
+    " border-radius: 4px; font-size: 11px; padding: 3px 10px; }"
+    "QPushButton:hover { background: #4a4a4a; }"
+    "QPushButton:disabled { color: #555; background: #2d2d2d; border-color: #444; }"
+)
+_BTN_SMALL_DELETE = (
+    "QPushButton { background: #5a2020; color: #d4d4d4; border-radius: 4px;"
+    " font-size: 11px; padding: 3px 10px; border: none; }"
+    "QPushButton:hover { background: #7f1d1d; }"
+    "QPushButton:disabled { background: #2d2020; color: #666; border: none; }"
+)
 
 
 
 class SettingsPanel(QWidget):
     """Global settings panel shown at the top of the left sidebar flow."""
+
+    # Emitted when user selects a profile from the dropdown (empty string = Unsaved)
+    profile_selected          = Signal(str)
+    # Emitted when user clicks the profile Save button
+    profile_save_requested    = Signal()
+    # Emitted when user names and confirms a new profile
+    profile_save_as_requested = Signal(str)
+    # Emitted when user confirms profile deletion
+    profile_delete_requested  = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -108,6 +138,66 @@ class SettingsPanel(QWidget):
         header_layout.addWidget(line)
 
         root.addWidget(header_widget)
+
+        # ── Profile section ─────────────────────────────────────────────────
+        profile_widget = QWidget()
+        profile_widget.setStyleSheet(
+            f"background: {_PANEL_BG}; border-bottom: 1px solid #3a3a3a;"
+        )
+        profile_layout = QVBoxLayout(profile_widget)
+        profile_layout.setContentsMargins(16, 10, 16, 10)
+        profile_layout.setSpacing(6)
+
+        profile_title = QLabel(S("profile.section_title"))
+        profile_title.setStyleSheet("color: #888; font-size: 11px; font-weight: bold;")
+        profile_layout.addWidget(profile_title)
+
+        combo_row = QHBoxLayout()
+        combo_row.setSpacing(6)
+
+        self._profile_combo = QComboBox()
+        self._profile_combo.setStyleSheet(_COMBO_STYLE)
+        self._profile_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        combo_row.addWidget(self._profile_combo)
+
+        self._btn_profile_save = QPushButton(S("profile.save"))
+        self._btn_profile_save.setStyleSheet(_BTN_SMALL_SAVE)
+        self._btn_profile_save.setFixedHeight(28)
+        self._btn_profile_save.setToolTip(S("profile.save.tooltip"))
+        combo_row.addWidget(self._btn_profile_save)
+
+        self._btn_profile_save_as = QPushButton(S("profile.save_as"))
+        self._btn_profile_save_as.setStyleSheet(_BTN_SMALL)
+        self._btn_profile_save_as.setFixedHeight(28)
+        self._btn_profile_save_as.setToolTip(S("profile.save_as.tooltip"))
+        combo_row.addWidget(self._btn_profile_save_as)
+
+        self._btn_profile_delete = QPushButton(S("profile.delete"))
+        self._btn_profile_delete.setStyleSheet(_BTN_SMALL_DELETE)
+        self._btn_profile_delete.setFixedHeight(28)
+        self._btn_profile_delete.setToolTip(S("profile.delete.tooltip"))
+        combo_row.addWidget(self._btn_profile_delete)
+
+        profile_layout.addLayout(combo_row)
+
+        self._profile_meta_lbl = QLabel("")
+        self._profile_meta_lbl.setStyleSheet("color: #666; font-size: 10px;")
+        profile_layout.addWidget(self._profile_meta_lbl)
+
+        root.addWidget(profile_widget)
+
+        # Connect profile buttons
+        self._profile_combo.currentIndexChanged.connect(self._on_profile_combo_changed)
+        self._btn_profile_save.clicked.connect(self.profile_save_requested)
+        self._btn_profile_save_as.clicked.connect(self._on_profile_save_as_clicked)
+        self._btn_profile_delete.clicked.connect(self._on_profile_delete_clicked)
+
+        # Initialise combo with empty list; main_window calls refresh_profile_list()
+        self._profile_combo.addItem(S("profile.unsaved"), "")
+        self._btn_profile_save.setEnabled(False)
+        self._btn_profile_delete.setEnabled(False)
 
         # ── Scrollable form area ────────────────────────────────────────────
         scroll = QScrollArea()
@@ -252,6 +342,77 @@ class SettingsPanel(QWidget):
 
         # Apply initial preset
         self._on_planet_changed(0)
+
+    # ── Profile slots ─────────────────────────────────────────────────────────
+
+    def _on_profile_combo_changed(self, index: int) -> None:
+        name = self._profile_combo.itemData(index) or ""
+        self._btn_profile_save.setEnabled(bool(name))
+        self._btn_profile_delete.setEnabled(bool(name))
+        self._update_profile_meta(name)
+        self.profile_selected.emit(name)
+
+    def _on_profile_save_as_clicked(self) -> None:
+        name, ok = QInputDialog.getText(
+            self,
+            S("profile.save_as.dialog_title"),
+            S("profile.save_as.dialog_prompt"),
+        )
+        if ok and name.strip():
+            self.profile_save_as_requested.emit(name.strip())
+
+    def _on_profile_delete_clicked(self) -> None:
+        name = self._profile_combo.currentData() or ""
+        if not name:
+            return
+        reply = QMessageBox.question(
+            self,
+            S("profile.delete.confirm_title"),
+            S("profile.delete.confirm_msg", name=name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.profile_delete_requested.emit()
+
+    def _update_profile_meta(self, name: str) -> None:
+        if not name:
+            self._profile_meta_lbl.setText("")
+            return
+        meta = profile_manager.profile_meta(name)
+        planet = meta.get("planet", "")
+        camera = meta.get("camera_mode", "mono")
+        updated = meta.get("updated_at", "")[:16].replace("T", " ")
+        camera_str = (
+            S("settings.camera.mono") if camera == "mono" else S("settings.camera.color")
+        )
+        self._profile_meta_lbl.setText(
+            f"{planet}  ·  {camera_str}  ·  {updated}" if planet else updated
+        )
+
+    # ── Profile public API ────────────────────────────────────────────────────
+
+    def refresh_profile_list(self, names: list[str], active: str | None) -> None:
+        """Repopulate the profile combo. Called from main_window after any profile change."""
+        self._profile_combo.blockSignals(True)
+        self._profile_combo.clear()
+        self._profile_combo.addItem(S("profile.unsaved"), "")
+        for n in names:
+            self._profile_combo.addItem(n, n)
+
+        idx = 0
+        if active:
+            for i in range(self._profile_combo.count()):
+                if self._profile_combo.itemData(i) == active:
+                    idx = i
+                    break
+        self._profile_combo.setCurrentIndex(idx)
+        self._profile_combo.blockSignals(False)
+
+        current_name = self._profile_combo.itemData(idx) or ""
+        self._btn_profile_save.setEnabled(bool(current_name))
+        self._btn_profile_delete.setEnabled(bool(current_name))
+        self._update_profile_meta(current_name)
 
     # ── Camera mode slot ──────────────────────────────────────────────────────
 

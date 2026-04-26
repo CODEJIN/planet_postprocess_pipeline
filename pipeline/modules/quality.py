@@ -159,6 +159,7 @@ def compute_scores(
     ten_w: float = 0.3,
     nv_w:  float = 0.2,
     progress_callback=None,
+    cancel_event=None,
 ) -> Dict[str, List[dict]]:
     """Score every TIF file in *groups*.
 
@@ -180,10 +181,15 @@ def compute_scores(
     done = 0
 
     for filt in sorted(groups):
+        if cancel_event is not None and cancel_event.is_set():
+            print("  [CANCELLED] Stopping quality scoring.", flush=True)
+            break
         entries = groups[filt]
         rows: List[dict] = []
 
         for path, meta in entries:
+            if cancel_event is not None and cancel_event.is_set():
+                break
             img = image_io.read_tif(path)
             m = quality_metrics(img)
 
