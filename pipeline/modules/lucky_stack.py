@@ -750,6 +750,51 @@ def _qsf_refine(cc: np.ndarray) -> Tuple[float, float, float]:
     return peak_x, peak_y, float(cc[py, px])
 
 
+def _ncc_shift(
+    ref_patch: np.ndarray,
+    frm_patch: np.ndarray,
+    hann2d: np.ndarray,
+    search_range: float,
+) -> Tuple[Optional[float], Optional[float], float]:
+    """AP shift via Normalized Cross-Correlation (NCC).
+
+    NCC is robust where phase correlation fails:
+    - uniform/featureless patches → low σ → low confidence (not random shift)
+    - DC-offset differences between ref/frame → zeroed by mean subtraction
+
+    Formula (FFT-based, O(N log N)):
+        cc = IFFT(FFT(ref-μ) · conj(FFT(frm-μ))) / (N · σ_ref · σ_frm)
+    Peak of cc ∈ [-1, 1]; sub-pixel position via QSF.
+
+    Returns (dx, dy, confidence) or (None, None, 0.0).
+    """
+    # Zero-mean + Hann window
+    ref_zm = (ref_patch - ref_patch.mean()) * hann2d
+    frm_zm = (frm_patch - frm_patch.mean()) * hann2d
+
+    sigma_ref = float(ref_zm.std())
+    sigma_frm = float(frm_zm.std())
+    N = ref_zm.size
+    norm = N * sigma_ref * sigma_frm
+    if norm < 1e-12:
+        return None, None, 0.0
+
+    F1 = np.fft.rfft2(ref_zm.astype(np.float64))
+    F2 = np.fft.rfft2(frm_zm.astype(np.float64))
+    # conj(F1)*F2 gives peak at +dx (same sign as phaseCorrelate convention).
+    # F1*conj(F2) gives peak at -dx (opposite sign — do not use).
+    cc = np.fft.irfft2(np.conj(F1) * F2, s=ref_zm.shape).astype(np.float32)
+    cc /= norm
+
+    dx, dy, peak = _qsf_refine(cc)
+
+    # confidence = NCC peak, clamped to [0, 1]
+    confidence = float(np.clip(peak, 0.0, 1.0))
+    if abs(dx) > search_range or abs(dy) > search_range:
+        return None, None, 0.0
+    return dx, dy, confidence
+
+
 def _estimate_ap_shift(
     ref_patch: np.ndarray,
     frm_patch: np.ndarray,
@@ -767,13 +812,29 @@ def _estimate_ap_shift(
     normalized cross-power spectrum + quadratic surface fitting for
     sub-pixel accuracy (AS!4-style QSF).
 
+    When cfg.use_ncc=True, uses NCC (see _ncc_shift above).
+
     Returns (dx, dy, confidence) or (None, None, 0.0) if rejected.
     """
     ref_w = ref_patch * hann2d
     frm_w = frm_patch * hann2d
 
+    _use_ncc = bool(getattr(cfg, "use_ncc", False))
     _use_qsf = bool(getattr(cfg, "use_qsf", False))
     _use_pcc = bool(getattr(cfg, "use_pcc_upsample", False))
+
+    if _use_ncc:
+        dx, dy, confidence = _ncc_shift(
+            ref_patch, frm_patch, hann2d, cfg.ap_search_range
+        )
+        # NCC peak ∈ [0,1] (true correlation coefficient).
+        # ncc_confidence_threshold: explicit override; -1.0 = use ap_confidence_threshold.
+        _ncc_thr_cfg = float(getattr(cfg, "ncc_confidence_threshold", -1.0))
+        _ncc_thr = cfg.ap_confidence_threshold if _ncc_thr_cfg < 0.0 else _ncc_thr_cfg
+        if dx is None or confidence < _ncc_thr:
+            return None, None, 0.0
+        return dx, dy, confidence
+
     if _use_pcc:
         # Gate with standard phaseCorrelate confidence (more reliable for rejection),
         # then refine shift with scikit-image DFT upsampling (0.1px precision).
@@ -984,7 +1045,7 @@ def _compute_warp_maps(
 
     if n_good < 3:
         zero = np.zeros((H, W), dtype=np.float32)
-        return zero, zero, n_good
+        return zero, zero, n_good, zero
 
     # Gaussian kernel regression: smooth the shift × weight and weight maps,
     # then divide.  sigma = ap_step × ap_sigma_factor.  Must be ≥ ap_step/√2
@@ -1004,7 +1065,13 @@ def _compute_warp_maps(
     map_dx = np.where(coverage_ok, smooth_wx / np.maximum(smooth_w, 1e-9), 0.0).astype(np.float32)
     map_dy = np.where(coverage_ok, smooth_wy / np.maximum(smooth_w, 1e-9), 0.0).astype(np.float32)
 
-    return map_dx, map_dy, n_good
+    # Per-pixel NCC confidence map: smooth_w normalized to [0,1].
+    # Pixels inside well-covered AP regions → high; outside coverage → 0.
+    # Used as per-pixel stacking weight when cfg.use_ncc=True.
+    peak_w = float(np.max(smooth_w))
+    conf_map = np.where(coverage_ok, smooth_w / max(peak_w, 1e-9), 0.0).astype(np.float32)
+
+    return map_dx, map_dy, n_good, conf_map
 
 
 # ── 5a. Adaptive warp maps (variable AP sizes + wide KR) ──────────────────────
@@ -1063,7 +1130,7 @@ def _compute_adaptive_warp_maps(
 
     if n_good < 3:
         zero = np.zeros((H, W), dtype=np.float32)
-        return zero, zero, n_good
+        return zero, zero, n_good, zero
 
     ksize  = int(6.0 * kr_sigma + 1) | 1
     sw_x   = cv2.GaussianBlur(shift_x * weight, (ksize, ksize), kr_sigma)
@@ -1072,7 +1139,9 @@ def _compute_adaptive_warp_maps(
     cov_ok = sw >= float(np.max(sw)) * 0.05
     map_dx = np.where(cov_ok, sw_x / np.maximum(sw, 1e-9), 0.0).astype(np.float32)
     map_dy = np.where(cov_ok, sw_y / np.maximum(sw, 1e-9), 0.0).astype(np.float32)
-    return map_dx, map_dy, n_good
+    peak_sw = float(np.max(sw))
+    conf_map = np.where(cov_ok, sw / max(peak_sw, 1e-9), 0.0).astype(np.float32)
+    return map_dx, map_dy, n_good, conf_map
 
 
 # ── 5b. TPS warp maps (try63: exact shift interpolation, no KR dilution) ──────
@@ -1140,7 +1209,7 @@ def _compute_warp_maps_tps(
     n_good = len(good_dx)
     zero = np.zeros((H, W), dtype=np.float32)
     if n_good < 3:
-        return zero, zero, n_good
+        return zero, zero, n_good, zero
 
     pts = np.array(good_yx, dtype=np.float64)
     _smoothing = float(getattr(cfg, "tps_smoothing", 0.0))
@@ -1172,11 +1241,169 @@ def _compute_warp_maps_tps(
 
     map_dx = np.where(cov_ok, map_dx, 0.0).astype(np.float32)
     map_dy = np.where(cov_ok, map_dy, 0.0).astype(np.float32)
-
-    return map_dx, map_dy, n_good
+    # TPS does not have a natural NCC confidence; return zeros (no conf-weighting).
+    conf_map = np.zeros((H, W), dtype=np.float32)
+    return map_dx, map_dy, n_good, conf_map
 
 
 # ── 5c. True per-AP independent stacking (try68) ─────────────────────────────
+
+def _spatial_per_ap_quality_stack(
+    selected_frames: np.ndarray,
+    selected_indices: np.ndarray,
+    scores: np.ndarray,
+    reference: np.ndarray,
+    disk_cx: float,
+    disk_cy: float,
+    disk_radius: float,
+    ap_positions: List,
+    cfg,
+    progress_callback=None,
+) -> Tuple[np.ndarray, Dict]:
+    """Per-AP quality-weighted stacking without patch boundaries.
+
+    Streaming (single-pass) algorithm:
+      For each frame:
+        1. Sub-pixel global alignment.
+        2. Per-AP Sobel quality score on the globally-aligned frame.
+        3. Build smooth spatial quality weight map W_f via Gaussian KR
+           (same sigma as the warp-field KR) — no hard patch boundaries.
+        4. Compute full-frame KR warp → warped frame.
+        5. Accumulate: accum += warped × W_f, weight += W_f.
+
+    Why this eliminates wavelet grid artifacts:
+      The patch-based approach (_per_ap_independent_stack) selects different
+      frame subsets per AP. Adjacent APs can have slightly different mean
+      brightness, creating a subtle grid that wavelet amplifies ×200.
+      This function uses full KR-warped frames with spatially-varying weights,
+      so every pixel is a smooth blend of all frames — no subset boundaries.
+
+    Quality computed on the globally-aligned frame (before KR warp) gives a
+    more authentic per-AP sharpness signal than computing on the warped frame,
+    because the KR warp homogenises apparent quality across APs.
+    """
+    H, W = reference.shape[:2]
+    n_sel = len(selected_frames)
+    n_ap  = len(ap_positions)
+    _ksize       = int(getattr(cfg, "quality_gradient_ksize", 3))
+    # per_ap_quality_power: separate from global quality_weight_power.
+    # Higher power → sharper per-AP selectivity (3–4 recommended).
+    _per_ap_pow  = float(getattr(cfg, "per_ap_quality_power", 3.0))
+    _stab_thresh = int(getattr(cfg, "stabilization_planet_threshold", 0))
+    _interp      = getattr(cfg, "remap_interpolation", cv2.INTER_LINEAR)
+    adaptive_mode = bool(ap_positions) and len(ap_positions[0]) == 3
+    hann2d    = None if adaptive_mode else _make_hann2d(cfg.ap_size)
+    xx_base   = np.tile(np.arange(W, dtype=np.float32), (H, 1))
+    yy_base   = np.tile(np.arange(H, dtype=np.float32)[:, None], (1, W))
+    query_pts = np.empty((0, 2), dtype=np.float64)
+
+    # Pre-compute KR normalisation for the quality weight map.
+    # G_sum[y,x] = Gaussian-weighted count of nearby APs — same sigma as warp KR.
+    sigma_kr = float(cfg.ap_step) * cfg.ap_sigma_factor
+    ksize_kr = int(6.0 * sigma_kr + 1) | 1
+    g_ind = np.zeros((H, W), dtype=np.float32)
+    for ap in ap_positions:
+        ax, ay = int(ap[0]), int(ap[1])
+        if 0 <= ay < H and 0 <= ax < W:
+            g_ind[ay, ax] = 1.0
+    G_sum      = cv2.GaussianBlur(g_ind, (ksize_kr, ksize_kr), sigma_kr)
+    cov_thresh = float(G_sum.max()) * 0.05
+    coverage_ok = G_sum >= cov_thresh
+    G_sum_safe  = np.where(coverage_ok, G_sum, 1.0).astype(np.float64)
+
+    accum      = np.zeros((H, W), dtype=np.float64)
+    weight_sum = np.zeros((H, W), dtype=np.float64)
+    frame_logs: List[Dict] = []
+    n_global_only = 0
+
+    for i, (frame, idx) in enumerate(zip(selected_frames, selected_indices)):
+        idx = int(idx)
+
+        # ── Global alignment ──────────────────────────────────────────────────
+        dx_g, dy_g = limb_center_align(
+            disk_cx, disk_cy, frame, fixed_threshold=_stab_thresh
+        )
+        if abs(dx_g) > disk_radius * 0.5 or abs(dy_g) > disk_radius * 0.5:
+            dx_g, dy_g = subpixel_align(reference, frame)
+            align_method = "phase_correlate"
+        else:
+            align_method = "limb_center"
+        frame_aligned = apply_shift(frame, dx_g, dy_g)
+
+        # ── Per-AP Sobel quality on globally-aligned frame ────────────────────
+        q_map = np.zeros((H, W), dtype=np.float32)
+        for ap in ap_positions:
+            ax, ay = int(ap[0]), int(ap[1])
+            half = (int(ap[2]) if len(ap) >= 3 else cfg.ap_size) // 2
+            if ay - half < 0 or ay + half > H or ax - half < 0 or ax + half > W:
+                continue
+            patch = frame_aligned[ay - half: ay + half, ax - half: ax + half]
+            gx = cv2.Sobel(patch, cv2.CV_32F, 1, 0, ksize=_ksize)
+            gy = cv2.Sobel(patch, cv2.CV_32F, 0, 1, ksize=_ksize)
+            q = float((gx ** 2 + gy ** 2).max()) ** _per_ap_pow
+            q_map[ay, ax] = q
+
+        # Gaussian KR → smooth spatial quality weight map for this frame
+        smooth_qw = cv2.GaussianBlur(q_map, (ksize_kr, ksize_kr), sigma_kr)
+        W_f = np.where(coverage_ok,
+                       smooth_qw.astype(np.float64) / G_sum_safe,
+                       0.0)
+
+        # ── Full-frame KR warp ────────────────────────────────────────────────
+        if adaptive_mode:
+            map_dx, map_dy, n_good, _ = _compute_adaptive_warp_maps(
+                frame_aligned, reference, ap_positions, cfg
+            )
+        else:
+            map_dx, map_dy, n_good, _ = _compute_warp_maps(
+                frame_aligned, reference, ap_positions, hann2d, query_pts, cfg
+            )
+
+        if n_good < 3:
+            n_global_only += 1
+            # No local warp available — fall back to global quality scalar
+            W_f = np.full((H, W), max(float(scores[idx]) ** _per_ap_pow, 1e-9),
+                          dtype=np.float64)
+            map_dx = np.zeros((H, W), dtype=np.float32)
+            map_dy = np.zeros((H, W), dtype=np.float32)
+
+        remap_x = xx_base + map_dx
+        remap_y = yy_base + map_dy
+        warped = cv2.remap(
+            frame_aligned, remap_x, remap_y,
+            interpolation=_interp,
+            borderMode=cv2.BORDER_REFLECT_101,
+        )
+        warped = np.clip(warped, 0.0, 1.0)
+
+        accum      += warped.astype(np.float64) * W_f
+        weight_sum += W_f
+
+        frame_logs.append({
+            "frame_idx":       idx,
+            "quality_score":   round(float(scores[idx]), 6),
+            "global_shift_px": [round(float(dx_g), 3), round(float(dy_g), 3)],
+            "align_method":    align_method,
+            "n_good_aps":      n_good,
+        })
+
+        if progress_callback:
+            progress_callback(i + 1, n_sel)
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        result = np.where(weight_sum > 1e-12, accum / weight_sum, 0.0).astype(np.float32)
+    result = np.clip(result, 0.0, 1.0)
+
+    stats = {
+        "n_stacked":            n_sel,
+        "n_global_only_frames": n_global_only,
+        "n_aps":                n_ap,
+        "disk_center_px":       [round(disk_cx, 2), round(disk_cy, 2)],
+        "disk_radius_px":       round(disk_radius, 2),
+        "frames":               frame_logs,
+    }
+    return result, stats
+
 
 def _per_ap_independent_stack(
     selected_frames: np.ndarray,
@@ -1190,7 +1417,7 @@ def _per_ap_independent_stack(
     cfg,
     progress_callback=None,
 ) -> Tuple[np.ndarray, Dict]:
-    """True per-AP independent lucky stacking.
+    """True per-AP independent lucky stacking (patch-based, legacy).
 
     For each AP, independently selects the best sub-frames by LOCAL quality at
     that AP location, then stacks only those patches. Different APs use different
@@ -1198,13 +1425,17 @@ def _per_ap_independent_stack(
     turbulence (isoplanatic patches are small; a frame sharp at AP[i] may be
     blurry at AP[j]).
 
+    Wavelet grid artifact is suppressed by blending each AP with a 2× ap_size
+    Gaussian mask (sigma = ap_size*2/3), so patches extend well past the planet
+    disk edge and heavily overlap neighbors — brightness seams average away before
+    wavelet sharpening can amplify them.
+
     Algorithm:
       Pass 1: Global-align all frames; compute per-AP quality score matrix
               [N_sel × N_ap] using Sobel gradient at each AP patch.
       Pass 2: For each AP, select top sub_percent frames by LOCAL score,
-              estimate per-frame local shift (phaseCorrelate), extract
-              locally-shifted patches, stack with quality weights, blend
-              onto canvas with Gaussian feather mask.
+              estimate per-frame local shift (NCC / phaseCorrelate), extract
+              sub-pixel patches via getRectSubPix, stack, blend with Gaussian mask.
     """
     H, W = reference.shape[:2]
     n_sel = len(selected_frames)
@@ -1287,11 +1518,20 @@ def _per_ap_independent_stack(
             if progress_callback and i % 100 == 0:
                 progress_callback(i, n_sel * 2)
 
+    # ── Intermediate: build sub-pixel globally-aligned frames ────────────────
+    # Apply sub-pixel (bicubic) global shift to every selected frame so Pass 2
+    # can extract patches without re-running warpAffine per frame×AP.
+    aligned_frames = np.empty((n_sel, H, W), dtype=np.float32)
+    for i, frame in enumerate(selected_frames):
+        dx_g, dy_g = float(global_shifts[i, 0]), float(global_shifts[i, 1])
+        aligned_frames[i] = apply_shift(frame, dx_g, dy_g)
+
     # ── Pass 2: per-AP independent patch stacking ────────────────────────────
     accum  = np.zeros((H, W), dtype=np.float64)
     weight = np.zeros((H, W), dtype=np.float64)
     n_top  = max(3, int(n_sel * sub_pct))
     frame_logs: List[Dict] = []
+    _use_ncc_local = bool(getattr(cfg, "use_ncc", False))
 
     for j, ap in enumerate(ap_positions):
         ax, ay  = int(ap[0]), int(ap[1])
@@ -1300,9 +1540,14 @@ def _per_ap_independent_stack(
         if ay - half < 0 or ay + half > H or ax - half < 0 or ax + half > W:
             continue
 
-        # Gaussian feather mask for this AP
-        g1d  = cv2.getGaussianKernel(ap_size, ap_size / 3.0)
-        gmask = (g1d @ g1d.T).astype(np.float64)
+        # Blend region: 2× ap_size so patches extend well beyond the planet disk
+        # edge and into neighboring APs — eliminates frame-subset brightness seams
+        # that wavelet sharpening would amplify as a grid pattern.
+        blend_size = ap_size * 2
+        blend_half = blend_size // 2
+        sigma_blend = blend_size / 3.0   # ~ap_size*2/3; ≈0.61 weight at ap_step distance
+        g1d_b = cv2.getGaussianKernel(blend_size, sigma_blend)
+        gmask = (g1d_b @ g1d_b.T).astype(np.float64)
         gmask /= gmask.max()
 
         hann_ap   = _get_hann(ap_size)
@@ -1312,41 +1557,35 @@ def _per_ap_independent_stack(
         ap_scores   = score_matrix[:, j]
         top_indices = np.argsort(ap_scores)[-n_top:]
 
-        local_accum  = np.zeros((ap_size, ap_size), dtype=np.float64)
+        local_accum  = np.zeros((blend_size, blend_size), dtype=np.float64)
         local_weight = 0.0
 
         for li in top_indices:
-            frame = selected_frames[li]
-            # Use integer-pixel global shift (array slicing, no warpAffine on full frame)
-            dxi = int(round(float(global_shifts[li, 0])))
-            dyi = int(round(float(global_shifts[li, 1])))
+            aligned_f = aligned_frames[li]  # sub-pixel globally aligned
 
-            # Extract patch at integer-shifted position for local shift estimation
-            py0 = ay - half + dyi
-            px0 = ax - half + dxi
-            py1 = py0 + ap_size
-            px1 = px0 + ap_size
-            if py0 < 0 or py1 > H or px0 < 0 or px1 > W:
-                continue
-            frm_patch = frame[py0:py1, px0:px1].astype(np.float32)
+            frm_patch = aligned_f[ay - half: ay + half, ax - half: ax + half].astype(np.float32)
 
-            # Local shift at this AP
-            (dx_l, dy_l), _ = cv2.phaseCorrelate(
-                ref_patch * hann_ap, frm_patch * hann_ap
-            )
-            dx_l, dy_l = float(dx_l), float(dy_l)
-            if abs(dx_l) > cfg.ap_search_range or abs(dy_l) > cfg.ap_search_range:
-                dx_l, dy_l = 0.0, 0.0
-
-            # Extract final patch with local correction (single array slice)
-            src_y = ay + dyi + round(dy_l)
-            src_x = ax + dxi + round(dx_l)
-            y0, y1 = int(src_y) - half, int(src_y) + half
-            x0, x1 = int(src_x) - half, int(src_x) + half
-            if y0 < 0 or y1 > H or x0 < 0 or x1 > W:
-                patch = frm_patch.astype(np.float64)
+            # Local shift at this AP (NCC or phaseCorrelate)
+            if _use_ncc_local:
+                dx_l, dy_l, _conf = _ncc_shift(
+                    ref_patch, frm_patch, hann_ap, cfg.ap_search_range
+                )
+                if dx_l is None:
+                    dx_l, dy_l = 0.0, 0.0
             else:
-                patch = frame[y0:y1, x0:x1].astype(np.float64)
+                (dx_l, dy_l), _ = cv2.phaseCorrelate(
+                    ref_patch * hann_ap, frm_patch * hann_ap
+                )
+                dx_l, dy_l = float(dx_l), float(dy_l)
+                if abs(dx_l) > cfg.ap_search_range or abs(dy_l) > cfg.ap_search_range:
+                    dx_l, dy_l = 0.0, 0.0
+
+            # Extract blend_size patch centered at the locally-shifted AP center
+            cx = float(ax) + dx_l
+            cy = float(ay) + dy_l
+            patch = cv2.getRectSubPix(
+                aligned_f, (blend_size, blend_size), (cx, cy)
+            ).astype(np.float64)
 
             w = max(float(ap_scores[li]) ** _power, 1e-9)
             local_accum  += patch * w
@@ -1357,15 +1596,24 @@ def _per_ap_independent_stack(
 
         stacked_patch = local_accum / local_weight
 
-        # Blend onto canvas with Gaussian mask
-        accum [ay - half: ay + half, ax - half: ax + half] += stacked_patch * gmask
-        weight[ay - half: ay + half, ax - half: ax + half] += gmask
+        # Blend onto canvas — clamp to image bounds and slice gmask accordingly
+        y0c = ay - blend_half;  y0g = 0
+        y1c = ay + blend_half;  y1g = blend_size
+        x0c = ax - blend_half;  x0g = 0
+        x1c = ax + blend_half;  x1g = blend_size
+        if y0c < 0:   y0g -= y0c; y0c = 0
+        if y1c > H:   y1g -= (y1c - H); y1c = H
+        if x0c < 0:   x0g -= x0c; x0c = 0
+        if x1c > W:   x1g -= (x1c - W); x1c = W
+        accum [y0c:y1c, x0c:x1c] += stacked_patch[y0g:y1g, x0g:x1g] * gmask[y0g:y1g, x0g:x1g]
+        weight[y0c:y1c, x0c:x1c] += gmask[y0g:y1g, x0g:x1g]
 
         if progress_callback:
             progress_callback(n_sel + j, n_sel * 2)
 
     # Normalise; uncovered pixels → 0
-    result = np.where(weight > 1e-12, accum / weight, 0.0).astype(np.float32)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        result = np.where(weight > 1e-12, accum / weight, 0.0).astype(np.float32)
     result = np.clip(result, 0.0, 1.0)
 
     # Optional Fourier rolloff (low-pass noise suppression)
@@ -1712,11 +1960,11 @@ def _worker_process_chunk(chunk_indices: List[int]) -> tuple:
 
         # ── AP warp maps ──────────────────────────────────────────────────
         if adaptive_mode:
-            map_dx, map_dy, n_good = _compute_adaptive_warp_maps(
+            map_dx, map_dy, n_good, conf_map = _compute_adaptive_warp_maps(
                 frame_aligned, reference, ap_positions, cfg
             )
         else:
-            map_dx, map_dy, n_good = _compute_warp_maps(
+            map_dx, map_dy, n_good, conf_map = _compute_warp_maps(
                 frame_aligned, reference, ap_positions, hann2d, query_pts, cfg
             )
         if n_good < 3:
@@ -1735,12 +1983,12 @@ def _worker_process_chunk(chunk_indices: List[int]) -> tuple:
 
         # ── Weighted accumulate ───────────────────────────────────────────
         _per_ap_sel = bool(getattr(cfg, "per_ap_selection", False))
+        quality_w   = max(float(scores[idx]) ** cfg.quality_weight_power, 1e-9)
         if _per_ap_sel and len(ap_positions) >= 3:
             q2d = _build_per_ap_quality_map(warped, ap_positions, cfg)
             local_accum  += warped.astype(np.float64) * q2d
             local_weight += q2d
         else:
-            quality_w = max(float(scores[idx]) ** cfg.quality_weight_power, 1e-9)
             local_accum  += warped.astype(np.float64) * quality_w
             local_weight += quality_w
 
@@ -1822,11 +2070,11 @@ def _sigma_clip_stack(
         frame_aligned = apply_shift(frame, dx_g, dy_g)
 
         if adaptive_mode:
-            map_dx, map_dy, _ = _compute_adaptive_warp_maps(
+            map_dx, map_dy, _, _cm = _compute_adaptive_warp_maps(
                 frame_aligned, reference, ap_positions, cfg
             )
         else:
-            map_dx, map_dy, _ = _compute_warp_maps(
+            map_dx, map_dy, _, _cm = _compute_warp_maps(
                 frame_aligned, reference, ap_positions, hann2d, query_pts, cfg
             )
 
@@ -1911,6 +2159,17 @@ def apply_warp_and_stack(
         (stacked_image, stats_dict)
     """
     global _WORKER_STATE
+
+    # per_ap_selection → patch-based independent lucky stacking with wide-Gaussian
+    # blending (2× ap_size blend region) to suppress wavelet grid artifacts.
+    # use_per_ap_stack → same function, legacy alias.
+    # Both bypass the parallel pool and manage their own workers / streaming.
+    if bool(getattr(cfg, "per_ap_selection", False)) or bool(getattr(cfg, "use_per_ap_stack", False)):
+        return _per_ap_independent_stack(
+            selected_frames, selected_indices, scores, reference,
+            disk_cx, disk_cy, disk_radius, ap_positions, cfg,
+            progress_callback=progress_callback,
+        )
 
     H, W = reference.shape[:2]
     n_selected = len(selected_frames)
@@ -2018,16 +2277,7 @@ def apply_warp_and_stack(
 
     else:
         # ── Sequential path ────────────────────────────────────────────────────
-        _use_per_ap_stack   = bool(getattr(cfg, "use_per_ap_stack", False))
         _use_fourier_quality = bool(getattr(cfg, "use_fourier_quality", False))
-
-        # try68: true per-AP independent stacking — separate early return
-        if _use_per_ap_stack:
-            return _per_ap_independent_stack(
-                selected_frames, selected_indices, scores, reference,
-                disk_cx, disk_cy, disk_radius, ap_positions, cfg,
-                progress_callback=progress_callback,
-            )
 
         # try69: Fourier-domain quality-weighted stacking — separate early return
         if _use_fourier_quality:
@@ -2081,15 +2331,15 @@ def apply_warp_and_stack(
             # ── AP warp maps ──────────────────────────────────────────────
             if _use_tps:
                 # try63: TPS — exact shift interpolation, no KR dilution
-                map_dx, map_dy, n_good = _compute_warp_maps_tps(
+                map_dx, map_dy, n_good, conf_map = _compute_warp_maps_tps(
                     frame_aligned, reference, ap_positions, hann2d, cfg
                 )
             elif adaptive_mode:
-                map_dx, map_dy, n_good = _compute_adaptive_warp_maps(
+                map_dx, map_dy, n_good, conf_map = _compute_adaptive_warp_maps(
                     frame_aligned, reference, ap_positions, cfg
                 )
             else:
-                map_dx, map_dy, n_good = _compute_warp_maps(
+                map_dx, map_dy, n_good, conf_map = _compute_warp_maps(
                     frame_aligned, reference, ap_positions, hann2d, query_pts, cfg
                 )
             if n_good < 3:
@@ -2171,13 +2421,13 @@ def apply_warp_and_stack(
                 warped = np.clip(warped, 0.0, 1.0)
 
                 # ── Weighted accumulate ───────────────────────────────────
+                quality_w  = max(float(scores[idx]) ** cfg.quality_weight_power, 1e-9)
                 if _per_ap_sel and len(ap_positions) >= 3:
                     # try56: spatially varying per-AP quality weight map
                     q2d = _build_per_ap_quality_map(warped, ap_positions, cfg)
                     accum      += warped.astype(np.float64) * q2d
                     weight_sum += q2d
                 else:
-                    quality_w  = max(float(scores[idx]) ** cfg.quality_weight_power, 1e-9)
                     accum      += warped.astype(np.float64) * quality_w
                     weight_sum += quality_w
 

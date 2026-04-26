@@ -486,8 +486,13 @@ class LuckyStackConfig:
     # selection. Requires local_gradient scoring to generate per-AP scores.
     # Runs in both sequential and parallel paths (n_workers > 1 supported).
     # try56 confirmed: 45.8% Laplacian. try58 (+QSF): 46.7%.
-    # Superseded by use_fourier_quality (try69: 66.4%). Default: False.
+    # Routes to _spatial_per_ap_quality_stack: full KR-warped frames with
+    # spatially-varying quality weights computed from per-AP Sobel on the
+    # globally-aligned frame. No patch boundaries → wavelet-safe.
     per_ap_selection: bool = False
+    # Exponent applied to per-AP Sobel scores for spatial quality weighting.
+    # 3–4 provides sharp local selectivity without hard frame-subset cutoffs.
+    per_ap_quality_power: float = 3.0
 
     # ── try68: True per-AP independent stacking ───────────────────────────────
     # For each AP, independently select the best sub-frames by LOCAL quality at
@@ -554,6 +559,19 @@ class LuckyStackConfig:
     # PSS SubpixelRegistration mode equivalent.
     # Default: False (use cv2.phaseCorrelate or QSF).
     use_pcc_upsample: bool = False
+
+    # NCC (Normalized Cross-Correlation) AP shift estimation.
+    # Replaces phase correlation with spatial-domain NCC computed via FFT:
+    #   cc = IFFT(conj(FFT(ref-μ)) · FFT(frm-μ)) / (N·σ_ref·σ_frm)
+    # Peak of cc ∈ [0,1] (true correlation coefficient, lower scale than
+    # phaseCorrelate). Hann windowing + QSF sub-pixel refinement always applied.
+    # Default: False.
+    use_ncc: bool = False
+
+    # NCC-specific confidence threshold override.
+    # -1.0 (default) = use ap_confidence_threshold unchanged.
+    # Set explicitly if NCC needs a different threshold than phase correlation.
+    ncc_confidence_threshold: float = -1.0
 
     # try63: Thin Plate Spline warp interpolation instead of Gaussian KR.
     # TPS passes EXACTLY through each reliable AP's measured shift (no dilution),

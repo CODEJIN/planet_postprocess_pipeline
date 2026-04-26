@@ -1155,6 +1155,8 @@ class MainWindow(QMainWindow):
             n_ser_parallel        = int(d.get("lucky_n_ser_parallel", 1)),
             use_tps               = bool(d.get("lucky_use_tps", False)),
             use_as4_ap_grid       = bool(d.get("lucky_use_as4_ap_grid", False)),
+            use_ncc               = bool(d.get("lucky_use_ncc", False)),
+            per_ap_selection      = bool(d.get("lucky_per_ap_selection", False)),
             fourier_quality_power = float(d.get("lucky_fourier_power", 1.0)),
         )
 

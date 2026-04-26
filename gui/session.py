@@ -35,6 +35,8 @@ _DEFAULTS: dict[str, Any] = {
     "lucky_n_iterations": 2,
     "lucky_use_tps":          False,
     "lucky_use_as4_ap_grid":  False,
+    "lucky_use_ncc":          False,
+    "lucky_per_ap_selection": False,
     "lucky_fourier_power":    1.0,
     "lucky_n_workers":    0,   # kept for migration compat; UI uses global_max_workers
     "global_max_workers": 0,   # 0=auto (all cores); Step 1 caps at 4, Step 2 uses all

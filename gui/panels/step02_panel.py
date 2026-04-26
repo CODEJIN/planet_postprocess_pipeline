@@ -253,6 +253,32 @@ class Step02Panel(BasePanel):
         as4_row.addStretch()
         fl.addRow(lbl_as4, as4_row)
 
+        # ── use_ncc ───────────────────────────────────────────────────────────
+        self._use_ncc = QCheckBox()
+        self._use_ncc.setChecked(False)
+        self._use_ncc.setStyleSheet(_chk_style)
+        lbl_ncc = QLabel(S("step02.use_ncc"))
+        lbl_ncc.setToolTip(S("step02.use_ncc.tooltip"))
+        self._use_ncc.setToolTip(S("step02.use_ncc.tooltip"))
+        ncc_row = QHBoxLayout()
+        ncc_row.setSpacing(4)
+        ncc_row.addWidget(self._use_ncc)
+        ncc_row.addStretch()
+        fl.addRow(lbl_ncc, ncc_row)
+
+        # ── per_ap_selection ──────────────────────────────────────────────────
+        self._per_ap_selection = QCheckBox()
+        self._per_ap_selection.setChecked(False)
+        self._per_ap_selection.setStyleSheet(_chk_style)
+        lbl_pas = QLabel(S("step02.per_ap_selection"))
+        lbl_pas.setToolTip(S("step02.per_ap_selection.tooltip"))
+        self._per_ap_selection.setToolTip(S("step02.per_ap_selection.tooltip"))
+        pas_row = QHBoxLayout()
+        pas_row.setSpacing(4)
+        pas_row.addWidget(self._per_ap_selection)
+        pas_row.addStretch()
+        fl.addRow(lbl_pas, pas_row)
+
         left_layout.addWidget(form_widget)
         left_layout.addStretch()
         main_hlayout.addWidget(left_widget, 1)
@@ -273,6 +299,8 @@ class Step02Panel(BasePanel):
             "lucky_n_iterations":     self._n_iterations.value(),
             "lucky_use_tps":          self._warp_method.currentData() == "tps",
             "lucky_use_as4_ap_grid":  self._use_as4_ap_grid.isChecked(),
+            "lucky_use_ncc":          self._use_ncc.isChecked(),
+            "lucky_per_ap_selection": self._per_ap_selection.isChecked(),
             "lucky_fourier_power":    self._fourier_power.value(),
             "lucky_n_ser_parallel":   self._n_ser_parallel.value(),
         }
@@ -309,6 +337,8 @@ class Step02Panel(BasePanel):
         _use_tps = bool(data.get("lucky_use_tps", False))
         self._warp_method.setCurrentIndex(1 if _use_tps else 0)
         self._use_as4_ap_grid.setChecked(bool(data.get("lucky_use_as4_ap_grid", False)))
+        self._use_ncc.setChecked(bool(data.get("lucky_use_ncc", False)))
+        self._per_ap_selection.setChecked(bool(data.get("lucky_per_ap_selection", False)))
         self._fourier_power.setValue(float(data.get("lucky_fourier_power", 1.0)))
         self._n_ser_parallel.setValue(int(data.get("lucky_n_ser_parallel", 1)))
 
