@@ -286,10 +286,6 @@
   "step02.warp_method.tooltip": "로컬 warp 보간 방식입니다.\nGaussian KR (기본값): Nadaraya-Watson 커널 회귀 — 부드럽고 경계 안정적, Gaussian blur 대비 4~8배 빠름.\nTPS: Thin Plate Spline — AS!4 삼각분할과 유사한 날카로운 로컬 보정. 속도가 느리고 디스크 가장자리에서 extrapolation이 불안정할 수 있음.",
   "step02.n_ser_parallel.tooltip": "SER 파일을 동시에 처리할 수 입니다.\n0 = 자동 (CPU 코어 수 ÷ 4)\n1 = 순차 처리 (기본값, 안정적)\n2~4 = 동시 처리 (속도 향상, RAM 사용 증가)\n※ 각 SER당 ~950MB 메모리 필요. 32코어 기준 권장값: 4.",
   "step02.use_as4_ap_grid.tooltip": "AS!4 AP 배치 알고리즘을 사용합니다.\nGreedy Poisson Disk Sampling (래스터 스캔):\n  3-레이어 구조: s, s×1.5, s×3  /  min_dist = round(ap_size × 35/64)\n세션 공유: 기준 SER 1개에서 AP를 생성하고 모든 SER에 공유 (디스크 오프셋 보정 포함).\n기준 필터 자동 선택: IR > R > G > B > CH4 > color\n검증: AS!4 대비 96~100% 일치 (260323/260407/260415 데이터셋)",
-  "step02.use_ncc": "NCC 정렬",
-  "step02.use_ncc.tooltip": "AP별 shift 추정에 정규화 교차상관(NCC)을 사용합니다.\n균일/저대비 패치에서 위상상관보다 강건합니다:\n  위상상관: 저대비 AP에서 잘못된 shift를 accept할 수 있음 (conf ≈ 0.24)\n  NCC: 로컬 분산으로 정규화 → 균일 패치에서 낮은 confidence (conf ≈ 0.10)\n공식: cc = IFFT(conj(FFT(ref)) · FFT(frm)) / (N · σ_ref · σ_frm)\nPeak ∈ [0,1] → 자연스러운 confidence. QSF 서브픽셀 보정 항상 적용.\n기본값: 꺼짐 (위상상관 + QSF 사용).",
-  "step02.per_ap_selection": "AP별 품질 가중치",
-  "step02.per_ap_selection.tooltip": "누적 스태킹에 AP별 공간 가변 품질 가중치를 적용합니다 (AS!4 방식).\n로컬 warp 후 워핑된 프레임 각 AP 위치의 Sobel 그래디언트 선명도를 측정하고,\nGaussian KR로 전체 해상도 품질 맵을 보간합니다.\n이 맵이 단일 전역 프레임 품질 스칼라를 대체하는 스태킹 가중치가 됩니다.\n\n효과: 로컬로 선명한 AP 근처 픽셀이 더 많이 기여하고, 흐린 AP 근처 픽셀은\n덜 기여합니다 — 같은 프레임 내에서. 패치 경계 없음 (전체 프레임 사용,\n공간 가변 가중치만 적용).\n\n전역 품질 가중치보다 느림 (프레임당 그래디언트 계산으로 약 2배).\n기본값: 꺼짐.",
 
   "step03.input_dir.tooltip": "Step 3가 품질을 평가할 TIF 파일 폴더입니다.\nStep 2 Lucky Stacking 출력 폴더와 동일합니다.\ncascade로 자동 설정되지만 직접 변경할 수 있습니다.",
   "step03.output_dir.tooltip": "품질 점수 CSV, 윈도우 추천 JSON이 저장될 폴더입니다.\n자동으로 설정됩니다.",

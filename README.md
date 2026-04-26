@@ -25,7 +25,7 @@ Supports both **monochrome cameras** (filter wheel, multi-filter SER) and **colo
 - **Live preview widgets**: wavelet (Steps 05 & 07), RGB composite (Step 06), levels (Step 10), color correction (Step 06 color), AP grid (Step 02)
 - **Bilingual UI**: Korean / English (switchable at runtime)
 - **Standalone executable**: ships as a single binary via PyInstaller (no Python required)
-- **Lucky Stacking (Step 02)**: Fourier-domain quality-weighted stacking, AS!4-compatible PDS AP grid, σ-clip post-pass, multi-level parallelism (SER-level + frame-level ThreadPool)
+- **Lucky Stacking (Step 02)**: Per-AP independent patch stacking with NCC sub-pixel alignment and wide Gaussian blending (2× AP size), AS!4-compatible PDS AP grid, σ-clip post-pass, multi-level parallelism (SER-level + frame-level ThreadPool)
 - **Graceful pipeline stop**: Stop button on every step panel — confirms when all threads have truly halted
 
 ---
@@ -35,7 +35,7 @@ Supports both **monochrome cameras** (filter wheel, multi-filter SER) and **colo
 | Step | Name | Description |
 |------|------|-------------|
 | 01 | PIPP Preprocessing | Reject clipped/deformed frames, center-align, crop to square ROI (Optional) |
-| 02 | Lucky Stacking | Fourier-quality-weighted stacking with AS!4-compatible AP grid, σ-clip, and multi-core parallelism (Optional) |
+| 02 | Lucky Stacking | Per-AP independent patch stacking with NCC alignment and wide Gaussian blending, AS!4-compatible AP grid, σ-clip (Optional) |
 | 03 | Quality Assessment | Score each TIF; find optimal time windows across all filters |
 | 04 | De-rotation Stack | Spherical-warp de-rotation + quality-weighted mean stack; warp-scale auto-tune |
 | 05 | Wavelet Master | Final wavelet sharpening on de-rotated master stacks with limb feathering |

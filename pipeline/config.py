@@ -489,7 +489,7 @@ class LuckyStackConfig:
     # Routes to _spatial_per_ap_quality_stack: full KR-warped frames with
     # spatially-varying quality weights computed from per-AP Sobel on the
     # globally-aligned frame. No patch boundaries → wavelet-safe.
-    per_ap_selection: bool = False
+    per_ap_selection: bool = True
     # Exponent applied to per-AP Sobel scores for spatial quality weighting.
     # 3–4 provides sharp local selectivity without hard frame-subset cutoffs.
     per_ap_quality_power: float = 3.0
@@ -566,7 +566,7 @@ class LuckyStackConfig:
     # Peak of cc ∈ [0,1] (true correlation coefficient, lower scale than
     # phaseCorrelate). Hann windowing + QSF sub-pixel refinement always applied.
     # Default: False.
-    use_ncc: bool = False
+    use_ncc: bool = True
 
     # NCC-specific confidence threshold override.
     # -1.0 (default) = use ap_confidence_threshold unchanged.

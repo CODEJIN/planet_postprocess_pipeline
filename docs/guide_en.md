@@ -177,12 +177,9 @@ The preview automatically refreshes when ROI size or minimum diameter changes.
 ![Step 02 panel](images_en/step02.png)
 *Figure 5-1: Step 02 panel — Lucky Stacking configuration (Left: controls, Right: AP grid preview)*
 
-Selects the best frames from SER files and stacks them into TIF files using **Fourier-domain quality-weighted stacking**. Processing is fully automated within the pipeline — no external program required. When Step 01 is enabled, its SER output folder is automatically connected as input.
+Selects the best frames from SER files and stacks them into TIF files using **per-AP independent lucky stacking**. Processing is fully automated within the pipeline — no external program required. When Step 01 is enabled, its SER output folder is automatically connected as input.
 
 > **Optional Step**: If TIF stacks have already been created by an external tool, skip this step and specify the folder directly in Step 03.
-> Currently, the quality of the TIF extracted with AS!4 is superior to the internal lucky stacking method.
-![tif_with_as!4_base](./images/TIF_with_AS!4_base.png)
-![tif_with_step02_base](./images/TIF_Step02_base.png)
 
 ### 5.1 Parameters
 
@@ -193,9 +190,9 @@ Selects the best frames from SER files and stacks them into TIF files using **Fo
 | **Top Frame % (%)** | 25 % | 5–100 % (step 5) | Only the top N% of frames by quality score are used for stacking. Lower value = stricter selection (sharper result, lower noise); higher value = more frames included (higher SNR). Use 10–25% on nights of good seeing, 50–75% on nights of poor seeing. |
 | **AP Size (px)** | 64 | 32–128 (step 32) | Alignment Point size. Size of the sub-region used for local shift estimation. **64px = default (recommended)**. 32px = finer local alignment (slower), 128px = broader reference area (faster). |
 | **Iterations** | 1 | 1–2 | Number of Lucky Stacking iterations. Each iteration refines the AP alignment reference using the previous stack result. **1** = default (fast); **2** = higher accuracy at ~2× processing time. |
-| **σ-clip** | Off | — | Enables a sigma-clipping post-pass after the main stack. Re-warps all selected frames to the final reference and discards pixels that deviate more than κσ from the per-pixel mean. Significantly reduces cosmic-ray hits and hot-pixel residuals at the cost of ~2× processing time. |
-| **Fourier Quality Power** | 1.0 | 0.5–3.0 (step 0.5) | Exponent applied to each frame's Fourier amplitude when computing per-frequency weights: `w = │FFT│^power`. **1.0** = linear weighting (default, recommended), **0.5** = gentler weighting (more frames contribute equally, closer to uniform average), **2.0+** = only the sharpest frames dominate. For most sessions, keep this at 1.0. |
-| **SER Parallel Workers** | 1 | 0–32 | Number of SER files to process simultaneously. **0** = auto (cpu_count ÷ 4). **1** = sequential (default, safe for low-RAM systems). When set above 1, each SER gets `n_workers ÷ n_ser_parallel` internal frame-level threads so total CPU usage stays bounded. **Warning: high values multiply RAM usage** (each SER loads its full frame buffer independently). |
+| **Warp Method** | Gaussian KR | — | Local warp interpolation method. **Gaussian KR** (default): smooth, boundary-safe, fast. **TPS**: Thin Plate Spline, similar to AS!4 triangulation — sharper local transitions but slower. |
+| **Fourier Quality Power** | 1.0 | 0.5–3.0 (step 0.5) | Exponent applied to each frame's Fourier amplitude when computing per-frequency weights: `w = │FFT│^power`. **1.0** = linear weighting (default, recommended). |
+| **SER Parallel Workers** | 1 | 0–32 | Number of SER files to process simultaneously. **0** = auto (cpu_count ÷ 4). **1** = sequential (default, safe for low-RAM systems). **Warning: high values multiply RAM usage**. |
 | **AS!4 AP Grid** | Off | — | When enabled, AP positions are generated using the same greedy Poisson-disc sampling (PDS) algorithm as AutoStakkert!4: three-tier radial density with denser coverage at the disc centre. When disabled, a uniform grid is used. The right-panel preview updates immediately when toggled. |
 
 ### 5.2 AP Grid Preview
@@ -209,14 +206,15 @@ The preview refreshes automatically when AP size changes or the AS!4 AP Grid che
 
 ### 5.3 Stacking Algorithm
 
-Lucky Stacking uses **Fourier-domain quality-weighted stacking**:
+Lucky Stacking uses **per-AP independent patch stacking with wide Gaussian blending**:
 
-1. Each selected frame `n` is globally shift-aligned to the reference.
-2. Its 2-D FFT `F_n(f)` is computed.
-3. At each spatial frequency `f`, the frame contributes with weight `w_n(f) = │F_n(f)│^power`.
-4. The final image is reconstructed via IFFT of the weighted-average spectrum.
+1. **Global alignment**: Each selected frame is sub-pixel aligned to the reference via limb-centre detection.
+2. **Per-AP frame selection**: For each AP, the top 50% of globally-selected frames are ranked by local NCC (Normalized Cross-Correlation) sharpness at that AP position — different APs select different frame subsets (isoplanatic patch principle).
+3. **Sub-pixel patch extraction**: For each selected frame at each AP, a local shift is estimated via NCC and the patch is extracted with sub-pixel accuracy using `getRectSubPix`.
+4. **Local quality-weighted stack**: Selected patches are stacked with quality weighting.
+5. **Wide Gaussian blending**: Each AP contributes a 2× ap_size (128px for default ap_size=64) Gaussian feather mask. Adjacent AP blend regions overlap heavily, ensuring smooth transitions across the disc — no grid artifacts even after wavelet sharpening.
 
-Frames that are sharper (higher Fourier amplitude at high frequencies due to good seeing) automatically contribute more at those frequencies — a per-frequency lucky selection without hard spatial patch boundaries.
+This approach follows the isoplanatic patch principle: atmospheric turbulence varies spatially, so the optimal frame subset differs at each disc location. NCC alignment is more robust than phase correlation on low-contrast or uniform patches.
 
 **Parallelism model** (e.g., 32 cores, 4 SER parallel):
 ```
@@ -225,7 +223,6 @@ SER-level:  4 SER files processed simultaneously
 Frame-level: each SER uses n_workers ÷ 4 = 8 threads
 Peak active threads = 4 × 8 = 32 = n_workers
 ```
-Both σ-clip warping and Fourier chunk accumulation use the same per-SER thread pool (sequentially within one SER, but overlapping across SER files).
 
 ---
 

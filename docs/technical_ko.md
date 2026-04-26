@@ -111,16 +111,16 @@ SER 입력 파일
 [3단계] AP 격자 생성 (균일 격자 또는 Greedy PDS 3 레이어)
     │
     ▼
-[4단계] 선별 프레임별 국소 워프 추정
-    ├─ 전역 정렬 (림브 중심 → 폴백: 위상 상관)
-    ├─ AP별 Hann 윈도잉 + 위상 상관 → 신뢰도 필터
-    └─ 신뢰 AP 시프트 → 가우시안 KR → 전해상도 워프 맵
+[4단계] Pass 1 — 전역 정렬 + AP별 점수 행렬
+    ├─ 프레임별 전역 정렬 (림브 중심 → 폴백: 위상 상관)
+    └─ AP별 국소 Sobel 점수 행렬 [N_sel × N_ap]
     │
     ▼
-[5단계] 리맵 + 품질 가중 누적 → 공간 도메인 스택
-    │
-    ▼
-[6단계] 전역 정렬 프레임 → Fourier 품질 가중 스태킹
+[5단계] Pass 2 — AP별 독립 패치 스태킹
+    ├─ AP마다: NCC 국소 점수 상위 50% 프레임 선별
+    ├─ NCC 서브픽셀 국소 시프트 → getRectSubPix 패치 추출 (2× ap_size)
+    ├─ 품질 가중 패치 누적
+    └─ 광역 Gaussian 블렌딩 (2× ap_size 마스크, σ = ap_size×2/3) → 캔버스
     │
     ▼
 n_iterations = 2 이면 결과를 기준 프레임으로 → [3단계] 재반복
@@ -134,7 +134,7 @@ n_iterations = 2 이면 결과를 기준 프레임으로 → [3단계] 재반복
 | GUI 파라미터 | 기본값 | 내부 동작 |
 |---|---|---|
 | **상위 프레임 비율 (%)** | 25 | `top_percent = 0.25`. 품질 점수 기준 상위 N% 프레임만 스태킹에 사용. `n_select = max(min_frames, round(n_frames × top_percent))` |
-| **AP 크기 (px)** | 64 | AP 격자 기준 크기 s. PDS 사용 시 Layer 1=s, Layer 2=round(s×1.5/8)×8, Layer 3=s×3. Hann 윈도우 크기와 신뢰도 필터의 `ap_search_range`도 이 값에 비례 |
+| **AP 크기 (px)** | 64 | AP 격자 기준 크기 s. PDS 사용 시 Layer 1=s, Layer 2=round(s×1.5/8)×8, Layer 3=s×3. NCC 윈도우 크기와 블렌딩 영역(blend_size = 2×s)도 이 값에 비례 |
 | **반복 횟수** | 1 | `n_iterations`. 2 설정 시 1회 스택 결과를 2회의 기준 프레임으로 사용 → 기준 프레임 SNR 향상 → AP 시프트 추정 정밀도 향상 |
 | **σ-clip** | Off | 메인 스태킹 후 추가 패스 실행. 최종 기준 이미지에 모든 프레임을 워핑 후 픽셀별 평균에서 κσ 이상 벗어난 픽셀을 마스킹하고 재스태킹. 핫픽셀·우주선 잔상 제거에 효과적이나 처리 시간 약 2배 |
 | **Fourier Quality Power** | 1.0 | `w_n(f) = │FFT_n(f)│^power`. 각 공간 주파수 f에서 프레임 n의 기여 가중치. 1.0=선형, <1.0=단순 평균에 가까워짐, >1.0=고품질 프레임에 지배적 가중치 (Mackay 2013, arXiv:1303.5108) |
@@ -181,9 +181,41 @@ patch_score = max(gx² + gy²)  over ap_size × ap_size
 frame_score = mean(patch_score) over all APs
 ```
 
+### AP별 독립 패치 스태킹
+
+핵심 스태킹 알고리즘(`_per_ap_independent_stack`)은 등방성 패치 원리를 따릅니다: 대기 난류는 공간적으로 변하므로, 원반의 각 위치에서 최적 프레임 서브셋이 다릅니다.
+
+**Pass 1 — 전역 정렬 + AP별 점수 행렬**
+
+전역 선별 프레임 각각에 대해:
+1. 림브 중심 감지로 서브픽셀 전역 정렬 (`apply_shift`, bicubic warp).
+2. AP별 국소 Sobel 그레디언트 점수: 각 AP 패치에서 `max(gx² + gy²)`.
+
+결과: 점수 행렬 [N_sel × N_ap].
+
+**Pass 2 — AP별 패치 스태킹**
+
+각 AP 위치 (ax, ay)에 대해:
+1. 국소 NCC 점수 상위 50% 프레임 선별.
+2. NCC(정규화 교차상관)로 프레임별 국소 시프트 추정:
+   ```
+   cc = IFFT(conj(FFT(ref-μ)) · FFT(frm-μ)) / (N · σ_ref · σ_frm)
+   peak ∈ [0,1] → 자연스러운 confidence 임계값
+   ```
+3. `cv2.getRectSubPix`로 서브픽셀 이동된 중심에서 `blend_size × blend_size` 패치 추출 (blend_size = 2 × ap_size).
+4. 품질 가중치 `w = score^power`로 누적.
+5. 광역 Gaussian 마스크로 캔버스에 블렌딩:
+   ```
+   blend_size = ap_size × 2      (예: ap_size=64 → 128px)
+   sigma      = blend_size / 3   (예: 42.7px)
+   ap_step 거리(32px)에서 Gaussian 가중치: exp(-((32/42.7)²/2)) ≈ 0.76
+   ```
+
+**광역 Gaussian 블렌딩이 필요한 이유**: AP마다 다른 프레임 서브셋을 사용하면 인접 패치 간 미묘한 밝기 차이가 발생합니다. 기존 마스크(sigma = ap_size/3 ≈ 21px)에서는 인접 AP 중심의 Gaussian 가중치 ≈ 0.31로 오버랩이 부족합니다. 2× 블렌딩 영역은 이를 ≈ 0.76으로 높여 밝기 이음새가 대규모 오버랩 영역에서 자연스럽게 평균됩니다. 패치가 행성 림브 밖으로 충분히 연장되어 가장자리 아티팩트도 없습니다. 웨이블릿 선명화(×200) 후에도 격자 패턴이 나타나지 않습니다.
+
 ### 국소 워프 추정 및 가우시안 KR
 
-AP별 Hann 윈도잉 위상 상관으로 시프트를 추정한 뒤, 신뢰할 수 있는 AP의 시프트를 가우시안 커널 회귀(Nadaraya-Watson)로 전해상도 워프 필드로 보간합니다:
+AP별 Hann 윈도잉 위상 상관으로 시프트를 추정한 뒤(비-per-AP 모드), 신뢰할 수 있는 AP의 시프트를 가우시안 커널 회귀(Nadaraya-Watson)로 전해상도 워프 필드로 보간합니다:
 
 ```
 sigma = ap_step × ap_sigma_factor    (기본: 32 × 0.9 = 28.8px)

@@ -111,16 +111,16 @@ Select top top_percent% frames → selected_indices
 [Phase 3] AP grid generation (uniform grid or Greedy PDS 3 layers)
     │
     ▼
-[Phase 4] Per-frame local warp estimation
-    ├─ Global alignment (limb center → fallback: phase correlation)
-    ├─ Per-AP Hann windowing + phase correlation → confidence filter
-    └─ Trusted AP shifts → Gaussian KR → full-resolution warp map
+[Phase 4] Pass 1 — global alignment + per-AP score matrix
+    ├─ Global alignment per frame (limb center → fallback: phase correlation)
+    └─ Per-AP local Sobel score matrix [N_sel × N_ap]
     │
     ▼
-[Phase 5] Remap + quality-weighted accumulation → spatial-domain stack
-    │
-    ▼
-[Phase 6] Globally-aligned frames → Fourier quality-weighted stacking
+[Phase 5] Pass 2 — per-AP independent patch stacking
+    ├─ For each AP: select top 50% frames by local NCC score
+    ├─ NCC sub-pixel local shift → getRectSubPix patch extraction (2× ap_size)
+    ├─ Quality-weighted patch accumulation
+    └─ Wide Gaussian blend (2× ap_size mask, σ = ap_size×2/3) → canvas
     │
     ▼
 If n_iterations = 2: use result stack as reference → repeat from [Phase 3]
@@ -134,10 +134,10 @@ Output TIF
 | GUI Parameter | Default | Internal Behavior |
 |---|---|---|
 | **Top Frame Percent (%)** | 25 | `top_percent = 0.25`. Only the top N% of frames by quality score are used for stacking. `n_select = max(min_frames, round(n_frames × top_percent))` |
-| **AP Size (px)** | 64 | Base size s for the AP grid. With PDS: Layer 1=s, Layer 2=round(s×1.5/8)×8, Layer 3=s×3. Also sets the Hann window size and the `ap_search_range` for the confidence filter |
+| **AP Size (px)** | 64 | Base size s for the AP grid. With PDS: Layer 1=s, Layer 2=round(s×1.5/8)×8, Layer 3=s×3. Also controls the NCC window and blend region (blend_size = 2×s) |
 | **N Iterations** | 1 | `n_iterations`. When set to 2, the 1st-pass stack is used as the reference frame for the 2nd pass → higher reference SNR → improved AP shift estimation precision |
 | **σ-clip** | Off | Adds an extra pass after main stacking. All frames are warped to the final reference, then pixels deviating by > κσ from the pixel-wise mean are masked and re-stacked. Effective for cosmic rays and hot pixel residuals — approximately doubles processing time |
-| **Fourier Quality Power** | 1.0 | `w_n(f) = │FFT_n(f)│^power`. Contribution weight of frame n at each spatial frequency f. 1.0=linear, <1.0=approaches simple average, >1.0=dominant weight to highest-quality frames (Mackay 2013, arXiv:1303.5108) |
+| **Fourier Quality Power** | 1.0 | `w_n(f) = │FFT_n(f)│^power`. Per-frequency frame weight exponent (Mackay 2013, arXiv:1303.5108). Used within the AP stacking quality weight, not as the primary accumulation method |
 | **SER Parallel** | 1 | Number of SER files processed simultaneously. 0=auto (CPU cores÷4). Total thread budget = n_workers fixed. Each SER gets `n_workers ÷ N_SER` frame-level threads. RAM usage increases proportionally — use with caution |
 | **AS!4 AP Grid** | Off | Off=uniform grid (spacing=AP size÷2). On=Greedy PDS 3-layer: dense at disk center, sparse toward limb |
 
@@ -187,9 +187,41 @@ patch_score = max(gx² + gy²)  over ap_size × ap_size
 frame_score = mean(patch_score) over all APs
 ```
 
+### Per-AP Independent Patch Stacking
+
+The core stacking algorithm (`_per_ap_independent_stack`) follows the isoplanatic patch principle: atmospheric turbulence varies spatially, so the optimal frame subset differs at each disc location.
+
+**Pass 1 — global alignment + per-AP score matrix**
+
+For each globally-selected frame:
+1. Global sub-pixel alignment via limb-centre detection (`apply_shift`, bicubic warp).
+2. Per-AP local Sobel gradient score: `max(gx² + gy²)` over each AP patch.
+
+This yields a score matrix [N_sel × N_ap].
+
+**Pass 2 — per-AP patch stacking**
+
+For each AP at position (ax, ay):
+1. Select top 50% frames by local NCC score at that AP.
+2. Estimate per-frame local shift via NCC (Normalized Cross-Correlation):
+   ```
+   cc = IFFT(conj(FFT(ref-μ)) · FFT(frm-μ)) / (N · σ_ref · σ_frm)
+   peak ∈ [0,1] → natural confidence threshold
+   ```
+3. Extract `blend_size × blend_size` patch (blend_size = 2 × ap_size) via `cv2.getRectSubPix` at sub-pixel shifted centre.
+4. Accumulate with quality weight `w = score^power`.
+5. Blend onto canvas with wide Gaussian mask:
+   ```
+   blend_size = ap_size × 2      (e.g. 128px for ap_size=64)
+   sigma      = blend_size / 3   (e.g. 42.7px)
+   Gaussian weight at ap_step distance (32px): exp(-((32/42.7)²/2)) ≈ 0.76
+   ```
+
+**Why wide Gaussian blending**: Frame-subset differences between adjacent APs create subtle brightness steps. With the narrow original mask (sigma = ap_size/3 ≈ 21px), Gaussian weight at the adjacent AP centre ≈ 0.31 — insufficient overlap. The 2× blend region raises this to ≈ 0.76, making brightness seams average out across the heavily overlapping regions. Patches extend well past the disc limb, eliminating any sharp boundary artifact at the planet edge. Wavelet sharpening (×200) no longer amplifies any grid pattern.
+
 ### Local Warp Estimation and Gaussian KR
 
-Per-AP Hann-windowed phase correlation estimates shifts. Trusted AP shifts are then interpolated into a full-resolution warp field using Gaussian Kernel Regression (Nadaraya-Watson):
+Per-AP Hann-windowed phase correlation estimates shifts for the global warp map (used in non-per-AP mode). Trusted AP shifts are then interpolated into a full-resolution warp field using Gaussian Kernel Regression (Nadaraya-Watson):
 
 ```
 sigma = ap_step × ap_sigma_factor    (default: 32 × 0.7 = 22.4px)

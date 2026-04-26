@@ -37,6 +37,7 @@ from __future__ import annotations
 import multiprocessing as _mp
 import threading as _threading
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor, as_completed as _as_completed
 from queue import Empty as _QueueEmpty
 from pathlib import Path
@@ -651,9 +652,11 @@ def generate_as4_ap_grid(
 
     def _greedy_pds_layer(ap_size: int) -> None:
         half = ap_size // 2
-        min_dist_sq = int(round(ap_size * 35 / 64)) ** 2
-        inv_area = 1.0 / (ap_size * ap_size)
-        selected_xy: List[Tuple[int, int]] = []
+        min_dist    = int(round(ap_size * 35 / 64))
+        min_dist_sq = min_dist ** 2
+        inv_area    = 1.0 / (ap_size * ap_size)
+        cell        = min_dist  # grid cell size = min_dist guarantees ≤3×3 cell check
+        grid: Dict[Tuple[int, int], List[Tuple[int, int]]] = defaultdict(list)
 
         for ay in range(half, H - half):
             for ax in range(half, W - half):
@@ -669,14 +672,22 @@ def generate_as4_ap_grid(
                          + integ[ay - half, ax - half])
                 if s_val * inv_area < min_bright:
                     continue
-                # Check 3: min-dist from all already-selected APs in this layer
+                # Check 3: min-dist — only inspect 3×3 neighbouring grid cells
+                cx_cell = ax // cell
+                cy_cell = ay // cell
                 too_close = False
-                for sx, sy in selected_xy:
-                    if (ax - sx) * (ax - sx) + (ay - sy) * (ay - sy) < min_dist_sq:
-                        too_close = True
+                for dcx in (-1, 0, 1):
+                    for dcy in (-1, 0, 1):
+                        for sx, sy in grid[(cx_cell + dcx, cy_cell + dcy)]:
+                            if (ax - sx) * (ax - sx) + (ay - sy) * (ay - sy) < min_dist_sq:
+                                too_close = True
+                                break
+                        if too_close:
+                            break
+                    if too_close:
                         break
                 if not too_close:
-                    selected_xy.append((ax, ay))
+                    grid[(cx_cell, cy_cell)].append((ax, ay))
                     aps.append((ax, ay, ap_size))
 
     _greedy_pds_layer(sz1)
@@ -887,6 +898,113 @@ def _estimate_ap_shift(
     return float(dx), float(dy), confidence
 
 
+# ── 4a-opt. Pre-computation helpers for AP shift estimation ───────────────────
+
+def _precompute_ap_ref_data(
+    reference: np.ndarray,
+    ap_positions: List,
+    cfg: LuckyStackConfig,
+) -> Optional[List]:
+    """Pre-compute ref-patch-dependent data for AP shift estimation.
+
+    reference is fixed for the entire stacking loop, so ref_patch extraction,
+    Hann windowing, mean subtraction, std, and rfft2 are all constant per AP.
+    Pre-computing them once eliminates N_frames × N_APs redundant operations.
+
+    Returns a list (one entry per AP) of dicts, or None if the current config
+    path does not benefit (pcc_upsample uses a black-box phaseCorrelate).
+    Entries may be None for out-of-bounds APs.
+    """
+    _use_ncc = bool(getattr(cfg, "use_ncc", False))
+    _use_qsf = bool(getattr(cfg, "use_qsf", False))
+    if bool(getattr(cfg, "use_pcc_upsample", False)):
+        return None  # skimage path: phaseCorrelate is a black box
+
+    H, W = reference.shape[:2]
+    precomp: List[Optional[Dict]] = []
+    for ap in ap_positions:
+        ax, ay = int(ap[0]), int(ap[1])
+        ap_sz  = int(ap[2]) if len(ap) >= 3 else cfg.ap_size
+        half   = ap_sz // 2
+        if ay - half < 0 or ay + half > H or ax - half < 0 or ax + half > W:
+            precomp.append(None)
+            continue
+        ref_patch = reference[ay - half: ay + half, ax - half: ax + half].astype(np.float32)
+        hann      = _get_hann(ap_sz)
+        if _use_ncc:
+            ref_zm    = (ref_patch - ref_patch.mean()) * hann
+            sigma_ref = float(ref_zm.std())
+            F1        = np.fft.rfft2(ref_zm.astype(np.float64))
+            precomp.append({"F1": F1, "sigma_ref": sigma_ref, "N": ref_zm.size})
+        elif _use_qsf:
+            ref_w  = ref_patch * hann
+            F1_qsf = np.fft.rfft2(ref_w.astype(np.float64))
+            precomp.append({"ref_w": ref_w, "F1": F1_qsf})
+        else:
+            precomp.append({"ref_w": ref_patch * hann})
+    return precomp
+
+
+def _estimate_ap_shift_precomp(
+    frm_patch: np.ndarray,
+    pc: Dict,
+    hann2d: np.ndarray,
+    cfg: LuckyStackConfig,
+) -> Tuple[Optional[float], Optional[float], float]:
+    """AP shift estimation using pre-computed ref patch data.
+
+    Avoids re-extracting, re-windowing, and re-transforming the (constant)
+    reference patch on every frame call.  pc must be a dict from
+    _precompute_ap_ref_data; hann2d is the Hann window for the frame patch.
+    """
+    _use_ncc = bool(getattr(cfg, "use_ncc", False))
+    _use_qsf = bool(getattr(cfg, "use_qsf", False))
+
+    if _use_ncc:
+        F1, sigma_ref, N = pc["F1"], pc["sigma_ref"], pc["N"]
+        frm_zm    = (frm_patch - frm_patch.mean()) * hann2d
+        sigma_frm = float(frm_zm.std())
+        norm = N * sigma_ref * sigma_frm
+        if norm < 1e-12:
+            return None, None, 0.0
+        F2 = np.fft.rfft2(frm_zm.astype(np.float64))
+        cc = np.fft.irfft2(np.conj(F1) * F2, s=frm_zm.shape).astype(np.float32)
+        cc /= norm
+        dx, dy, peak = _qsf_refine(cc)
+        confidence = float(np.clip(peak, 0.0, 1.0))
+        if abs(dx) > cfg.ap_search_range or abs(dy) > cfg.ap_search_range:
+            return None, None, 0.0
+        _ncc_thr_cfg = float(getattr(cfg, "ncc_confidence_threshold", -1.0))
+        _ncc_thr = cfg.ap_confidence_threshold if _ncc_thr_cfg < 0.0 else _ncc_thr_cfg
+        if confidence < _ncc_thr:
+            return None, None, 0.0
+        return dx, dy, confidence
+
+    ref_w = pc["ref_w"]
+    frm_w = frm_patch * hann2d
+    if _use_qsf:
+        (dx_pc, dy_pc), confidence = cv2.phaseCorrelate(ref_w, frm_w)
+        confidence = float(confidence)
+        if confidence >= cfg.ap_confidence_threshold:
+            F2    = np.fft.rfft2(frm_w.astype(np.float64))
+            cross = pc["F1"] * np.conj(F2)
+            denom = np.abs(cross)
+            denom[denom < 1e-12] = 1e-12
+            cc    = np.fft.irfft2(cross / denom, s=frm_w.shape)
+            dx, dy, _ = _qsf_refine(cc)
+        else:
+            dx, dy = float(dx_pc), float(dy_pc)
+    else:
+        (dx, dy), confidence = cv2.phaseCorrelate(ref_w, frm_w)
+        confidence = float(confidence)
+
+    if confidence < cfg.ap_confidence_threshold:
+        return None, None, 0.0
+    if abs(dx) > cfg.ap_search_range or abs(dy) > cfg.ap_search_range:
+        return None, None, 0.0
+    return float(dx), float(dy), confidence
+
+
 # ── 4b. try54: CoG (Centre-of-Gravity) global alignment ───────────────────────
 
 def _cog_center_align(
@@ -997,6 +1115,7 @@ def _compute_warp_maps(
     hann2d: np.ndarray,
     query_pts: np.ndarray,    # kept for API compatibility; not used
     cfg: LuckyStackConfig,
+    ref_precomp: Optional[List] = None,
 ) -> Tuple[np.ndarray, np.ndarray, int]:
     """Compute per-AP shifts and build smooth full-resolution warp maps.
 
@@ -1027,11 +1146,14 @@ def _compute_warp_maps(
     weight   = np.zeros((H, W), dtype=np.float32)
 
     n_good = 0
-    for ax, ay in ap_positions:
-        ref_patch = reference[ay - half : ay + half, ax - half : ax + half].astype(np.float32)
+    for i, (ax, ay) in enumerate(ap_positions):
         frm_patch = frame_aligned[ay - half : ay + half, ax - half : ax + half].astype(np.float32)
 
-        dx, dy, conf = _estimate_ap_shift(ref_patch, frm_patch, hann2d, cfg)
+        if ref_precomp is not None and i < len(ref_precomp) and ref_precomp[i] is not None:
+            dx, dy, conf = _estimate_ap_shift_precomp(frm_patch, ref_precomp[i], hann2d, cfg)
+        else:
+            ref_patch = reference[ay - half : ay + half, ax - half : ax + half].astype(np.float32)
+            dx, dy, conf = _estimate_ap_shift(ref_patch, frm_patch, hann2d, cfg)
         if dx is None:
             continue
 
@@ -1081,6 +1203,7 @@ def _compute_adaptive_warp_maps(
     reference: np.ndarray,
     ap_positions: List[Tuple[int, int, int]],
     cfg,
+    ref_precomp: Optional[List] = None,
 ) -> Tuple[np.ndarray, np.ndarray, int]:
     """Adaptive-AP version of Gaussian kernel regression warp maps.
 
@@ -1104,18 +1227,21 @@ def _compute_adaptive_warp_maps(
     weight  = np.zeros((H, W), dtype=np.float32)
     n_good  = 0
 
-    for ax, ay, ap_size in ap_positions:
+    for i, (ax, ay, ap_size) in enumerate(ap_positions):
         half = ap_size // 2
         y0, y1 = ay - half, ay + half
         x0, x1 = ax - half, ax + half
         if y0 < 0 or y1 > H or x0 < 0 or x1 > W:
             continue
 
-        ref_patch = reference[y0:y1, x0:x1].astype(np.float32)
         frm_patch = frame_aligned[y0:y1, x0:x1].astype(np.float32)
         hann      = _get_hann(ap_size)
 
-        dx, dy, conf = _estimate_ap_shift(ref_patch, frm_patch, hann, cfg)
+        if ref_precomp is not None and i < len(ref_precomp) and ref_precomp[i] is not None:
+            dx, dy, conf = _estimate_ap_shift_precomp(frm_patch, ref_precomp[i], hann, cfg)
+        else:
+            ref_patch = reference[y0:y1, x0:x1].astype(np.float32)
+            dx, dy, conf = _estimate_ap_shift(ref_patch, frm_patch, hann, cfg)
         if dx is None:
             continue
 
@@ -1941,6 +2067,7 @@ def _worker_process_chunk(chunk_indices: List[int]) -> tuple:
     query_pts = np.empty((0, 2), dtype=np.float64)
 
     adaptive_mode = _WORKER_STATE.get("adaptive_mode", False)
+    ref_precomp   = _WORKER_STATE.get("ref_precomp")
 
     for local_i in chunk_indices:
         frame = frames[local_i]                   # float32 [0, 1]
@@ -1961,11 +2088,12 @@ def _worker_process_chunk(chunk_indices: List[int]) -> tuple:
         # ── AP warp maps ──────────────────────────────────────────────────
         if adaptive_mode:
             map_dx, map_dy, n_good, conf_map = _compute_adaptive_warp_maps(
-                frame_aligned, reference, ap_positions, cfg
+                frame_aligned, reference, ap_positions, cfg, ref_precomp=ref_precomp
             )
         else:
             map_dx, map_dy, n_good, conf_map = _compute_warp_maps(
-                frame_aligned, reference, ap_positions, hann2d, query_pts, cfg
+                frame_aligned, reference, ap_positions, hann2d, query_pts, cfg,
+                ref_precomp=ref_precomp,
             )
         if n_good < 3:
             n_global_only += 1
@@ -2061,6 +2189,9 @@ def _sigma_clip_stack(
         end="\r", flush=True,
     )
 
+    # Pre-compute ref-patch FFTs once for the sigma-clip re-warp pass.
+    _sc_ref_precomp = _precompute_ap_ref_data(reference, ap_positions, cfg)
+
     # Closure captures read-only shared state; each call writes to a unique row.
     def _warp_one(i: int) -> None:
         frame = selected_frames[i]
@@ -2071,11 +2202,12 @@ def _sigma_clip_stack(
 
         if adaptive_mode:
             map_dx, map_dy, _, _cm = _compute_adaptive_warp_maps(
-                frame_aligned, reference, ap_positions, cfg
+                frame_aligned, reference, ap_positions, cfg, ref_precomp=_sc_ref_precomp
             )
         else:
             map_dx, map_dy, _, _cm = _compute_warp_maps(
-                frame_aligned, reference, ap_positions, hann2d, query_pts, cfg
+                frame_aligned, reference, ap_positions, hann2d, query_pts, cfg,
+                ref_precomp=_sc_ref_precomp,
             )
 
         remap_x = (xx_base + map_dx - dx_g).astype(np.float32)
@@ -2191,6 +2323,7 @@ def apply_warp_and_stack(
         # Set module-level state — workers read from it (no writes → no races).
         # fork: inherited via COW (no pickling).
         # threads: shared directly (same process memory, GIL released by OpenCV/numpy).
+        _ref_precomp_par = _precompute_ap_ref_data(reference, ap_positions, cfg)
         _WORKER_STATE = {
             "frames":           selected_frames,
             "reference":        reference,
@@ -2205,6 +2338,7 @@ def apply_warp_and_stack(
             "xx_base":          xx_base,
             "yy_base":          yy_base,
             "adaptive_mode":    adaptive_mode,
+            "ref_precomp":      _ref_precomp_par,
         }
 
         # Split frame indices into equal-sized chunks
@@ -2294,6 +2428,10 @@ def apply_warp_and_stack(
         _use_patch   = bool(getattr(cfg, "use_patch_blend", False))
         _use_tps     = bool(getattr(cfg, "use_tps", False))
 
+        # Pre-compute ref-patch FFTs once — reused across all frames.
+        # TPS path uses _compute_warp_maps_tps (different function) → skip.
+        _ref_precomp = None if _use_tps else _precompute_ap_ref_data(reference, ap_positions, cfg)
+
         # try57 patch-blend: pre-build Gaussian mask
         if _use_patch:
             _pb_half = cfg.ap_size // 2
@@ -2336,11 +2474,12 @@ def apply_warp_and_stack(
                 )
             elif adaptive_mode:
                 map_dx, map_dy, n_good, conf_map = _compute_adaptive_warp_maps(
-                    frame_aligned, reference, ap_positions, cfg
+                    frame_aligned, reference, ap_positions, cfg, ref_precomp=_ref_precomp
                 )
             else:
                 map_dx, map_dy, n_good, conf_map = _compute_warp_maps(
-                    frame_aligned, reference, ap_positions, hann2d, query_pts, cfg
+                    frame_aligned, reference, ap_positions, hann2d, query_pts, cfg,
+                    ref_precomp=_ref_precomp,
                 )
             if n_good < 3:
                 n_global_only += 1
