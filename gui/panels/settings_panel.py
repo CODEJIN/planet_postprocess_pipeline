@@ -456,7 +456,7 @@ class SettingsPanel(QWidget):
         planet_idx  = self._planet_combo.currentIndex()
         planet      = self._planet_combo.itemData(planet_idx) or "Jupiter"
         lang_idx    = self._lang_combo.currentIndex()
-        language    = self._lang_combo.itemData(lang_idx) or "ko"
+        language    = self._lang_combo.itemData(lang_idx) or "en"
         return {
             "planet":             planet,
             "target":             self._target.text().strip(),
@@ -488,7 +488,7 @@ class SettingsPanel(QWidget):
         else:
             self._radio_mono.setChecked(True)
 
-        lang = data.get("language", "ko")
+        lang = data.get("language", "en")
         for i in range(self._lang_combo.count()):
             if self._lang_combo.itemData(i) == lang:
                 self._lang_combo.setCurrentIndex(i)

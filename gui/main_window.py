@@ -788,14 +788,14 @@ class MainWindow(QMainWindow):
 
     def _on_settings_saved(self) -> None:
         # 1. Apply new settings values to session data first (camera_mode etc.)
-        old_lang = self._session_data.get("language", "ko")
+        old_lang = self._session_data.get("language", "en")
         data = self._session_data.copy()
         data.update(self._settings_panel.get_session_values())
         data["enabled_steps"] = dict(self._enabled_steps)
         self._session_data = data
 
         # Reload i18n and refresh UI if language changed
-        new_lang = data.get("language", "ko")
+        new_lang = data.get("language", "en")
         if new_lang != old_lang:
             i18n.load(new_lang)
 
@@ -814,6 +814,9 @@ class MainWindow(QMainWindow):
 
             # Update log widget buttons
             self._log_widget.retranslate()
+
+            # Update welcome panel
+            self._welcome_panel.retranslate()
 
             # Update sidebar step labels
             for step_id, key, _optional in _STEP_DEFS:

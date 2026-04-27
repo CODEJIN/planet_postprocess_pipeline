@@ -13,7 +13,7 @@ from pathlib import Path
 
 _DIR = Path(__file__).parent / "i18n"
 _SUPPORTED = {"ko", "en"}
-_DEFAULT = "ko"
+_DEFAULT = "en"
 
 _strings: dict[str, str] = {}
 

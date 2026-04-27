@@ -759,6 +759,45 @@ def _qsf_refine(cc: np.ndarray) -> Tuple[float, float, float]:
     return peak_x, peak_y, float(cc[py, px])
 
 
+def _batch_qsf_refine(cc_batch: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Vectorized _qsf_refine for a batch of CC maps.
+
+    cc_batch: (n, H, W) float32 or float64
+    Returns dx (n,), dy (n,) float64 — identical results to calling
+    _qsf_refine(cc_batch[k]) for each k (dividing by a positive scalar
+    doesn't change argmax or the quadratic sub-pixel ratios).
+    """
+    n, H, W = cc_batch.shape
+    flat = cc_batch.reshape(n, -1).argmax(axis=1)   # (n,)
+    py = (flat // W).astype(np.intp)
+    px = (flat  % W).astype(np.intp)
+
+    di = np.array([-1, 0, 1], dtype=np.intp)
+    rows = (py[:, None] + di[None, :]) % H   # (n, 3)
+    cols = (px[:, None] + di[None, :]) % W   # (n, 3)
+
+    k_idx = np.arange(n, dtype=np.intp)
+    z = cc_batch.astype(np.float64)[
+        k_idx[:, None, None],
+        rows[:, :, None],
+        cols[:, None, :],
+    ]   # (n, 3, 3)
+
+    denom_x = z[:, 1, 0] - 2.0 * z[:, 1, 1] + z[:, 1, 2]
+    denom_x = np.where(np.abs(denom_x) > 1e-12, denom_x, 1e-12)
+    sub_x = np.clip(-0.5 * (z[:, 1, 2] - z[:, 1, 0]) / denom_x, -1.0, 1.0)
+
+    denom_y = z[:, 0, 1] - 2.0 * z[:, 1, 1] + z[:, 2, 1]
+    denom_y = np.where(np.abs(denom_y) > 1e-12, denom_y, 1e-12)
+    sub_y = np.clip(-0.5 * (z[:, 2, 1] - z[:, 0, 1]) / denom_y, -1.0, 1.0)
+
+    peak_x = px.astype(np.float64) + sub_x
+    peak_y = py.astype(np.float64) + sub_y
+    peak_x = np.where(peak_x > W / 2, peak_x - W, peak_x)
+    peak_y = np.where(peak_y > H / 2, peak_y - H, peak_y)
+    return peak_x, peak_y
+
+
 def _ncc_shift(
     ref_patch: np.ndarray,
     frm_patch: np.ndarray,
@@ -1732,13 +1771,15 @@ def _per_ap_independent_stack(
         all_idx  = list(range(n_sel))
         chunk_sz = max(1, (n_sel + n_workers - 1) // n_workers)
         chunks   = [all_idx[k:k + chunk_sz] for k in range(0, n_sel, chunk_sz)]
+        done_count = 0
         with _ThreadPoolExecutor(max_workers=n_workers) as executor:
             for chunk_idx, (shifts_c, scores_c) in zip(chunks, executor.map(_pass1_chunk, chunks)):
                 for li, i in enumerate(chunk_idx):
                     global_shifts[i] = shifts_c[li]
                     score_matrix[i]  = scores_c[li]
-        if progress_callback:
-            progress_callback(n_sel, _prog_total)
+                done_count += len(chunk_idx)
+                if progress_callback:
+                    progress_callback(done_count, _prog_total)
     else:
         for i, frame in enumerate(selected_frames):
             dx_g, dy_g = limb_center_align(
@@ -1835,16 +1876,16 @@ def _per_ap_independent_stack(
             cc_batch = np.fft.irfft2(np.conj(F1) * F2_batch, s=(ap_size, ap_size)).astype(np.float32)
             norms_arr = (N_patch * sigma_ref * stds.astype(np.float64)).astype(np.float32)
             search_r  = cfg.ap_search_range
+            # Batch qsf_refine: argmax + quadratic fit for all n_top at once
+            # Dividing by norm doesn't affect argmax → omit for batch path
+            dx_arr, dy_arr = _batch_qsf_refine(cc_batch)
+            use_shift = (norms_arr > 1e-12) & (np.abs(dx_arr) <= search_r) & (np.abs(dy_arr) <= search_r)
+            dx_arr = np.where(use_shift, dx_arr, 0.0)
+            dy_arr = np.where(use_shift, dy_arr, 0.0)
             for k, li in enumerate(top_indices):
-                norm = float(norms_arr[k])
-                if norm < 1e-12:
-                    dx_l, dy_l = 0.0, 0.0
-                else:
-                    dx_l, dy_l, _conf = _qsf_refine(cc_batch[k] / norm)
-                    if abs(dx_l) > search_r or abs(dy_l) > search_r:
-                        dx_l, dy_l = 0.0, 0.0
                 patch = cv2.getRectSubPix(
-                    aligned_frames[li], (blend_size, blend_size), (float(ax) + dx_l, float(ay) + dy_l)
+                    aligned_frames[li], (blend_size, blend_size),
+                    (float(ax) + dx_arr[k], float(ay) + dy_arr[k]),
                 ).astype(np.float64)
                 w = max(float(ap_scores[li]) ** _power, 1e-9)
                 local_accum  += patch * w
@@ -3122,9 +3163,18 @@ def lucky_stack_ser(
             step_label = f"[5/5]" if n_iter == 1 else f"[{4+iteration+1}/{4+n_iter}]"
             print(f"  {step_label} Stacking {n_select} frames…", end="\r", flush=True)
 
-            def _prog(done: int, total: int, _lbl=step_label, _it=iteration) -> None:
+            def _prog(done: int, total: int,
+                      _lbl=step_label, _it=iteration, _nsel=n_select) -> None:
                 pct = 100 * done // max(total, 1)
-                print(f"  {_lbl} Stacking {done}/{total} ({pct}%)…", end="\r", flush=True)
+                n_ap_est = total - _nsel
+                if done <= _nsel:
+                    # Pass 1: frame-level progress
+                    detail = f"[Pass1] {done}/{_nsel} frames"
+                else:
+                    # Pass 2: AP-level progress
+                    ap_done = done - _nsel
+                    detail = f"[Pass2] {ap_done}/{n_ap_est} APs"
+                print(f"  {_lbl} {detail} ({pct}%)…", end="\r", flush=True)
                 offset = _STACK_START + _it * _IT_PU
                 _pu(offset + int(_IT_PU * done / max(total, 1)))
 

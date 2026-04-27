@@ -113,7 +113,7 @@ def main() -> None:
 
     # Load session to get language preference
     sess = session.load()
-    lang = sess.get("language", "ko")
+    lang = sess.get("language", "en")
 
     # Initialise i18n before any widget is created
     i18n.load(lang)
