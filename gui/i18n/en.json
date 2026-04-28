@@ -209,7 +209,8 @@
 
   "step07.title": "Step 7 — Wavelet Preview",
   "step07.desc": "Apply wavelet sharpening to Lucky Stacking TIF files and generate preview PNGs.",
-  "step07.input_dir": "Input folder (auto)",
+  "step07.input_dir": "Input folder",
+  "step07.input_dir.placeholder": "Select a folder with TIF files, or set automatically",
   "step07.output_dir": "Output folder (auto)",
   "step07.amounts": "Layer amounts (L1–L6)",
   "step07.border_taper": "Border taper (px, 0=off)",
@@ -311,6 +312,8 @@
   "step07.input_dir.tooltip": "Step 2 Lucky Stacking output TIF folder (auto-set)",
   "step07.output_dir.tooltip": "Folder where wavelet preview PNGs are saved (auto-set)",
   "step07.amounts.tooltip": "Wavelet layer sharpening strengths L1–L6.\nL1 = finest detail, L6 = largest structure.\nFor planetary imaging, activating only L1–L3 is recommended.",
+  "step07.color_correct": "Apply color correction (auto white balance + CA correction)",
+  "step07.color_correct.tooltip": "When checked, applies automatic white balance and chromatic aberration (CA) correction to the preview and output PNGs.\nWhen unchecked, outputs the original colors unchanged.",
   "step07.border_taper.tooltip": "Applies a soft feathered border to the image edges.\n0 = disabled (recommended). Use only when ringing artifacts are severe.",
 
   "step08.input_dir.tooltip": "Step 2 Lucky Stacking output TIF folder (auto-set)",
@@ -349,6 +352,7 @@
   "batch.legend.error": "Error (blocked)",
   "batch.legend.warning": "Warning",
   "batch.error_banner": "Validation errors found. Please fix the highlighted step settings before running.",
+  "batch.derot_skip_banner": "Not enough files ({n} found, {req} required): De-rotation steps (03–06, 08–10) will be skipped automatically. Only Step 07 (Wavelet Preview) will run.",
   "batch.btn.run": "Run",
   "batch.btn.cancel": "Cancel",
   "batch.node.skipped": "(skipped)",

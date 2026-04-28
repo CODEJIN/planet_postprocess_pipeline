@@ -169,6 +169,10 @@ def _build_dark_style() -> str:
 
 DARK_STYLE = _build_dark_style()
 
+# Steps that belong to the de-rotation pipeline and are auto-skipped when
+# there are too few files to form even one de-rotation window.
+_DEROTATION_STEPS = {"03", "04", "05", "06", "08", "09", "10"}
+
 # ── Step definitions ───────────────────────────────────────────────────────────
 
 _STEP_DEFS = [
@@ -847,6 +851,7 @@ class MainWindow(QMainWindow):
             return
         panel = self._step_panels.get(step_id)
         if panel and hasattr(panel, "validate"):
+            self.save_session()
             d = self._session_data
             issues = panel.validate(d)
             errors   = [i for i in issues if i.severity == "error"]
@@ -897,7 +902,19 @@ class MainWindow(QMainWindow):
         if not steps:
             return
 
-        # 4. Pre-flight validation for all planned steps
+        # 4. Check de-rotation feasibility; auto-skip steps 03-06, 08-10 if
+        #    insufficient files, leaving only step 07 (wavelet preview) active.
+        feasible, n_files, n_required = self._check_derotation_feasibility(
+            d, start_from
+        )
+        skipped_derot: list[str] = []
+        skip_banner: str | None = None
+        if not feasible and any(s in _DEROTATION_STEPS for s in steps):
+            skipped_derot = [s for s in steps if s in _DEROTATION_STEPS]
+            steps          = [s for s in steps if s not in _DEROTATION_STEPS]
+            skip_banner    = S("batch.derot_skip_banner", n=n_files, req=n_required)
+
+        # 5. Pre-flight validation for all planned steps
         issues: dict[str, list] = {}
         for sid in steps:
             panel = self._step_panels.get(sid)
@@ -906,17 +923,22 @@ class MainWindow(QMainWindow):
                 if result:
                     issues[sid] = result
 
-        # 5. Show graphical confirmation dialog (with validation results)
-        if not self._show_batch_confirm(steps, start_from, d, issues=issues):
+        # 6. Show graphical confirmation dialog (with validation results)
+        if not self._show_batch_confirm(
+            steps, start_from, d, issues=issues, skip_banner=skip_banner
+        ):
             return
 
-        # 5. Reset status icons and launch runner
+        # 7. Reset status icons and launch runner
         for sid in steps:
             if sid in self._step_items:
                 self._step_items[sid].set_status("idle")
             panel = self._step_panels.get(sid)
             if panel and hasattr(panel, "set_status"):
                 panel.set_status("idle")
+        for sid in skipped_derot:
+            if sid in self._step_items:
+                self._step_items[sid].set_status("skipped")
 
         config = self.build_config()
         self._runner = StepRunner(config, steps, self._results, parent=self)
@@ -924,6 +946,24 @@ class MainWindow(QMainWindow):
         self._runner.start()
         self._btn_run_all.setEnabled(False)
         self._status_label.setText(S("app.status.running"))
+
+    def _check_derotation_feasibility(
+        self, d: dict, start_from: str
+    ) -> tuple[bool, int, int]:
+        """Return (feasible, n_files, required) for de-rotation window search."""
+        window_frames = int(d.get("window_frames", 3))
+        n_windows     = int(d.get("n_windows", 1))
+        required      = window_frames * n_windows
+
+        if start_from in ("01", "02"):
+            ser_dir = d.get("step02_ser_dir", "") or d.get("ser_input_dir", "")
+            p = Path(ser_dir)
+            n = len([f for pat in ("*.ser", "*.SER") for f in p.glob(pat)])
+        else:
+            p = Path(d.get("input_dir", ""))
+            n = len([f for pat in ("*.tif", "*.TIF") for f in p.glob(pat)])
+
+        return n >= required, n, required
 
     def _validate_batch_input(self, start_from: str, d: dict) -> tuple[bool, str, str]:
         """Check that the starting input folder has the expected files."""
@@ -967,6 +1007,7 @@ class MainWindow(QMainWindow):
         start_from: str,
         d: dict,
         issues: dict[str, list] | None = None,
+        skip_banner: str | None = None,
     ) -> bool:
         """Show a graphical pipeline confirmation dialog."""
         from gui.widgets.batch_confirm_dialog import BatchConfirmDialog
@@ -1019,6 +1060,7 @@ class MainWindow(QMainWindow):
             output_paths=output_paths,
             input_summary=inp_summary,
             issues=issues,
+            skip_banner=skip_banner,
         )
         return dlg.exec() == dlg.DialogCode.Accepted
 
@@ -1272,6 +1314,8 @@ class MainWindow(QMainWindow):
         elif camera_mode == "mono" and filters == ["COLOR"]:
             filters = ["IR", "R", "G", "B", "CH4"]
 
+        wavelet_color_correct = bool(d.get("wavelet_color_correct", True))
+
         return PipelineConfig(
             ser_input_dir     = ser_dir,
             input_dir         = input_dir,
@@ -1287,9 +1331,10 @@ class MainWindow(QMainWindow):
             composite        = composite,
             gif              = gif,
             grid            = grid,
-            target          = str(d.get("target", "Jup")),
-            filters         = filters,
-            camera_mode     = camera_mode,
+            target                = str(d.get("target", "Jup")),
+            filters               = filters,
+            camera_mode           = camera_mode,
+            wavelet_color_correct = wavelet_color_correct,
         )
 
     # ── Misc ──────────────────────────────────────────────────────────────────

@@ -116,8 +116,8 @@ def _load_raw_tifs(
         meta = image_io.parse_filename(tif_path)
         if meta is None:
             continue
-        filt = meta.get("filter")
-        if filt is None or filt not in config.filters:
+        filt = meta.get("filter") or "color"
+        if filt != "color" and filt not in config.filters:
             continue
         results.setdefault(filt, []).append((tif_path, meta))
 

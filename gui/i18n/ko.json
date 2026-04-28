@@ -210,7 +210,8 @@
 
   "step07.title": "Step 7 — 웨이블릿 미리보기",
   "step07.desc": "Lucky Stacking TIF 파일에 웨이블릿 선명화를 적용하여 미리보기 PNG를 생성합니다.",
-  "step07.input_dir": "입력 폴더 (자동)",
+  "step07.input_dir": "입력 폴더",
+  "step07.input_dir.placeholder": "TIF 파일이 있는 폴더를 선택하거나 자동 설정됩니다",
   "step07.output_dir": "출력 폴더 (자동)",
   "step07.amounts": "레이어별 선명화 강도 (L1~L6)",
   "step07.border_taper": "경계 테이퍼 (px, 0=비활성)",
@@ -311,6 +312,8 @@
   "step07.input_dir.tooltip": "Step 2 Lucky Stacking 출력 TIF 폴더 (자동 설정)",
   "step07.output_dir.tooltip": "웨이블릿 미리보기 PNG가 저장될 폴더 (자동 설정)",
   "step07.amounts.tooltip": "L1~L6은 웨이블릿 분해 레이어의 선명화 강도입니다.\nL1 = 가장 미세한 디테일, L6 = 가장 큰 구조.\n행성 촬영에는 L1~L3만 활성화하는 것을 권장합니다.",
+  "step07.color_correct": "색상 보정 적용 (자동 화이트밸런스 + 색수차 보정)",
+  "step07.color_correct.tooltip": "체크 시 미리보기와 출력 PNG에 자동 화이트밸런스 및 색수차(CA) 보정을 적용합니다.\n해제 시 원본 색상 그대로 출력됩니다.",
   "step07.border_taper.tooltip": "이미지 가장자리에 부드러운 경계를 적용합니다.\n0 = 비활성 (권장). 링잉 아티팩트가 심할 때만 사용하세요.",
 
   "step08.input_dir.tooltip": "Step 2 Lucky Stacking 출력 TIF 폴더 (자동 설정)",
@@ -349,6 +352,7 @@
   "batch.legend.error": "오류 (실행 불가)",
   "batch.legend.warning": "경고",
   "batch.error_banner": "검증 오류가 있어 실행할 수 없습니다. 해당 스텝 설정을 확인해주세요.",
+  "batch.derot_skip_banner": "파일 수 부족({n}개, {req}개 필요): De-rotation 단계(03–06, 08–10)를 자동으로 건너뜁니다. Step 07 (Wavelet 미리보기)만 실행됩니다.",
   "batch.btn.run": "실행",
   "batch.btn.cancel": "취소",
   "batch.node.skipped": "(건너뜀)",

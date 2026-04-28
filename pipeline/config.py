@@ -667,6 +667,9 @@ class PipelineConfig:
     #           Step 11 shows a single-column grid.
     camera_mode: str = "mono"
 
+    # Apply auto WB + CA correction in Step 7 (color camera only)
+    wavelet_color_correct: bool = True
+
     # ── Observation metadata ───────────────────────────────────────────────────
     target: str = "Jup"
     filters: List[str] = field(
