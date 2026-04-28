@@ -149,6 +149,7 @@ class BatchConfirmDialog(QDialog):
         output_paths: dict[str, str],
         input_summary: str,
         issues: dict[str, list] | None = None,
+        skip_banner: str | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(S("batch.dialog.title"))
@@ -160,6 +161,7 @@ class BatchConfirmDialog(QDialog):
         self._start_from   = start_from
         self._output_paths = output_paths
         self._issues       = issues or {}
+        self._skip_banner  = skip_banner
 
         self._has_errors = any(
             any(i.severity == "error" for i in lst)
@@ -233,6 +235,16 @@ class BatchConfirmDialog(QDialog):
         )
         legend.setStyleSheet("color: #666; font-size: 10px;")
         layout.addWidget(legend)
+
+        if self._skip_banner:
+            skip_lbl = QLabel(f"⏭  {self._skip_banner}")
+            skip_lbl.setStyleSheet(
+                "color: #b0c4de; font-size: 11px;"
+                " background: #1a2a3a; border: 1px solid #4a6a8a;"
+                " border-radius: 4px; padding: 6px 10px;"
+            )
+            skip_lbl.setWordWrap(True)
+            layout.addWidget(skip_lbl)
 
         if self._has_errors:
             err_lbl = QLabel(f"⛔  {S('batch.error_banner')}")

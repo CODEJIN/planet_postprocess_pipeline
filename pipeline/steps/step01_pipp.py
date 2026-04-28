@@ -43,7 +43,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from pipeline.config import PipelineConfig
-from pipeline.modules import planet_detect, ser_io
+from pipeline.modules import image_io, planet_detect, ser_io
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
@@ -174,7 +174,13 @@ def _process_one(
     out_path: Optional[Path] = None
     writer: Optional[ser_io.SERWriter] = None
     if out_dir is not None:
-        out_path = out_dir / (stem + "_pipp.ser")
+        filter_name = ("color" if config.camera_mode == "color"
+                       else next((f for f in ["IR", "R", "G", "B", "CH4"]
+                                  if f"-{f}-" in stem or f"_{f}_" in stem), "L"))
+        out_stem = image_io.infer_winjupos_stem(
+            ser_path, filter_name=filter_name, target=config.target
+        )
+        out_path = out_dir / (out_stem + "_pipp.ser")
         writer = ser_io.SERWriter(out_path, reader.header, pipp.roi_size, pipp.roi_size)
 
     # Counters

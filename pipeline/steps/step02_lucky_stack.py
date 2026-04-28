@@ -223,9 +223,22 @@ def run(
     return results
 
 
-# ── Reference SER selection for session-wide AP sharing ──────────────────────
+# ── Filename helpers ─────────────────────────────────────────────────────────
 
 _FILTER_PRIORITY = ["IR", "R", "G", "B", "CH4", "color"]
+
+_KNOWN_FILTERS = {"IR", "R", "G", "B", "CH4"}
+
+
+def _extract_filter_from_stem(stem: str) -> Optional[str]:
+    """Return the filter name embedded in a FireCapture-style stem, or None."""
+    for flt in _KNOWN_FILTERS:
+        if f"-{flt}-" in stem or f"_{flt}_" in stem:
+            return flt
+    return None
+
+
+# ── Reference SER selection for session-wide AP sharing ──────────────────────
 
 
 def _pick_reference_ser(ser_files: List[Path], forced_filter: str = "") -> Optional[Path]:
@@ -302,10 +315,15 @@ def _process_one(
     # ── Save TIF + JSON log ───────────────────────────────────────────────────
     out_path: Optional[Path] = None
     if out_dir is not None:
-        out_path = out_dir / (stem + "_lucky.tif")
+        filter_name = ("color" if config.camera_mode == "color"
+                       else _extract_filter_from_stem(stem) or "L")
+        out_stem = image_io.infer_winjupos_stem(
+            ser_path, filter_name=filter_name, target=config.target
+        )
+        out_path = out_dir / (out_stem + "_lucky.tif")
         image_io.write_tif_16bit(stacked, out_path)
 
-        log_path = out_dir / (stem + "_lucky.json")
+        log_path = out_dir / (out_stem + "_lucky.json")
         # Remove large per-frame list for compact log (keep summary only)
         log_compact = {k: v for k, v in log.items() if k != "frames"}
         log_compact["n_frames_logged"] = len(log.get("frames", []))

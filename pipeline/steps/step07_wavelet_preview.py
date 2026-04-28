@@ -25,6 +25,7 @@ import numpy as np
 
 from pipeline.config import PipelineConfig
 from pipeline.modules import image_io, wavelet
+from pipeline.steps.step06_rgb_composite import _auto_color_correct
 
 
 
@@ -89,6 +90,10 @@ def run(config: PipelineConfig, progress_callback=None, cancel_event=None) -> St
             img = image_io.read_tif(tif_path)
 
             color_mode = config.camera_mode == "color"
+
+            # Color camera: auto WB + CA correction before sharpening (optional)
+            if color_mode and img.ndim == 3 and config.wavelet_color_correct:
+                img, _ = _auto_color_correct(img)
 
             # Border taper: cosine-fade outermost pixels before wavelet to
             # prevent stacking boundary gradients from being amplified.
