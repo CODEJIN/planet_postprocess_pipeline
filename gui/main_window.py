@@ -955,7 +955,14 @@ class MainWindow(QMainWindow):
         n_windows     = int(d.get("n_windows", 1))
         required      = window_frames * n_windows
 
-        if start_from in ("01", "02"):
+        if start_from == "01":
+            # step01 reads from the raw SER dir; step02_ser_dir (PIPP output)
+            # doesn't exist yet, so always count from ser_input_dir.
+            ser_dir = d.get("ser_input_dir", "")
+            p = Path(ser_dir)
+            n = len([f for pat in ("*.ser", "*.SER") for f in p.glob(pat)])
+        elif start_from == "02":
+            # step02 reads from PIPP output; fall back to raw dir if not set.
             ser_dir = d.get("step02_ser_dir", "") or d.get("ser_input_dir", "")
             p = Path(ser_dir)
             n = len([f for pat in ("*.ser", "*.SER") for f in p.glob(pat)])
@@ -1203,6 +1210,7 @@ class MainWindow(QMainWindow):
             use_ncc               = bool(d.get("lucky_use_ncc", False)),
             per_ap_selection      = bool(d.get("lucky_per_ap_selection", False)),
             fourier_quality_power = float(d.get("lucky_fourier_power", 1.0)),
+            debayer               = bool(d.get("lucky_debayer", True)),
         )
 
         pipp = PippConfig(

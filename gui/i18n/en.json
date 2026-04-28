@@ -170,6 +170,7 @@
   "step02.use_as4_ap_grid": "AS!4 AP Grid",
   "step02.fourier_quality_power": "Fourier Quality Power",
   "step02.n_workers": "Workers",
+  "step02.debayer": "Debayer (Bayer → RGB)",
   "step02.optional": true,
 
   "step03.title": "Step 3 — Quality Assessment",
@@ -287,6 +288,7 @@
   "step02.n_ser_parallel.tooltip": "Number of SER files to process simultaneously.\n0 = auto (cpu_count ÷ 4)\n1 = sequential (default, safest)\n2–4 = parallel (faster, higher RAM usage)\n~950 MB RAM required per SER. Recommended on 32-core: 4.",
   "step02.use_as4_ap_grid.tooltip": "Use AS!4 AP placement algorithm.\nGreedy Poisson Disk Sampling (raster scan):\n  3 layers: s, s×1.5, s×3  /  min_dist = round(ap_size × 35/64)\nSession-wide sharing: APs generated once from a reference SER and shared across\nall SERs (with per-SER disk offset correction).\nAuto reference filter priority: IR > R > G > B > CH4 > color\nValidated: 96–100% match vs AS!4 ground truth (260323/260407/260415 datasets)",
   "step02.fourier_quality_power.tooltip": "Fourier-domain quality weighting exponent.\nweight(f) = |FFT(frame)|^power — sharper frames contribute more at each frequency.\n  1.0 = default (clean, try69: 66.4% Laplacian vs AS!4)\n  1.5 = intermediate (try72: 115.8%)\n  2.0 = aggressive (try71: 198.4%, more noise)\nHigher values emphasize fine detail but amplify high-frequency noise.",
+  "step02.debayer.tooltip": "Convert the stacked Bayer-pattern result to an RGB image (H×W×3).\nRequired for color camera pipelines: Steps 5–8 all expect RGB input.\nDisable only if you need the raw Bayer stack for inspection.\n(Default: ON — always enable for color cameras)",
 
   "step03.input_dir.tooltip": "Folder of TIF files that Step 3 will assess for quality.\nShould be the Step 2 Lucky Stacking output folder.\nAuto-filled by cascade but can be overridden.",
   "step03.output_dir.tooltip": "Folder where quality score CSVs and window recommendation JSON are saved.\nSet automatically.",

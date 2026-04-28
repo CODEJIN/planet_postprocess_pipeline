@@ -583,6 +583,13 @@ class LuckyStackConfig:
     use_tps: bool = False
     tps_smoothing: float = 0.0
 
+    # Debayer Bayer-pattern SER frames to RGB after stacking.
+    # When True and the SER ColorID is a Bayer pattern (8–11), the stacked
+    # single-channel result is demosaiced to (H,W,3) RGB before saving.
+    # Required for color camera pipelines (steps 05/06/07/08 expect RGB input).
+    # Default True; set False only if you want the raw Bayer stack for inspection.
+    debayer: bool = True
+
     # Experimental — see docstring
     intra_video_derotate: bool = False
 

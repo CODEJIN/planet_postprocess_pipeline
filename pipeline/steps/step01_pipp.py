@@ -230,11 +230,19 @@ def _process_one(
                 w_history.pop(0)
                 h_history.pop(0)
 
-            # Demosaic (no-op for mono), crop, write
-            rgb = reader.to_rgb(raw)
-            cropped = planet_detect.get_cropped_frame(
-                rgb, info["centroid"], pipp.roi_size
-            )
+            # Crop the RAW (Bayer or mono) frame — do NOT demosaic before writing.
+            # Demosaicing would change the frame from (H,W) to (H,W,3), which
+            # breaks frame_size accounting in SERReader and corrupts ColorID.
+            # For Bayer frames, snap the centroid to an even pixel so the
+            # RGGB sub-pixel grid is preserved after cropping.
+            cx, cy = info["centroid"]
+            color_id = reader.header["ColorID"]
+            is_bayer = color_id in (8, 9, 10, 11)
+            if is_bayer:
+                cx = round(cx / 2) * 2
+                cy = round(cy / 2) * 2
+            roi = pipp.roi_size if not is_bayer else (pipp.roi_size // 2) * 2
+            cropped = planet_detect.get_cropped_frame(raw, (cx, cy), roi)
             if writer is not None:
                 writer.write_frame(cropped, timestamps[i])
             accepted += 1

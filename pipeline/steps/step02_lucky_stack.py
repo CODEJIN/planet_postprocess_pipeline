@@ -321,7 +321,10 @@ def _process_one(
             ser_path, filter_name=filter_name, target=config.target
         )
         out_path = out_dir / (out_stem + "_lucky.tif")
-        image_io.write_tif_16bit(stacked, out_path)
+        if stacked.ndim == 3:
+            image_io.write_tif_color_16bit(stacked, out_path)
+        else:
+            image_io.write_tif_16bit(stacked, out_path)
 
         log_path = out_dir / (out_stem + "_lucky.json")
         # Remove large per-frame list for compact log (keep summary only)

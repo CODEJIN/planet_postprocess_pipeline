@@ -54,7 +54,17 @@ from pipeline.modules.derotation import (
     subpixel_align,
 )
 from pipeline.modules.quality import laplacian_var, tenengrad, planet_mask
-from pipeline.modules.ser_io import SERReader
+from pipeline.modules.ser_io import SERReader, _BAYER_TO_RGB as _SER_BAYER_TO_RGB
+
+
+def _pixel_scale(reader: SERReader) -> float:
+    """Return the normalisation divisor for float32 [0,1] conversion.
+
+    SER stores 8-bit data as uint8 (max 255) and 16-bit data as uint16
+    (max 65535).  All frame-loading code divides by this value so that
+    the resulting float array is in [0, 1].
+    """
+    return 255.0 if int(reader.header.get("PixelDepth", 8)) <= 8 else 65535.0
 
 
 # ── 1. Quality scoring ─────────────────────────────────────────────────────────
@@ -74,13 +84,14 @@ def score_frames(
         float32 array of length FrameCount; higher = sharper/better seeing.
     """
     n_frames: int = reader.header["FrameCount"]
+    _scale = _pixel_scale(reader)
 
     # Quality mask: inner 80% of disk radius (excludes limb gradient zone).
     # The limb's intrinsic planet-sky edge creates a large gradient regardless
     # of seeing quality, biasing the quality score toward frames with sharper
     # limbs rather than sharper interior structure. Restricting to the inner
     # 80% measures only atmospheric sharpness on disk features (belts, zones).
-    frame0 = reader.get_frame(0).astype(np.float32) / 255.0
+    frame0 = reader.get_frame(0).astype(np.float32) / _scale
     try:
         cx0, cy0, semi_a0, _, _ = find_disk_center(frame0)
         H, W = frame0.shape[:2]
@@ -99,7 +110,7 @@ def score_frames(
     sampled_scores: List[float] = []
 
     for i, idx in enumerate(sampled_idx):
-        frame = reader.get_frame(idx).astype(np.float32) / 255.0
+        frame = reader.get_frame(idx).astype(np.float32) / _scale
         sampled_scores.append(score_fn(frame, mask))
         if progress_callback is not None and i % 50 == 0:
             progress_callback(idx, n_frames)
@@ -144,6 +155,7 @@ def score_frames_local(
     H: int = reader.header["Height"]
     W: int = reader.header["Width"]
     default_half = cfg.ap_size // 2
+    _scale = _pixel_scale(reader)
 
     sampled_idx: List[int] = list(range(0, n_frames, score_step))
     sampled_scores: List[float] = []
@@ -153,7 +165,7 @@ def score_frames_local(
     _nr_sigma = _nr * 0.5 if _nr > 0 else 0.0
 
     for i, idx in enumerate(sampled_idx):
-        frame = reader.get_frame(idx).astype(np.float32) / 255.0
+        frame = reader.get_frame(idx).astype(np.float32) / _scale
         # Opt-C: full-frame Sobel (once per frame) instead of per-AP-patch.
         # Noise Robust blur applied to full frame when NR>0.
         if _nr > 0:
@@ -281,12 +293,13 @@ def build_reference_frame(
     _ref_sort = np.argsort(best_indices)
     best_indices_seq = best_indices[_ref_sort]
 
+    _scale = _pixel_scale(reader)
     best_idx = int(best_indices_seq[0])
-    best_frame = reader.get_frame(best_idx).astype(np.float32) / 255.0
+    best_frame = reader.get_frame(best_idx).astype(np.float32) / _scale
 
     accum = best_frame.astype(np.float64)
     for idx in best_indices_seq[1:]:
-        frame = reader.get_frame(int(idx)).astype(np.float32) / 255.0
+        frame = reader.get_frame(int(idx)).astype(np.float32) / _scale
         dx, dy = subpixel_align(best_frame, frame)
         if abs(dx) > 20 or abs(dy) > 20:  # bad-frame guard
             accum += frame.astype(np.float64)
@@ -328,6 +341,10 @@ def generate_ap_grid(
     H, W = reference.shape[:2]
     half = cfg.ap_size // 2
     min_bright = getattr(cfg, "ap_min_brightness", 0.0)
+    # Scale threshold to actual frame content so 0.196 means "20% of frame peak"
+    # regardless of camera bit depth (8-bit max=255 vs 16-bit max varies widely).
+    _ref_max = float(reference.max()) or 1.0
+    _min_bright_abs = min_bright * _ref_max
     valid_aps: List[Tuple[int, int]] = []
 
     for ay in range(half, H - half, cfg.ap_step):
@@ -338,7 +355,7 @@ def generate_ap_grid(
             patch = reference[ay - half : ay + half, ax - half : ax + half]
             if float(patch.std()) < cfg.ap_min_contrast:
                 continue
-            if min_bright > 0.0 and float(patch.mean()) < min_bright:
+            if min_bright > 0.0 and float(patch.mean()) < _min_bright_abs:
                 continue
             valid_aps.append((ax, ay))
 
@@ -372,6 +389,8 @@ def generate_double_ap_grid(
     min_contrast = cfg.ap_min_contrast
     base_step    = cfg.ap_step
     s            = cfg.ap_size
+    _ref_max = float(reference.max()) or 1.0
+    _min_bright_abs = min_bright * _ref_max
 
     sz1 = s                          # e.g. 64
     sz2 = int(round(s * 1.5 / 8)) * 8  # e.g. 96  (rounded to 8px)
@@ -389,7 +408,7 @@ def generate_double_ap_grid(
                 patch = reference[ay - half : ay + half, ax - half : ax + half]
                 if float(patch.std()) < min_contrast:
                     continue
-                if min_bright > 0.0 and float(patch.mean()) < min_bright:
+                if min_bright > 0.0 and float(patch.mean()) < _min_bright_abs:
                     continue
                 aps.append((ax, ay, ap_size))
 
@@ -483,6 +502,8 @@ def generate_adaptive_ap_grid(
     candidate_step  = int(getattr(cfg, "ap_candidate_step", 8))
     min_brightness  = getattr(cfg, "ap_min_brightness", 0.196)
     min_contrast    = cfg.ap_min_contrast
+    _ref_max = float(reference.max()) or 1.0
+    _min_brightness_abs = min_brightness * _ref_max
 
     all_sizes = build_ap_size_candidates(disk_radius)
     ap_sizes  = [s for s in all_sizes if s >= min_ap_size]
@@ -503,7 +524,7 @@ def generate_adaptive_ap_grid(
             # Brightness / contrast filter on the minimum-size patch
             mh = min_ap_size // 2
             base_patch = reference[ay - mh : ay + mh, ax - mh : ax + mh]
-            if float(base_patch.mean()) < min_brightness:
+            if float(base_patch.mean()) < _min_brightness_abs:
                 continue
             if float(base_patch.std()) < min_contrast:
                 continue
@@ -575,6 +596,8 @@ def generate_multiscale_ap_grid(
     min_ap          = cfg.ap_size
     min_contrast    = cfg.ap_min_contrast
     min_brightness  = getattr(cfg, "ap_min_brightness", 0.196)
+    _ref_max = float(reference.max()) or 1.0
+    _min_brightness_abs = min_brightness * _ref_max
 
     candidate_step = max(min_ap // 2, 8)
 
@@ -603,7 +626,7 @@ def generate_multiscale_ap_grid(
                 if y0 < 0 or y1 > H or x0 < 0 or x1 > W:
                     break  # larger sizes also won't fit
                 patch = reference[y0:y1, x0:x1]
-                if float(patch.mean()) < min_brightness:
+                if float(patch.mean()) < _min_brightness_abs:
                     break  # dark region — larger patch won't help
                 if float(patch.std()) >= min_contrast:
                     result.append((ax, ay, sz))
@@ -635,6 +658,8 @@ def generate_as4_ap_grid(
     """
     H, W = reference.shape[:2]
     min_bright = getattr(cfg, "ap_min_brightness", 0.196)
+    _ref_max = float(reference.max()) or 1.0
+    _min_bright_abs = min_bright * _ref_max
     s = cfg.ap_size
 
     sz1 = s
@@ -668,7 +693,7 @@ def generate_as4_ap_grid(
                          - integ[ay - half, ax + half]
                          - integ[ay + half, ax - half]
                          + integ[ay - half, ax - half])
-                if s_val * inv_area < min_bright:
+                if s_val * inv_area < _min_bright_abs:
                     continue
                 # Check 3: min-dist — only inspect 3×3 neighbouring grid cells
                 cx_cell = ax // cell
@@ -706,7 +731,7 @@ def compute_session_aps_from_ser(
     """
     with SERReader(ser_path) as reader:
         n = int(reader.header["FrameCount"])
-        frame = reader.get_frame(n // 2).astype(np.float32) / 255.0
+        frame = reader.get_frame(n // 2).astype(np.float32) / _pixel_scale(reader)
         if frame.ndim == 3:
             frame = frame.mean(axis=2).astype(np.float32)
     cx, cy, semi_a, _semi_b, _angle = find_disk_center(frame)
@@ -1681,6 +1706,8 @@ def _per_ap_independent_stack(
     ap_positions: List,
     cfg,
     progress_callback=None,
+    bayer_code=None,
+    pixel_scale: float = 65535.0,
 ) -> Tuple[np.ndarray, Dict]:
     """True per-AP independent lucky stacking (patch-based, legacy).
 
@@ -1823,10 +1850,49 @@ def _per_ap_independent_stack(
     # ── Intermediate: build sub-pixel globally-aligned frames ────────────────
     # Apply sub-pixel (bicubic) global shift to every selected frame so Pass 2
     # can extract patches without re-running warpAffine per frame×AP.
+    #
+    # For colour (Bayer) SER: debayer each raw frame to RGB *before* apply_shift.
+    # apply_shift uses INTER_CUBIC which mixes adjacent pixels via bilinear
+    # interpolation — if applied to a Bayer frame (alternating R/G/G/B), it
+    # blends neighbouring colour channels and destroys the mosaic pattern.
+    # After stacking hundreds of such blended frames, all channels converge to
+    # the same grey value.  Debayering first turns the 2D Bayer frame into a
+    # proper (H,W,3) RGB image; INTER_CUBIC then interpolates within each
+    # colour channel independently, preserving colour.
+    #
+    # aligned_frames (2D Bayer) is still built and used for Pass-2 NCC /
+    # phaseCorrelate shift estimation — fine because both reference and frame
+    # patches share the same Bayer pattern, so phase correlation finds the
+    # correct local shift.  Only the *accumulated* patches use aligned_frames_rgb.
     aligned_frames = np.empty((n_sel, H, W), dtype=np.float32)
+    if bayer_code is not None:
+        _u16_dtype = np.uint16 if pixel_scale > 255.0 else np.uint8
+        aligned_frames_rgb = np.empty((n_sel, H, W, 3), dtype=np.float32)
+    else:
+        aligned_frames_rgb = None  # assigned below
+
     for i, frame in enumerate(selected_frames):
         dx_g, dy_g = float(global_shifts[i, 0]), float(global_shifts[i, 1])
         aligned_frames[i] = apply_shift(frame, dx_g, dy_g)
+        if bayer_code is not None:
+            # debayer raw Bayer frame → RGB, THEN shift.
+            # Use BORDER_CONSTANT=0 (not BORDER_REPLICATE) so that large-shift
+            # frames don't fill the border with edge-column Bayer artefacts
+            # (leftmost column alternates R≈72 / G≈1854 in RGGB, which inflates
+            # G by ~1.4× in the stacked mean when replicated across 100+ px).
+            _u = np.clip(frame * pixel_scale, 0, pixel_scale).astype(_u16_dtype)
+            _rgb = cv2.cvtColor(_u, bayer_code).astype(np.float32) / pixel_scale
+            _M = np.float32([[1, 0, dx_g], [0, 1, dy_g]])
+            aligned_frames_rgb[i] = cv2.warpAffine(
+                _rgb, _M, (W, H),
+                flags=cv2.INTER_CUBIC,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+
+    if bayer_code is None:
+        aligned_frames_rgb = aligned_frames  # (n_sel, H, W) single-channel
+    _n_ch = 3 if bayer_code is not None else 1
 
     # ── Pass 2: per-AP independent patch stacking ────────────────────────────
     n_top  = max(3, int(n_sel * sub_pct))
@@ -1859,7 +1925,8 @@ def _per_ap_independent_stack(
         ref_patch = reference[ay - half: ay + half, ax - half: ax + half].astype(np.float32)
         ap_scores   = score_matrix[:, j]
         top_indices = np.argsort(ap_scores)[-n_top:]
-        local_accum  = np.zeros((blend_size, blend_size), dtype=np.float64)
+        _accum_shape = (blend_size, blend_size, 3) if _n_ch == 3 else (blend_size, blend_size)
+        local_accum  = np.zeros(_accum_shape, dtype=np.float64)
         local_weight = 0.0
 
         if _use_ncc_local:
@@ -1884,7 +1951,7 @@ def _per_ap_independent_stack(
             dy_arr = np.where(use_shift, dy_arr, 0.0)
             for k, li in enumerate(top_indices):
                 patch = cv2.getRectSubPix(
-                    aligned_frames[li], (blend_size, blend_size),
+                    aligned_frames_rgb[li], (blend_size, blend_size),
                     (float(ax) + dx_arr[k], float(ay) + dy_arr[k]),
                 ).astype(np.float64)
                 w = max(float(ap_scores[li]) ** _power, 1e-9)
@@ -1892,14 +1959,15 @@ def _per_ap_independent_stack(
                 local_weight += w
         else:
             for li in top_indices:
-                aligned_f = aligned_frames[li]
+                aligned_f     = aligned_frames[li]      # 2D Bayer — for alignment only
+                aligned_f_rgb = aligned_frames_rgb[li]  # (H,W) or (H,W,3) — for accumulation
                 frm_patch = aligned_f[ay - half: ay + half, ax - half: ax + half].astype(np.float32)
                 (dx_l, dy_l), _ = cv2.phaseCorrelate(ref_patch * hann_ap, frm_patch * hann_ap)
                 dx_l, dy_l = float(dx_l), float(dy_l)
                 if abs(dx_l) > cfg.ap_search_range or abs(dy_l) > cfg.ap_search_range:
                     dx_l, dy_l = 0.0, 0.0
                 patch = cv2.getRectSubPix(
-                    aligned_f, (blend_size, blend_size), (float(ax) + dx_l, float(ay) + dy_l)
+                    aligned_f_rgb, (blend_size, blend_size), (float(ax) + dx_l, float(ay) + dy_l)
                 ).astype(np.float64)
                 w = max(float(ap_scores[li]) ** _power, 1e-9)
                 local_accum  += patch * w
@@ -1922,10 +1990,16 @@ def _per_ap_independent_stack(
         if res is None:
             return
         stacked_patch, gmask, y0c, y1c, x0c, x1c, y0g, y1g, x0g, x1g = res
-        accum [y0c:y1c, x0c:x1c] += stacked_patch[y0g:y1g, x0g:x1g] * gmask[y0g:y1g, x0g:x1g]
-        weight[y0c:y1c, x0c:x1c] += gmask[y0g:y1g, x0g:x1g]
+        _gm = gmask[y0g:y1g, x0g:x1g]
+        _sp = stacked_patch[y0g:y1g, x0g:x1g]
+        if _n_ch == 3:
+            accum[y0c:y1c, x0c:x1c] += _sp * _gm[:, :, np.newaxis]
+        else:
+            accum[y0c:y1c, x0c:x1c] += _sp * _gm
+        weight[y0c:y1c, x0c:x1c] += _gm
 
-    accum  = np.zeros((H, W), dtype=np.float64)
+    _accum_init_shape = (H, W, 3) if _n_ch == 3 else (H, W)
+    accum  = np.zeros(_accum_init_shape, dtype=np.float64)
     weight = np.zeros((H, W), dtype=np.float64)
 
     if n_workers > 1:
@@ -1944,18 +2018,31 @@ def _per_ap_independent_stack(
 
     # Normalise; uncovered pixels → 0
     with np.errstate(invalid="ignore", divide="ignore"):
-        result = np.where(weight > 1e-12, accum / weight, 0.0).astype(np.float32)
+        if _n_ch == 3:
+            _w = weight[:, :, np.newaxis]
+            result = np.where(_w > 1e-12, accum / _w, 0.0).astype(np.float32)
+        else:
+            result = np.where(weight > 1e-12, accum / weight, 0.0).astype(np.float32)
     result = np.clip(result, 0.0, 1.0)
 
-    # Optional Fourier rolloff (low-pass noise suppression)
+    # Optional Fourier rolloff (low-pass noise suppression) — mono only.
+    # For color stacks, apply per-channel if needed.
     _rolloff_sig = float(getattr(cfg, "fourier_rolloff_sigma", 0.0))
     if _rolloff_sig > 0.0:
-        F  = np.fft.fft2(result.astype(np.float64))
-        fy = np.fft.fftfreq(H)[:, None]
-        fx = np.fft.fftfreq(W)[None, :]
-        rolloff = np.exp(-0.5 * (np.sqrt(fy ** 2 + fx ** 2) / _rolloff_sig) ** 2)
-        result  = np.fft.ifft2(F * rolloff).real.astype(np.float32)
-        result  = np.clip(result, 0.0, 1.0)
+        if _n_ch == 3:
+            for _c in range(3):
+                _F  = np.fft.fft2(result[:, :, _c].astype(np.float64))
+                _fy = np.fft.fftfreq(H)[:, None]
+                _fx = np.fft.fftfreq(W)[None, :]
+                _ro = np.exp(-0.5 * (np.sqrt(_fy**2 + _fx**2) / _rolloff_sig) ** 2)
+                result[:, :, _c] = np.fft.ifft2(_F * _ro).real.astype(np.float32)
+        else:
+            F  = np.fft.fft2(result.astype(np.float64))
+            fy = np.fft.fftfreq(H)[:, None]
+            fx = np.fft.fftfreq(W)[None, :]
+            rolloff = np.exp(-0.5 * (np.sqrt(fy ** 2 + fx ** 2) / _rolloff_sig) ** 2)
+            result  = np.fft.ifft2(F * rolloff).real.astype(np.float32)
+        result = np.clip(result, 0.0, 1.0)
 
     stats = {
         "n_stacked":            n_sel,
@@ -2485,6 +2572,8 @@ def apply_warp_and_stack(
     progress_callback=None,
     cancel_event=None,
     precomputed_noise_floor: "np.ndarray | None" = None,
+    bayer_code=None,
+    pixel_scale: float = 65535.0,
 ) -> Tuple[np.ndarray, Dict]:
     """Warp and accumulate all selected frames into a quality-weighted stack.
 
@@ -2514,6 +2603,8 @@ def apply_warp_and_stack(
             selected_frames, selected_indices, scores, reference,
             disk_cx, disk_cy, disk_radius, ap_positions, cfg,
             progress_callback=progress_callback,
+            bayer_code=bayer_code,
+            pixel_scale=pixel_scale,
         )
 
     H, W = reference.shape[:2]
@@ -2867,6 +2958,8 @@ def lucky_stack_ser(
 
     with SERReader(ser_path) as reader:
         n_frames: int = reader.header["FrameCount"]
+        _ser_color_id: int = int(reader.header.get("ColorID", 0))
+        _ser_pixel_depth: int = int(reader.header.get("PixelDepth", 8))
         print(f"\n  SER: {ser_path.name}  ({n_frames} frames)", flush=True)
 
         if n_frames < cfg.min_frames:
@@ -2887,7 +2980,7 @@ def lucky_stack_ser(
         if _score_metric == "local_gradient":
             try:
                 _mid_idx = n_frames // 2
-                _mid_frame = reader.get_frame(_mid_idx).astype(np.float32) / 255.0
+                _mid_frame = reader.get_frame(_mid_idx).astype(np.float32) / _pixel_scale(reader)
                 _cx, _cy, _semi_a, _, _ = find_disk_center(_mid_frame)
                 _raw_aps = generate_ap_grid(_cx, _cy, float(_semi_a), _mid_frame, cfg)
                 preloaded_ap_positions = [(ax, ay, cfg.ap_size) for ax, ay in _raw_aps]
@@ -3041,7 +3134,7 @@ def lucky_stack_ser(
         # on both HDD and cached SSD (benchmark: 7.17 ms vs 0.30 ms/frame).
         _sort_by_pos  = np.argsort(selected_indices)           # file-pos order
         _frames_bypos = np.stack([
-            reader.get_frame(int(selected_indices[i])).astype(np.float32) / 255.0
+            reader.get_frame(int(selected_indices[i])).astype(np.float32) / _pixel_scale(reader)
             for i in _sort_by_pos
         ])
         _inv_order    = np.argsort(_sort_by_pos)               # restore quality order
@@ -3073,7 +3166,7 @@ def lucky_stack_ser(
                 _nf_sum = np.zeros((H_img, W_img), dtype=np.float64)
                 print(f"  [3.6] Noise floor: loading {_n_noise} bottom frames…", end="\r", flush=True)
                 for _ni in _noise_indices:
-                    _fr = reader.get_frame(int(_ni)).astype(np.float32) / 255.0
+                    _fr = reader.get_frame(int(_ni)).astype(np.float32) / _pixel_scale(reader)
                     _dx, _dy = limb_center_align(disk_cx, disk_cy, _fr, fixed_threshold=_stab_t)
                     if abs(_dx) > disk_radius * 0.5 or abs(_dy) > disk_radius * 0.5:
                         _dx, _dy = subpixel_align(reference, _fr)
@@ -3084,6 +3177,7 @@ def lucky_stack_ser(
         stacked: Optional[np.ndarray] = None
         stats: Dict = {}
         t_stack_total = 0.0
+        _do_debayer_in_stack = False
 
         for iteration in range(n_iter):
             iter_label = f"iter {iteration+1}/{n_iter}" if n_iter > 1 else ""
@@ -3178,6 +3272,12 @@ def lucky_stack_ser(
                 offset = _STACK_START + _it * _IT_PU
                 _pu(offset + int(_IT_PU * done / max(total, 1)))
 
+            _do_debayer_in_stack = (
+                bool(getattr(cfg, "debayer", True))
+                and _ser_color_id in _SER_BAYER_TO_RGB
+            )
+            _stack_bayer_code   = _SER_BAYER_TO_RGB[_ser_color_id] if _do_debayer_in_stack else None
+            _stack_pixel_scale  = 65535.0 if _ser_pixel_depth > 8 else 255.0
             stacked, stats = apply_warp_and_stack(
                 selected_frames,
                 selected_indices,
@@ -3190,6 +3290,8 @@ def lucky_stack_ser(
                 progress_callback=_prog,
                 cancel_event=cancel_event,
                 precomputed_noise_floor=_precomputed_noise_floor,
+                bayer_code=_stack_bayer_code,
+                pixel_scale=_stack_pixel_scale,
             )
             t4 = time.perf_counter()
             t_stack_total += t4 - t3
@@ -3231,6 +3333,15 @@ def lucky_stack_ser(
         stacked = cv2.GaussianBlur(stacked, (0, 0), cfg.stack_blur_sigma)
         stacked = np.clip(stacked, 0.0, 1.0)
 
+    # Debayering is now done inside _per_ap_independent_stack() (and
+    # apply_warp_and_stack in future).  Each aligned frame is debayered
+    # to RGB *before* getRectSubPix / remap so that sub-pixel interpolation
+    # does not mix Bayer colour channels, which would destroy the mosaic
+    # pattern and produce a grey monochrome output.
+    _debayered: bool = _do_debayer_in_stack and stacked.ndim == 3
+    if _debayered:
+        print(f"  Debayered: ColorID={_ser_color_id} → RGB {stacked.shape}", flush=True)
+
     t_total = time.perf_counter() - t0
     print(f"\n  Total: {t_total:.1f}s  ({n_iter} iteration{'s' if n_iter>1 else ''})", flush=True)
 
@@ -3249,6 +3360,7 @@ def lucky_stack_ser(
             "stacking":  round(t_stack_total, 2),
             "total":     round(t_total, 2),
         },
+        "debayered": _debayered,
         **stats,
     }
     return stacked, log

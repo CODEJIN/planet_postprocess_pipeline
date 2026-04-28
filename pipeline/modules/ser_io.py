@@ -24,12 +24,18 @@ import cv2
 import numpy as np
 
 
-# Bayer ColorID → OpenCV demosaic code
+# Bayer ColorID → OpenCV demosaic code producing RGB output (ch0=R, ch2=B).
+# OpenCV naming is counterintuitive: COLOR_BayerRG2RGB on an RGGB input
+# actually yields BGR (ch0=B, ch2=R).  The "opposite" name produces true RGB:
+#   RGGB (ID=8)  → COLOR_BayerBG2RGB  (or equivalently BayerRG2BGR)
+#   GRBG (ID=9)  → COLOR_BayerGB2RGB
+#   GBRG (ID=10) → COLOR_BayerGR2RGB
+#   BGGR (ID=11) → COLOR_BayerRG2RGB
 _BAYER_TO_RGB: Dict[int, int] = {
-    8:  cv2.COLOR_BayerRG2RGB,
-    9:  cv2.COLOR_BayerGR2RGB,
-    10: cv2.COLOR_BayerGB2RGB,
-    11: cv2.COLOR_BayerBG2RGB,
+    8:  cv2.COLOR_BayerBG2RGB,
+    9:  cv2.COLOR_BayerGB2RGB,
+    10: cv2.COLOR_BayerGR2RGB,
+    11: cv2.COLOR_BayerRG2RGB,
 }
 
 
@@ -91,9 +97,10 @@ class SERReader:
         frame = np.frombuffer(data, dtype=dtype).reshape(
             (self.header["Height"], self.header["Width"])
         )
-        # Big-endian uint16 swap
-        if self.header["LittleEndian"] == 0 and dtype == np.uint16:
-            frame = frame.byteswap()
+        # NOTE: The LittleEndian header field is ignored intentionally.
+        # All major capture software (SharpCap, FireCapture, ZWO) writes
+        # little-endian data regardless of what this field says (it is almost
+        # always 0 even for LE files). PIPP and AS!4 share this behavior.
         return frame
 
     def to_rgb(self, frame: np.ndarray) -> np.ndarray:

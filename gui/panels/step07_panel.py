@@ -271,6 +271,15 @@ class _Step07MonoWidget(QWidget):
     def _on_input_changed(self, text: str) -> None:
         self._update_input_style(text)
         self._preview.set_input_dir(text.strip())
+        inp = text.strip()
+        if inp:
+            p = Path(inp)
+            out = p.parent / "step07_wavelet_preview"
+            self._output_lbl.setText(str(out))
+            self._output_dir = p.parent
+        else:
+            self._output_lbl.setText("")
+            self._output_dir = None
 
     def _on_params_changed(self) -> None:
         if not hasattr(self, "_wavelet_spins"):
@@ -429,6 +438,15 @@ class _Step07ColorWidget(QWidget):
     def _on_input_changed(self, text: str) -> None:
         self._update_input_style(text)
         self._preview.set_input_dir(text.strip())
+        inp = text.strip()
+        if inp:
+            p = Path(inp)
+            out = p.parent / "step07_wavelet_preview"
+            self._output_lbl.setText(str(out))
+            self._output_dir = p.parent
+        else:
+            self._output_lbl.setText("")
+            self._output_dir = None
 
     def _on_color_correct_toggled(self, checked: bool) -> None:
         self._preview.set_color_correct(checked)

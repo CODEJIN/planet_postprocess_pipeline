@@ -253,6 +253,22 @@ class Step02Panel(BasePanel):
         as4_row.addStretch()
         fl.addRow(lbl_as4, as4_row)
 
+        # ── debayer (color camera only) ───────────────────────────────────────
+        self._debayer = QCheckBox()
+        self._debayer.setChecked(True)
+        self._debayer.setStyleSheet(_chk_style)
+        self._lbl_debayer = QLabel(S("step02.debayer"))
+        self._lbl_debayer.setToolTip(S("step02.debayer.tooltip"))
+        self._debayer.setToolTip(S("step02.debayer.tooltip"))
+        debayer_row = QHBoxLayout()
+        debayer_row.setSpacing(4)
+        debayer_row.addWidget(self._debayer)
+        debayer_row.addStretch()
+        fl.addRow(self._lbl_debayer, debayer_row)
+        # Hidden by default; shown only in color camera mode
+        self._lbl_debayer.setVisible(False)
+        self._debayer.setVisible(False)
+
         left_layout.addWidget(form_widget)
         left_layout.addStretch()
         main_hlayout.addWidget(left_widget, 1)
@@ -277,6 +293,7 @@ class Step02Panel(BasePanel):
             "lucky_per_ap_selection": True,
             "lucky_fourier_power":    self._fourier_power.value(),
             "lucky_n_ser_parallel":   self._n_ser_parallel.value(),
+            "lucky_debayer":          self._debayer.isChecked(),
         }
 
     def load_session(self, data: dict[str, Any]) -> None:
@@ -313,6 +330,12 @@ class Step02Panel(BasePanel):
         self._use_as4_ap_grid.setChecked(bool(data.get("lucky_use_as4_ap_grid", False)))
         self._fourier_power.setValue(float(data.get("lucky_fourier_power", 1.0)))
         self._n_ser_parallel.setValue(int(data.get("lucky_n_ser_parallel", 1)))
+
+        # Debayer checkbox: visible and meaningful only in color camera mode
+        _is_color = data.get("camera_mode", "mono") == "color"
+        self._lbl_debayer.setVisible(_is_color)
+        self._debayer.setVisible(_is_color)
+        self._debayer.setChecked(bool(data.get("lucky_debayer", True)))
 
         # Sync preview
         if hasattr(self, "_preview"):
