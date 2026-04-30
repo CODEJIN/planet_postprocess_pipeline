@@ -310,6 +310,13 @@
   "step05.input_dir.tooltip": "Folder containing Step 4 de-rotation results (auto-set)",
   "step05.output_dir.tooltip": "Folder where wavelet master images are saved (auto-set)",
   "step05.amounts.tooltip": "Wavelet sharpening strength applied to the stacked master images.\nMaster images have much lower noise so stronger values are safe.",
+  "step05.denoise": "Denoise (L1–L6)",
+  "step05.denoise.tooltip": "Per-layer soft-threshold denoise (WaveSharp-compatible).\namount × MAD(detail) sets the noise gate — coefficients below this are suppressed.\n0.0 = off, 0.1 = WaveSharp gentle default, 1.0 = strong.\nApply to fine layers (L1–L2) to suppress sensor noise without blurring structure.",
+  "step05.filter_type": "Filter type",
+  "step05.filter_type.tooltip": "Wavelet decomposition kernel.\nGaussian: standard B3-spline à trous (WaveSharp-compatible, recommended).\nZeroGauss: LoG-based — more aggressive, sharper edges, use with denoise.\nBilateral: edge-preserving — reduces limb overshoot at planet boundaries.",
+  "step05.filter_type.gaussian": "Gaussian",
+  "step05.filter_type.zerogauss": "ZeroGauss (LoG)",
+  "step05.filter_type.bilateral": "Bilateral",
 
   "step07.input_dir.tooltip": "Step 2 Lucky Stacking output TIF folder (auto-set)",
   "step07.output_dir.tooltip": "Folder where wavelet preview PNGs are saved (auto-set)",

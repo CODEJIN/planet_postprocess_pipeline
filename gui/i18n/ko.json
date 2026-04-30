@@ -310,6 +310,13 @@
   "step05.input_dir.tooltip": "Step 4 De-rotation 결과물이 있는 폴더 (자동 설정)",
   "step05.output_dir.tooltip": "웨이블릿 마스터 이미지가 저장될 폴더 (자동 설정)",
   "step05.amounts.tooltip": "스태킹된 마스터 이미지에 적용할 웨이블릿 선명화 강도입니다.\n마스터 이미지는 노이즈가 훨씬 낮으므로 더 강하게 적용해도 안전합니다.",
+  "step05.denoise": "레이어별 노이즈 제거 (L1~L6)",
+  "step05.denoise.tooltip": "WaveSharp 호환 레이어별 소프트 스레숄드 노이즈 제거.\namount × MAD(detail)을 노이즈 게이트로 사용 — 이 값 이하의 계수를 억제합니다.\n0.0 = 비활성, 0.1 = WaveSharp 기본값 (약한 노이즈 제거), 1.0 = 강한 노이즈 제거.\n노이즈가 많은 미세 레이어(L1~L2)에 집중 적용을 권장합니다.",
+  "step05.filter_type": "필터 타입",
+  "step05.filter_type.tooltip": "웨이블릿 분해 커널 선택.\nGaussian: 표준 B3-spline à trous (WaveSharp 호환, 권장).\nZeroGauss: LoG 기반 — 더 공격적, 날카로운 엣지, 노이즈 제거와 함께 사용.\nBilateral: 엣지 보존형 — 행성 가장자리 링잉 아티팩트 억제.",
+  "step05.filter_type.gaussian": "Gaussian",
+  "step05.filter_type.zerogauss": "ZeroGauss (LoG)",
+  "step05.filter_type.bilateral": "Bilateral",
 
   "step07.input_dir.tooltip": "Step 2 Lucky Stacking 출력 TIF 폴더 (자동 설정)",
   "step07.output_dir.tooltip": "웨이블릿 미리보기 PNG가 저장될 폴더 (자동 설정)",

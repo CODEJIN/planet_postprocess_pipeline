@@ -734,6 +734,8 @@ def _run_color_series(
                 edge_feather_factor=_s8c_eff,
                 ry=ry2, angle=_angle2_rad,
                 expand_px=_s8c_expand,
+                denoise_amounts=config.wavelet.series_denoise_amounts,
+                filter_type=config.wavelet.series_filter_type,
             )
         else:
             sharpened = wavelet_module.sharpen_color(
@@ -742,6 +744,8 @@ def _run_color_series(
                 amounts=config.wavelet.series_amounts,
                 power=config.wavelet.series_power,
                 sharpen_filter=config.wavelet.series_sharpen_filter,
+                denoise_amounts=config.wavelet.series_denoise_amounts,
+                filter_type=config.wavelet.series_filter_type,
             )
 
         # ── Auto WB + CA correction ────────────────────────────────────────────
@@ -986,6 +990,8 @@ def run(
                     edge_feather_factor=_s8m_eff,
                     ry=_disk_ry, angle=_disk_angle_rad,
                     expand_px=_s8m_expand,
+                    denoise_amounts=config.wavelet.series_denoise_amounts,
+                    filter_type=config.wavelet.series_filter_type,
                 )
             else:
                 _sharpened = wavelet_module.sharpen(
@@ -994,6 +1000,8 @@ def run(
                     amounts=config.wavelet.series_amounts,
                     power=config.wavelet.series_power,
                     sharpen_filter=config.wavelet.series_sharpen_filter,
+                    denoise_amounts=config.wavelet.series_denoise_amounts,
+                    filter_type=config.wavelet.series_filter_type,
                 )
             derotated[_filt] = _sharpened
 

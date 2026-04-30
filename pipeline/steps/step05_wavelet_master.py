@@ -66,7 +66,10 @@ def run(
 
     print(f"  Wavelet amounts: {config.wavelet.master_amounts}  "
           f"power={config.wavelet.master_power}  "
-          f"sharpen_filter={config.wavelet.master_sharpen_filter}")
+          f"sharpen_filter={config.wavelet.master_sharpen_filter}  "
+          f"denoise={config.wavelet.master_denoise_amounts}  "
+          f"filter={config.wavelet.master_filter_type}")
+
 
     results: Dict[str, List[Tuple[Optional[Path], str]]] = {}
     total_written = 0
@@ -149,6 +152,8 @@ def run(
                         edge_feather_factor=_use_eff,
                         ry=_ry, angle=_angle_rad,
                         expand_px=_use_expand,
+                        denoise_amounts=config.wavelet.master_denoise_amounts,
+                        filter_type=config.wavelet.master_filter_type,
                     )
                 else:
                     sharpened = wavelet.sharpen_disk_aware(
@@ -160,6 +165,8 @@ def run(
                         edge_feather_factor=_use_eff,
                         ry=_ry, angle=_angle_rad,
                         expand_px=_use_expand,
+                        denoise_amounts=config.wavelet.master_denoise_amounts,
+                        filter_type=config.wavelet.master_filter_type,
                     )
                 print(f"    [{filt}] ellipse rx={_rx:.1f} ry={_ry:.1f} angle={_angle:.1f}°")
             else:
@@ -170,6 +177,8 @@ def run(
                         amounts=config.wavelet.master_amounts,
                         power=config.wavelet.master_power,
                         sharpen_filter=config.wavelet.master_sharpen_filter,
+                        denoise_amounts=config.wavelet.master_denoise_amounts,
+                        filter_type=config.wavelet.master_filter_type,
                     )
                 else:
                     sharpened = wavelet.sharpen(
@@ -178,6 +187,8 @@ def run(
                         amounts=config.wavelet.master_amounts,
                         power=config.wavelet.master_power,
                         sharpen_filter=config.wavelet.master_sharpen_filter,
+                        denoise_amounts=config.wavelet.master_denoise_amounts,
+                        filter_type=config.wavelet.master_filter_type,
                     )
 
             out_path: Optional[Path] = None

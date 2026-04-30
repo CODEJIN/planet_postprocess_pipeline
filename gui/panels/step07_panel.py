@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -53,6 +54,12 @@ _SLIDER_STYLE = (
     " margin: -5px 0; border-radius: 7px; }"
     "QSlider::sub-page:horizontal { background: #2d6a9f; border-radius: 2px; }"
 )
+_SLIDER_STYLE_DENOISE = (
+    "QSlider::groove:horizontal { background: #444; height: 4px; border-radius: 2px; }"
+    "QSlider::handle:horizontal { background: #4aad80; width: 14px; height: 14px;"
+    " margin: -5px 0; border-radius: 7px; }"
+    "QSlider::sub-page:horizontal { background: #1e6b47; border-radius: 2px; }"
+)
 _CHECKBOX_STYLE = (
     "QCheckBox { color: #d4d4d4; font-size: 12px; }"
     "QCheckBox::indicator { width: 14px; height: 14px; border: 1px solid #555;"
@@ -61,16 +68,19 @@ _CHECKBOX_STYLE = (
 )
 
 _WAVELET_DEFAULTS = [200.0, 200.0, 200.0, 0.0, 0.0, 0.0]
-_MAX_AMOUNT = 500.0
+_DENOISE_DEFAULTS = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+_MAX_AMOUNT  = 500.0
+_MAX_DENOISE = 3.0
 
 
-def _make_wavelet_row(
+def _make_combined_row(
     level: int,
-    default: float,
+    sharpen_default: float,
+    denoise_default: float,
     on_change=None,
-) -> tuple[QHBoxLayout, QDoubleSpinBox]:
+) -> tuple[QHBoxLayout, QDoubleSpinBox, QDoubleSpinBox]:
     row = QHBoxLayout()
-    row.setSpacing(6)
+    row.setSpacing(4)
 
     lbl = QLabel(f"L{level}")
     lbl.setFixedWidth(22)
@@ -78,57 +88,70 @@ def _make_wavelet_row(
     lbl.setStyleSheet("color: #d4d4d4; font-size: 12px;")
     row.addWidget(lbl)
 
-    slider = QSlider(Qt.Orientation.Horizontal)
-    slider.setRange(0, int(_MAX_AMOUNT))
-    slider.setValue(int(default))
-    slider.setStyleSheet(_SLIDER_STYLE)
-    row.addWidget(slider, 1)
+    sharp_n = int(_MAX_AMOUNT)
+    sharp_slider = QSlider(Qt.Orientation.Horizontal)
+    sharp_slider.setRange(0, sharp_n)
+    sharp_slider.setValue(round(sharpen_default / _MAX_AMOUNT * sharp_n))
+    sharp_slider.setStyleSheet(_SLIDER_STYLE)
+    row.addWidget(sharp_slider, 3)
 
-    spin = QDoubleSpinBox()
-    spin.setStyleSheet(_SPINBOX_STYLE)
-    spin.setRange(0.0, _MAX_AMOUNT)
-    spin.setDecimals(1)
-    spin.setSingleStep(10.0)
-    spin.setValue(default)
-    spin.setFixedWidth(72)
-    row.addWidget(spin)
+    sharp_spin = QDoubleSpinBox()
+    sharp_spin.setStyleSheet(_SPINBOX_STYLE)
+    sharp_spin.setRange(0.0, _MAX_AMOUNT)
+    sharp_spin.setDecimals(1)
+    sharp_spin.setSingleStep(10.0)
+    sharp_spin.setValue(sharpen_default)
+    sharp_spin.setFixedWidth(68)
+    row.addWidget(sharp_spin)
 
-    def _slider_to_spin(v: int) -> None:
-        spin.blockSignals(True)
-        spin.setValue(float(v))
-        spin.blockSignals(False)
+    sep = QFrame()
+    sep.setFrameShape(QFrame.Shape.VLine)
+    sep.setFrameShadow(QFrame.Shadow.Sunken)
+    sep.setStyleSheet("color: #555;")
+    sep.setFixedWidth(8)
+    row.addWidget(sep)
 
-    def _spin_to_slider(v: float) -> None:
-        slider.blockSignals(True)
-        slider.setValue(int(v))
-        slider.blockSignals(False)
+    dn_n = 300
+    dn_slider = QSlider(Qt.Orientation.Horizontal)
+    dn_slider.setRange(0, dn_n)
+    dn_slider.setValue(round(denoise_default / _MAX_DENOISE * dn_n))
+    dn_slider.setStyleSheet(_SLIDER_STYLE_DENOISE)
+    row.addWidget(dn_slider, 1)
 
-    slider.valueChanged.connect(_slider_to_spin)
-    spin.valueChanged.connect(_spin_to_slider)
+    dn_spin = QDoubleSpinBox()
+    dn_spin.setStyleSheet(_SPINBOX_STYLE)
+    dn_spin.setRange(0.0, _MAX_DENOISE)
+    dn_spin.setDecimals(2)
+    dn_spin.setSingleStep(0.05)
+    dn_spin.setValue(denoise_default)
+    dn_spin.setFixedWidth(58)
+    row.addWidget(dn_spin)
+
+    def _sharp_slider_to_spin(v): sharp_spin.blockSignals(True); sharp_spin.setValue(v / sharp_n * _MAX_AMOUNT); sharp_spin.blockSignals(False)
+    def _sharp_spin_to_slider(v): sharp_slider.blockSignals(True); sharp_slider.setValue(round(v / _MAX_AMOUNT * sharp_n)); sharp_slider.blockSignals(False)
+    def _dn_slider_to_spin(v): dn_spin.blockSignals(True); dn_spin.setValue(v / dn_n * _MAX_DENOISE); dn_spin.blockSignals(False)
+    def _dn_spin_to_slider(v): dn_slider.blockSignals(True); dn_slider.setValue(round(v / _MAX_DENOISE * dn_n)); dn_slider.blockSignals(False)
+
+    sharp_slider.valueChanged.connect(_sharp_slider_to_spin)
+    sharp_spin.valueChanged.connect(_sharp_spin_to_slider)
+    dn_slider.valueChanged.connect(_dn_slider_to_spin)
+    dn_spin.valueChanged.connect(_dn_spin_to_slider)
 
     if on_change is not None:
-        slider.valueChanged.connect(lambda _: on_change())
-        spin.valueChanged.connect(lambda _: on_change())
+        sharp_slider.valueChanged.connect(lambda _: on_change())
+        sharp_spin.valueChanged.connect(lambda _: on_change())
+        dn_slider.valueChanged.connect(lambda _: on_change())
+        dn_spin.valueChanged.connect(lambda _: on_change())
 
-    return row, spin
+    return row, sharp_spin, dn_spin
 
 
-def _build_wavelet_sliders(parent_layout: QVBoxLayout, on_change) -> list[QDoubleSpinBox]:
-    """Add 6 wavelet slider rows (paired) to parent_layout; return spinbox list."""
-    spins: list[QDoubleSpinBox] = []
-    defaults = list(_WAVELET_DEFAULTS)
-    for i in range(0, len(defaults), 2):
-        pair = QHBoxLayout()
-        pair.setSpacing(12)
-        for j in range(2):
-            if i + j < len(defaults):
-                row_layout, spin = _make_wavelet_row(
-                    i + j + 1, defaults[i + j], on_change=on_change
-                )
-                pair.addLayout(row_layout)
-                spins.append(spin)
-        parent_layout.addLayout(pair)
-    return spins
+def _section_label_text() -> str:
+    return (
+        f'<span style="color:#4da6ff">{S("step05.amounts")}</span>'
+        ' <span style="color:#666">|</span> '
+        f'<span style="color:#4aad80">{S("step05.denoise")}</span>'
+    )
 
 
 def _make_dir_row(line_edit: QLineEdit, browse_cb) -> QHBoxLayout:
@@ -143,6 +166,20 @@ def _make_dir_row(line_edit: QLineEdit, browse_cb) -> QHBoxLayout:
     return row
 
 
+def _build_combined_sliders(parent_layout: QVBoxLayout, on_change) -> tuple[list, list]:
+    """Add 6 combined sharpen+denoise rows; return (sharp_spins, dn_spins)."""
+    sharp_spins: list[QDoubleSpinBox] = []
+    dn_spins: list[QDoubleSpinBox] = []
+    for i, (sh, dn) in enumerate(zip(_WAVELET_DEFAULTS, _DENOISE_DEFAULTS)):
+        row_layout, sharp_spin, dn_spin = _make_combined_row(
+            i + 1, sh, dn, on_change=on_change
+        )
+        parent_layout.addLayout(row_layout)
+        sharp_spins.append(sharp_spin)
+        dn_spins.append(dn_spin)
+    return sharp_spins, dn_spins
+
+
 # ── Mono sub-widget ────────────────────────────────────────────────────────────
 
 class _Step07MonoWidget(QWidget):
@@ -150,6 +187,7 @@ class _Step07MonoWidget(QWidget):
         super().__init__(parent)
         self._output_dir: Path | None = None
         self._wavelet_spins: list[QDoubleSpinBox] = []
+        self._denoise_spins: list[QDoubleSpinBox] = []
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -186,12 +224,13 @@ class _Step07MonoWidget(QWidget):
         fl.addRow(lbl_out, self._output_lbl)
         left_layout.addWidget(folder_widget)
 
-        amounts_label = QLabel(S("step07.amounts"))
-        amounts_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        amounts_label.setToolTip(S("step07.amounts.tooltip"))
-        left_layout.addWidget(amounts_label)
+        section_lbl = QLabel(_section_label_text())
+        section_lbl.setStyleSheet("font-size: 11px;")
+        left_layout.addWidget(section_lbl)
 
-        self._wavelet_spins = _build_wavelet_sliders(left_layout, self._on_params_changed)
+        self._wavelet_spins, self._denoise_spins = _build_combined_sliders(
+            left_layout, self._on_params_changed
+        )
         left_layout.addStretch()
 
         main_hlayout.addWidget(left_widget, 1)
@@ -221,11 +260,20 @@ class _Step07MonoWidget(QWidget):
         amounts = data.get("preview_amounts", _WAVELET_DEFAULTS)
         for spin, val in zip(self._wavelet_spins, amounts):
             spin.setValue(float(val))
-        self._preview.set_params(amounts=amounts, levels=6, power=1.0)
+
+        denoise = data.get("preview_denoise_amounts", _DENOISE_DEFAULTS)
+        for spin, val in zip(self._denoise_spins, denoise):
+            spin.setValue(float(val))
+
+        self._preview.set_params(
+            amounts=amounts, levels=6, power=1.0,
+            denoise_amounts=denoise, filter_type="gaussian",
+        )
 
     def get_config_updates(self) -> dict[str, Any]:
         result: dict[str, Any] = {
-            "preview_amounts": [s.value() for s in self._wavelet_spins],
+            "preview_amounts":         [s.value() for s in self._wavelet_spins],
+            "preview_denoise_amounts": [s.value() for s in self._denoise_spins],
         }
         inp_text = self._input_lbl.text().strip()
         if inp_text:
@@ -288,6 +336,8 @@ class _Step07MonoWidget(QWidget):
             amounts=[s.value() for s in self._wavelet_spins],
             levels=6,
             power=1.0,
+            denoise_amounts=[s.value() for s in self._denoise_spins],
+            filter_type="gaussian",
         )
         self._preview.schedule_update()
 
@@ -299,6 +349,7 @@ class _Step07ColorWidget(QWidget):
         super().__init__(parent)
         self._output_dir: Path | None = None
         self._wavelet_spins: list[QDoubleSpinBox] = []
+        self._denoise_spins: list[QDoubleSpinBox] = []
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -335,7 +386,6 @@ class _Step07ColorWidget(QWidget):
         fl.addRow(lbl_out, self._output_lbl)
         left_layout.addWidget(folder_widget)
 
-        # Color correction checkbox
         self._chk_color_correct = QCheckBox(S("step07.color_correct"))
         self._chk_color_correct.setStyleSheet(_CHECKBOX_STYLE)
         self._chk_color_correct.setToolTip(S("step07.color_correct.tooltip"))
@@ -343,12 +393,13 @@ class _Step07ColorWidget(QWidget):
         self._chk_color_correct.toggled.connect(self._on_color_correct_toggled)
         left_layout.addWidget(self._chk_color_correct)
 
-        amounts_label = QLabel(S("step07.amounts"))
-        amounts_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        amounts_label.setToolTip(S("step07.amounts.tooltip"))
-        left_layout.addWidget(amounts_label)
+        section_lbl = QLabel(_section_label_text())
+        section_lbl.setStyleSheet("font-size: 11px;")
+        left_layout.addWidget(section_lbl)
 
-        self._wavelet_spins = _build_wavelet_sliders(left_layout, self._on_params_changed)
+        self._wavelet_spins, self._denoise_spins = _build_combined_sliders(
+            left_layout, self._on_params_changed
+        )
         left_layout.addStretch()
 
         main_hlayout.addWidget(left_widget, 1)
@@ -387,12 +438,21 @@ class _Step07ColorWidget(QWidget):
         amounts = data.get("preview_amounts", _WAVELET_DEFAULTS)
         for spin, val in zip(self._wavelet_spins, amounts):
             spin.setValue(float(val))
-        self._preview.set_params(amounts=amounts, levels=6, power=1.0)
+
+        denoise = data.get("preview_denoise_amounts", _DENOISE_DEFAULTS)
+        for spin, val in zip(self._denoise_spins, denoise):
+            spin.setValue(float(val))
+
+        self._preview.set_params(
+            amounts=amounts, levels=6, power=1.0,
+            denoise_amounts=denoise, filter_type="gaussian",
+        )
 
     def get_config_updates(self) -> dict[str, Any]:
         result: dict[str, Any] = {
-            "preview_amounts":      [s.value() for s in self._wavelet_spins],
-            "wavelet_color_correct": self._chk_color_correct.isChecked(),
+            "preview_amounts":         [s.value() for s in self._wavelet_spins],
+            "preview_denoise_amounts": [s.value() for s in self._denoise_spins],
+            "wavelet_color_correct":   self._chk_color_correct.isChecked(),
         }
         inp_text = self._input_lbl.text().strip()
         if inp_text:
@@ -459,6 +519,8 @@ class _Step07ColorWidget(QWidget):
             amounts=[s.value() for s in self._wavelet_spins],
             levels=6,
             power=1.0,
+            denoise_amounts=[s.value() for s in self._denoise_spins],
+            filter_type="gaussian",
         )
         self._preview.schedule_update()
 

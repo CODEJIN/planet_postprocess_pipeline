@@ -1219,12 +1219,19 @@ class MainWindow(QMainWindow):
             n_workers    = _global_workers,   # step01_pipp.py caps at 4 internally
         )
 
+        _dn_zero = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         wavelet = WaveletConfig(
-            preview_amounts = list(d.get("preview_amounts", [200.0, 200.0, 200.0, 0.0, 0.0, 0.0])),
-            master_amounts  = list(d.get("master_amounts",  [200.0, 200.0, 200.0, 0.0, 0.0, 0.0])),
-            series_amounts  = list(d.get("series_amounts",  [200.0, 200.0, 200.0, 0.0, 0.0, 0.0])),
-            border_taper_px = int(d.get("border_taper_px", 0)),
-            auto_params     = True,
+            preview_amounts        = list(d.get("preview_amounts",        [200.0, 200.0, 200.0, 0.0, 0.0, 0.0])),
+            preview_denoise_amounts= list(d.get("preview_denoise_amounts", _dn_zero)),
+            preview_filter_type    = str(d.get("preview_filter_type",    "gaussian")),
+            master_amounts         = list(d.get("master_amounts",         [200.0, 200.0, 200.0, 0.0, 0.0, 0.0])),
+            master_denoise_amounts = list(d.get("master_denoise_amounts",  _dn_zero)),
+            master_filter_type     = str(d.get("master_filter_type",     "gaussian")),
+            series_amounts         = list(d.get("series_amounts",         [200.0, 200.0, 200.0, 0.0, 0.0, 0.0])),
+            series_denoise_amounts = list(d.get("series_denoise_amounts",  _dn_zero)),
+            series_filter_type     = str(d.get("series_filter_type",     "gaussian")),
+            border_taper_px        = int(d.get("border_taper_px", 0)),
+            auto_params            = True,
         )
 
         # window_frames: number of filter cycles (= time-series frames) per window.

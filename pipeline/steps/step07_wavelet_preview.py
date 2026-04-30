@@ -114,6 +114,8 @@ def run(config: PipelineConfig, progress_callback=None, cancel_event=None) -> St
                     amounts=config.wavelet.preview_amounts,
                     power=config.wavelet.preview_power,
                     sharpen_filter=config.wavelet.preview_sharpen_filter,
+                    denoise_amounts=config.wavelet.preview_denoise_amounts,
+                    filter_type=config.wavelet.preview_filter_type,
                 )
             else:
                 sharpened = wavelet.sharpen(
@@ -122,6 +124,8 @@ def run(config: PipelineConfig, progress_callback=None, cancel_event=None) -> St
                     amounts=config.wavelet.preview_amounts,
                     power=config.wavelet.preview_power,
                     sharpen_filter=config.wavelet.preview_sharpen_filter,
+                    denoise_amounts=config.wavelet.preview_denoise_amounts,
+                    filter_type=config.wavelet.preview_filter_type,
                 )
 
             out_path: Optional[Path] = None

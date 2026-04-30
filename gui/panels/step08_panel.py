@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 
 from gui.i18n import S
 from gui.panels.base_panel import BasePanel
-from gui.panels.step05_panel import _make_wavelet_row
+from gui.panels.step05_panel import _make_combined_row
 from gui.panels.step06_panel import (
     _SpecRow,
     _BTN_ADD,
@@ -61,6 +61,7 @@ _DBLSPIN_STYLE = (
 )
 
 _SERIES_WAVELET_DEFAULTS = [200.0, 200.0, 200.0, 0.0, 0.0, 0.0]
+_SERIES_DENOISE_DEFAULTS = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 # Default composite specs for step 8 (mirrors step 7 defaults)
 _DEFAULT_SERIES_SPECS = [
@@ -233,22 +234,22 @@ class _Step08MonoWidget(QWidget):
         wav_vl.setSpacing(6)
         wav_vl.setContentsMargins(0, 4, 0, 0)
 
-        amounts_label = QLabel(S("step08.series_amounts"))
-        amounts_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        amounts_label.setToolTip(S("step08.series_amounts.tooltip"))
-        wav_vl.addWidget(amounts_label)
+        section_lbl = QLabel(
+            f'<span style="color:#4da6ff">{S("step05.amounts")}</span>'
+            ' <span style="color:#666">|</span> '
+            f'<span style="color:#4aad80">{S("step05.denoise")}</span>'
+        )
+        section_lbl.setStyleSheet("font-size: 11px;")
+        section_lbl.setToolTip(S("step08.series_amounts.tooltip"))
+        wav_vl.addWidget(section_lbl)
 
         self._series_wavelet_spins: list[QDoubleSpinBox] = []
-        defaults8m = list(_SERIES_WAVELET_DEFAULTS)
-        for i in range(0, len(defaults8m), 2):
-            pair = QHBoxLayout()
-            pair.setSpacing(12)
-            for j in range(2):
-                if i + j < len(defaults8m):
-                    row_layout, spin = _make_wavelet_row(i + j + 1, defaults8m[i + j])
-                    pair.addLayout(row_layout)
-                    self._series_wavelet_spins.append(spin)
-            wav_vl.addLayout(pair)
+        self._series_denoise_spins: list[QDoubleSpinBox] = []
+        for i, (sh, dn) in enumerate(zip(_SERIES_WAVELET_DEFAULTS, _SERIES_DENOISE_DEFAULTS)):
+            row_layout, sharp_spin, dn_spin = _make_combined_row(i + 1, sh, dn)
+            wav_vl.addLayout(row_layout)
+            self._series_wavelet_spins.append(sharp_spin)
+            self._series_denoise_spins.append(dn_spin)
 
         root.addWidget(wav_section)
 
@@ -262,6 +263,7 @@ class _Step08MonoWidget(QWidget):
             "stack_min_quality":            self._stack_min_quality.value(),
             "save_mono_frames":             self._save_mono_frames.isChecked(),
             "series_amounts":               [s.value() for s in self._series_wavelet_spins],
+            "series_denoise_amounts":       [s.value() for s in self._series_denoise_spins],
             "series_composite_specs":       series_specs,
         }
 
@@ -315,6 +317,10 @@ class _Step08MonoWidget(QWidget):
         self._save_mono_frames.setChecked(bool(data.get("save_mono_frames", False)))
         amounts = data.get("series_amounts", _SERIES_WAVELET_DEFAULTS)
         for spin, val in zip(self._series_wavelet_spins, amounts):
+            spin.setValue(float(val))
+
+        denoise = data.get("series_denoise_amounts", _SERIES_DENOISE_DEFAULTS)
+        for spin, val in zip(self._series_denoise_spins, denoise):
             spin.setValue(float(val))
 
         # Update available filter options from session
@@ -475,32 +481,33 @@ class _Step08ColorWidget(QWidget):
         wav_vl.setSpacing(6)
         wav_vl.setContentsMargins(0, 4, 0, 0)
 
-        amounts_label = QLabel(S("step08.series_amounts"))
-        amounts_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        amounts_label.setToolTip(S("step08.series_amounts.tooltip"))
-        wav_vl.addWidget(amounts_label)
+        section_lbl = QLabel(
+            f'<span style="color:#4da6ff">{S("step05.amounts")}</span>'
+            ' <span style="color:#666">|</span> '
+            f'<span style="color:#4aad80">{S("step05.denoise")}</span>'
+        )
+        section_lbl.setStyleSheet("font-size: 11px;")
+        section_lbl.setToolTip(S("step08.series_amounts.tooltip"))
+        wav_vl.addWidget(section_lbl)
 
         self._series_wavelet_spins: list[QDoubleSpinBox] = []
-        defaults8c = list(_SERIES_WAVELET_DEFAULTS)
-        for i in range(0, len(defaults8c), 2):
-            pair = QHBoxLayout()
-            pair.setSpacing(12)
-            for j in range(2):
-                if i + j < len(defaults8c):
-                    row_layout, spin = _make_wavelet_row(i + j + 1, defaults8c[i + j])
-                    pair.addLayout(row_layout)
-                    self._series_wavelet_spins.append(spin)
-            wav_vl.addLayout(pair)
+        self._series_denoise_spins: list[QDoubleSpinBox] = []
+        for i, (sh, dn) in enumerate(zip(_SERIES_WAVELET_DEFAULTS, _SERIES_DENOISE_DEFAULTS)):
+            row_layout, sharp_spin, dn_spin = _make_combined_row(i + 1, sh, dn)
+            wav_vl.addLayout(row_layout)
+            self._series_wavelet_spins.append(sharp_spin)
+            self._series_denoise_spins.append(dn_spin)
 
         root.addWidget(wav_section)
 
     def get_config_updates(self) -> dict[str, Any]:
         return {
-            "series_scale":         self._series_scale.value(),
-            "series_cycle_seconds": self._series_cycle_seconds.value(),
-            "stack_window_n":       self._stack_window_n.value(),
-            "stack_min_quality":    self._stack_min_quality.value(),
-            "series_amounts":       [s.value() for s in self._series_wavelet_spins],
+            "series_scale":          self._series_scale.value(),
+            "series_cycle_seconds":  self._series_cycle_seconds.value(),
+            "stack_window_n":        self._stack_window_n.value(),
+            "stack_min_quality":     self._stack_min_quality.value(),
+            "series_amounts":        [s.value() for s in self._series_wavelet_spins],
+            "series_denoise_amounts": [s.value() for s in self._series_denoise_spins],
         }
 
     def load_session(self, data: dict[str, Any]) -> None:
@@ -518,6 +525,9 @@ class _Step08ColorWidget(QWidget):
         self._stack_min_quality.setValue(float(data.get("stack_min_quality", 0.05)))
         amounts = data.get("series_amounts", _SERIES_WAVELET_DEFAULTS)
         for spin, val in zip(self._series_wavelet_spins, amounts):
+            spin.setValue(float(val))
+        denoise = data.get("series_denoise_amounts", _SERIES_DENOISE_DEFAULTS)
+        for spin, val in zip(self._series_denoise_spins, denoise):
             spin.setValue(float(val))
 
     def output_paths(self) -> list[Path]:

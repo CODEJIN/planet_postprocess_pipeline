@@ -34,6 +34,10 @@ class WaveletConfig:
     )
     preview_power: float = 1.0
     preview_sharpen_filter: float = 0.1   # WaveSharp default (MAD-based soft threshold)
+    preview_denoise_amounts: List[float] = field(
+        default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    )
+    preview_filter_type: str = 'gaussian'
 
     # Step 5 – final master output (best-quality stack per window)
     master_amounts: List[float] = field(
@@ -41,6 +45,13 @@ class WaveletConfig:
     )
     master_power: float = 1.0
     master_sharpen_filter: float = 0.0
+    # Per-layer denoise (0–100 each; 0 = off, 100 → Gaussian σ=3.0 px on detail coeff)
+    master_denoise_amounts: List[float] = field(
+        default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    )
+    # Decomposition filter: 'gaussian' (B3-spline, default), 'zerogauss' (LoG,
+    # more aggressive), 'bilateral' (edge-preserving, reduces limb overshoot)
+    master_filter_type: str = 'gaussian'
 
     # Step 8 – time-series animation frames (independent from Step 5)
     # Defaults match master_amounts so existing behaviour is unchanged.
@@ -50,6 +61,10 @@ class WaveletConfig:
     )
     series_power: float = 1.0
     series_sharpen_filter: float = 0.0
+    series_denoise_amounts: List[float] = field(
+        default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    )
+    series_filter_type: str = 'gaussian'
 
     # Rectangular border taper before wavelet sharpening (Step 7 and Step 5).
     # Cosine-fades the outermost border_taper_px pixels on all 4 sides to 0,

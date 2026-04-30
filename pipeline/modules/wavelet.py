@@ -19,6 +19,12 @@ Key properties:
     matching human perception of "sharpness".
   - Soft threshold: optional per-layer noise gate (sharpen_filter) that
     suppresses very small coefficients before amplification.
+  - Per-layer denoise: optional per-layer soft-threshold of each detail
+    coefficient before amplification (WaveSharp-compatible, same unit as
+    sharpen_filter; amount=0.1 removes coefficients < 10% of noise sigma).
+  - Filter types: 'gaussian' (B3-spline à trous, default), 'zerogauss'
+    (LoG-based detail extraction, more aggressive), 'bilateral'
+    (edge-preserving à trous, reduces limb artifacts).
 
 References:
   Starck, J.-L. & Murtagh, F. (2006). Astronomical Image and Data Analysis.
@@ -44,6 +50,17 @@ _B3 = np.array([1.0, 4.0, 6.0, 4.0, 1.0], dtype=np.float64) / 16.0
 #
 # Level 0 = finest (~2 px),  Level 5 = coarsest (~64 px).
 _MAX_GAINS = [29.15, 9.48, 0.0, 0.0, 0.0, 0.0]
+
+
+# ── Constants ──────────────────────────────────────────────────────────────────
+
+# Valid filter_type values for decompose() and sharpen*() functions.
+FILTER_TYPES = ('gaussian', 'zerogauss', 'bilateral')
+
+# Denoise amount is a soft-threshold coefficient multiplied by MAD(detail).
+# Same unit as sharpen_filter: amount=0.1 → threshold = 0.1 × noise_sigma.
+# Typical range 0.0–2.0; WaveSharp default ≈ 0.1.
+_DENOISE_MAX_COEFF = 3.0   # UI hard ceiling
 
 
 # ── Low-level building blocks ──────────────────────────────────────────────────
@@ -96,16 +113,131 @@ def _soft_threshold(w: np.ndarray, threshold: float) -> np.ndarray:
     return np.sign(w) * np.maximum(np.abs(w) - threshold, 0.0)
 
 
-def _noise_sigma(w: np.ndarray) -> float:
+def _noise_sigma(w: np.ndarray, mask: Optional[np.ndarray] = None) -> float:
     """Estimate noise standard deviation from wavelet detail using MAD.
 
-    sigma = MAD(w) / 0.6745
+    sigma = MAD(w[mask]) / 0.6745
 
-    The MAD-based estimator is robust to heavy-tailed distributions
-    (edges/features) that are common in wavelet detail coefficients.
-    Equivalent to std for Gaussian noise, more robust for non-Gaussian.
+    Args:
+        w:    Wavelet detail coefficient array.
+        mask: Boolean array (same shape as w, or flattened).  When provided,
+              MAD is computed over mask=True pixels only — typically the planet
+              disk region.  This avoids background-dominated estimates: when
+              most pixels are dark sky the full-array median collapses to ≈ 0,
+              making every threshold effectively zero regardless of amount.
+              When None, falls back to all non-zero pixels.
     """
-    return float(np.median(np.abs(w)) / 0.6745)
+    flat = np.abs(w.ravel())
+    if mask is not None:
+        m = mask.ravel() if mask.ndim > 1 else mask
+        signal = flat[m]
+    else:
+        signal = flat[flat > 0.0]
+    if signal.size < 10:
+        return float(np.median(flat) / 0.6745)
+    return float(np.median(signal) / 0.6745)
+
+
+def _log_detail(image: np.ndarray, level: int) -> np.ndarray:
+    """Compute LoG (Laplacian of Gaussian) detail at à trous scale 2^level.
+
+    Implements the ZeroGauss filter type.  Uses a separable approximation:
+        LoG(x,y,σ) ≈ D2G(x)·G(y) + G(x)·D2G(y)
+    where D2G is the second derivative of the Gaussian (zero-sum kernel).
+
+    The result is zero-mean (zero-sum kernel), so sharpening with LoG details
+    is mean-preserving.  LoG is more aggressive than DoG at the same scale —
+    it sharpens edges without the broad halo produced by USM.
+
+    Args:
+        image: 2-D float64 array.
+        level: À trous level (kernel sigma ≈ 2^level × 0.75).
+
+    Returns:
+        LoG-filtered detail, same shape as image.
+    """
+    sigma = float(1 << level) * 0.75
+    size = max(5, int(6.0 * sigma + 1) | 1)
+    half = size // 2
+    x = np.arange(size, dtype=np.float64) - half
+
+    g = np.exp(-x ** 2 / (2.0 * sigma ** 2))
+    g /= g.sum()
+
+    # D2G: (x²/σ⁴ - 1/σ²) × Gaussian — zero-sum by construction
+    d2g = (x ** 2 / sigma ** 4 - 1.0 / sigma ** 2) * np.exp(-x ** 2 / (2.0 * sigma ** 2))
+    # Normalise amplitude to same scale as B3-based detail
+    d2g_norm = np.sqrt(np.sum(d2g ** 2))
+    if d2g_norm > 1e-12:
+        d2g /= d2g_norm
+
+    # LoG ≈ D2G(x)·G(y) + G(x)·D2G(y)
+    part_x = _convolve1d_reflect(image, d2g, axis=1)
+    part_x = _convolve1d_reflect(part_x, g,   axis=0)
+
+    part_y = _convolve1d_reflect(image, g,   axis=1)
+    part_y = _convolve1d_reflect(part_y, d2g, axis=0)
+
+    return part_x + part_y
+
+
+def _bilateral_smooth(image: np.ndarray, level: int, sigma_color: float = 0.08) -> np.ndarray:
+    """Bilateral filter as the à trous smooth step (ZeroGauss/Bilateral type).
+
+    Replaces the B3-spline convolution with an edge-preserving bilateral filter
+    at the given à trous level.  The resulting detail (image - bilateral_smooth)
+    preserves edges without amplifying them, eliminating limb-overshoot artifacts.
+
+    Args:
+        image:       2-D float64 array in [0, 1].
+        level:       À trous level; sigmaSpace ≈ 2^level.
+        sigma_color: Bilateral color-space sigma (0.08 ≈ fine edge preservation).
+
+    Returns:
+        Smoothed array (same shape as image, float64).
+    """
+    import cv2 as _cv2
+    sigma_space = float(1 << level) * 0.75
+    # cv2.bilateralFilter requires float32; d=-1 lets sigmaSpace determine diameter.
+    smoothed = _cv2.bilateralFilter(
+        image.astype(np.float32), d=-1,
+        sigmaColor=sigma_color, sigmaSpace=sigma_space,
+    )
+    return smoothed.astype(np.float64)
+
+
+def _denoise_coeff(
+    detail: np.ndarray,
+    amount: float,
+    mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Per-layer soft-threshold denoise of a wavelet detail coefficient.
+
+    Implements WaveSharp-compatible per-layer denoise: applies a MAD-based
+    soft threshold scaled by *amount*, identical in mechanism to the global
+    ``sharpen_filter`` but applied independently per layer before gain
+    multiplication.
+
+        threshold = amount × MAD(detail[mask]) / 0.6745
+        output    = sign(detail) × max(|detail| − threshold, 0)
+
+    Args:
+        detail: 2-D wavelet detail coefficient array.
+        amount: Soft-threshold coefficient (WaveSharp-compatible scale).
+                0.0 = off; 0.1 = WaveSharp gentle default; 1.0 = strong.
+        mask:   Boolean array indicating planet-disk pixels for noise
+                estimation.  Pass the disk mask from sharpen_disk_aware, or
+                a brightness-derived mask from reconstruct().  When None,
+                falls back to non-zero pixels.
+
+    Returns:
+        Thresholded detail (same shape, float64).  Identical to input if
+        amount ≤ 0.
+    """
+    if amount <= 0.0:
+        return detail
+    threshold = float(amount) * _noise_sigma(detail, mask=mask)
+    return _soft_threshold(detail, threshold)
 
 
 # ── Border taper ──────────────────────────────────────────────────────────────
@@ -218,29 +350,63 @@ def safe_taper_widths(
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
-def decompose(image: np.ndarray, levels: int = 6) -> List[np.ndarray]:
+def decompose(
+    image: np.ndarray,
+    levels: int = 6,
+    filter_type: str = 'gaussian',
+) -> List[np.ndarray]:
     """Decompose *image* into à trous wavelet coefficients.
 
     Args:
-        image:  2-D float array (any range; float64 precision used internally).
-        levels: Number of detail layers to extract.
+        image:       2-D float array (any range; float64 precision internally).
+        levels:      Number of detail layers to extract.
+        filter_type: Decomposition kernel.
+            'gaussian'  — B3-spline à trous (default, WaveSharp-compatible).
+            'zerogauss' — LoG-based detail extracted directly from the original
+                          image at each scale (more aggressive, zero-sum).
+            'bilateral' — Edge-preserving à trous (bilateral smooth step);
+                          reduces limb overshoot at planet boundaries.
 
     Returns:
         List of length ``levels + 1``:
         ``[detail_0, detail_1, ..., detail_{levels-1}, residual]``
 
         detail_i  = contribution at spatial scale ~2^i … 2^(i+1) pixels.
-        residual  = low-frequency approximation after *levels* smoothings.
+        residual  = low-frequency approximation (summing all with original
+                    reconstructs the original exactly for all filter types).
     """
     coeffs: List[np.ndarray] = []
     current = image.astype(np.float64)
 
-    for i in range(levels):
-        smoothed = _smooth(current, i)
-        coeffs.append(current - smoothed)   # detail layer i
-        current = smoothed
+    if filter_type == 'gaussian':
+        for i in range(levels):
+            smoothed = _smooth(current, i)
+            coeffs.append(current - smoothed)
+            current = smoothed
+        coeffs.append(current)
 
-    coeffs.append(current)   # residual (low-frequency)
+    elif filter_type == 'zerogauss':
+        # LoG details are extracted from the *original* image (not cascaded),
+        # so each scale is independent.  Residual = original − Σ details
+        # guarantees exact reconstruction: residual + Σdetail_i = original.
+        orig = current.copy()
+        for i in range(levels):
+            coeffs.append(_log_detail(orig, i))
+        residual = orig.copy()
+        for d in coeffs:
+            residual = residual - d
+        coeffs.append(residual)
+
+    elif filter_type == 'bilateral':
+        for i in range(levels):
+            smoothed = _bilateral_smooth(current, i)
+            coeffs.append(current - smoothed)
+            current = smoothed
+        coeffs.append(current)
+
+    else:
+        raise ValueError(f"filter_type must be one of {FILTER_TYPES}, got {filter_type!r}")
+
     return coeffs
 
 
@@ -274,33 +440,61 @@ def reconstruct(
     coeffs: List[np.ndarray],
     weights: List[float],
     sharpen_filter: float = 0.0,
+    denoise_amounts: Optional[List[float]] = None,
 ) -> np.ndarray:
     """Reconstruct a sharpened image from wavelet coefficients.
 
-    Formula:
-        output = original + Σ( soft_threshold(detail_i, thr_i) × weights[i] )
+    Processing order per layer:
+        detail_i → denoise (soft-threshold) → sharpen_filter (soft-threshold) → × gain → add
 
     Args:
-        coeffs:         Output of :func:`decompose`.
-        weights:        Per-level extra-gain (length == levels).
-        sharpen_filter: Soft-threshold factor (WaveSharp 'sharpen filter'),
-                        applied as thr_i = sharpen_filter × std(detail_i).
-                        0.0 (default) = no thresholding.
+        coeffs:          Output of :func:`decompose`.
+        weights:         Per-level extra-gain (length == levels).
+        sharpen_filter:  Global soft-threshold coefficient (WaveSharp 'sharpen
+                         filter'): thr_i = sharpen_filter × MAD(detail_i).
+                         0.0 = no thresholding.
+        denoise_amounts: Per-level soft-threshold coefficient (WaveSharp scale).
+                         0.0 = off; 0.1 = WaveSharp gentle default; 1.0 = strong.
+                         Applied before the global sharpen_filter threshold.
+                         Length must equal ``len(weights)`` or be None.
 
     Returns:
         Float64 array (same shape as input, **not yet clipped**).
     """
-    # Start from the original (residual + all details = original)
     original = coeffs[-1].copy()
     for d in coeffs[:-1]:
-        original = original + d   # reconstruct original exactly
+        original = original + d
+
+    # Build a content mask for noise estimation: top 50% of pixels by brightness.
+    # This approximates the planet disk without needing explicit disk geometry.
+    # For images where most pixels are dark sky, the full-array MAD collapses
+    # to near zero; using the brighter half keeps the estimator in the planet
+    # region regardless of the exact background level.
+    needs_mask = sharpen_filter > 0.0 or (
+        denoise_amounts and any(x > 0.0 for x in denoise_amounts)
+    )
+    if needs_mask:
+        orig_flat = original.ravel()
+        p50 = float(np.percentile(orig_flat, 50))
+        content_mask = orig_flat > max(p50, 1e-6)
+        if content_mask.sum() < 10:
+            content_mask = None
+    else:
+        content_mask = None
 
     result = original.copy()
-    for detail, w in zip(coeffs[:-1], weights):
+    for i, (detail, w) in enumerate(zip(coeffs[:-1], weights)):
         if w == 0.0:
             continue
-        thr = sharpen_filter * _noise_sigma(detail) if sharpen_filter > 0.0 else 0.0
-        d_thr = _soft_threshold(detail, thr)
+
+        # Per-layer denoise: MAD-based soft-threshold (WaveSharp-compatible)
+        dn = denoise_amounts[i] if (denoise_amounts and i < len(denoise_amounts)) else 0.0
+        d_proc = _denoise_coeff(detail, dn, mask=content_mask)
+
+        # Global soft threshold (noise gate)
+        thr = sharpen_filter * _noise_sigma(d_proc, mask=content_mask) if sharpen_filter > 0.0 else 0.0
+        d_thr = _soft_threshold(d_proc, thr)
+
         result = result + d_thr * w
 
     return result
@@ -313,6 +507,8 @@ def sharpen_color(
     weights: Optional[List[float]] = None,
     power: float = 1.0,
     sharpen_filter: float = 0.0,
+    denoise_amounts: Optional[List[float]] = None,
+    filter_type: str = 'gaussian',
 ) -> np.ndarray:
     """Sharpen a colour (H, W, 3) RGB float [0, 1] image via L-channel sharpening.
 
@@ -321,24 +517,27 @@ def sharpen_color(
     preserved unchanged, so colour balance is unaffected.
 
     Args:
-        image:          Float32 (H, W, 3) RGB array in [0, 1].
-        levels:         Number of wavelet decomposition levels.
-        amounts:        Per-level WaveSharp amounts (0–200).
-        weights:        Raw per-level gain (overrides amounts if given).
-        power:          WaveSharp power-function exponent.
-        sharpen_filter: Soft-threshold noise-gate coefficient.
+        image:           Float32 (H, W, 3) RGB array in [0, 1].
+        levels:          Number of wavelet decomposition levels.
+        amounts:         Per-level WaveSharp amounts (0–200).
+        weights:         Raw per-level gain (overrides amounts if given).
+        power:           WaveSharp power-function exponent.
+        sharpen_filter:  Soft-threshold noise-gate coefficient.
+        denoise_amounts: Per-level soft-threshold coefficient (0.0=off, 0.1=gentle, 1.0=strong).
+        filter_type:     Decomposition kernel ('gaussian', 'zerogauss',
+                         'bilateral').
 
     Returns:
         Float32 (H, W, 3) RGB array in [0, 1], with sharpened luminance.
     """
     import cv2 as _cv2
-    # RGB [0,1] → BGR → Lab (L in [0,100], a/b in [-127,127])
     bgr = _cv2.cvtColor(image.astype(np.float32), _cv2.COLOR_RGB2BGR)
     lab = _cv2.cvtColor(bgr, _cv2.COLOR_BGR2Lab)
 
-    L = lab[:, :, 0] / 100.0           # [0, 1]
+    L = lab[:, :, 0] / 100.0
     L_sharp = sharpen(L, levels=levels, amounts=amounts, weights=weights,
-                      power=power, sharpen_filter=sharpen_filter)
+                      power=power, sharpen_filter=sharpen_filter,
+                      denoise_amounts=denoise_amounts, filter_type=filter_type)
     lab[:, :, 0] = np.clip(L_sharp * 100.0, 0.0, 100.0)
 
     bgr_sharp = _cv2.cvtColor(lab, _cv2.COLOR_Lab2BGR)
@@ -729,12 +928,14 @@ def sharpen_disk_aware(
     ry: Optional[float] = None,
     angle: float = 0.0,
     expand_px: float = 0.0,
+    denoise_amounts: Optional[List[float]] = None,
+    filter_type: str = 'gaussian',
 ) -> np.ndarray:
     """À trous wavelet sharpening with per-level spatial edge feathering.
 
     Each detail level L contributes:
 
-        detail_L × gain_L × spatial_weight_L(pixel)
+        detail_L → denoise → soft_threshold → × gain_L × spatial_weight_L
 
     where ``spatial_weight_L`` fades from 1.0 (disk interior) to 0.0 at the
     disk edge over a zone of width ``feather_L = 2^L × edge_feather_factor``
@@ -742,31 +943,23 @@ def sharpen_disk_aware(
 
     When ``ry`` is provided, the feather zone follows the actual elliptical
     disk boundary (rx=radius semi-major, ry semi-minor, angle tilt in radians)
-    rather than a circle.  This prevents over-blurring Jupiter's equatorial
-    limb when the equatorial radius > polar radius.
-
-    **expand_px**: The mask boundary is pushed outward by ``expand_px`` pixels
-    beyond the detected disk edge.  Because ``find_disk_center`` uses an
-    Otsu-threshold contour, it often lands a few pixels inside the true visual
-    limb (due to limb darkening).  Expanding by 5–8 px shifts the feather zone
-    so it starts at the actual limb rather than inside the disk, allowing the
-    full disk interior to receive maximum wavelet gain.  The limb-darkening
-    zone between the detected boundary and the actual limb is also sharpened.
+    rather than a circle.
 
     Args:
         image:               Float array in [0, 1], 2-D or 3-D.
         cx, cy:              Disk centre in pixels.
-        radius:              Semi-major axis radius in pixels (from find_disk_center).
+        radius:              Semi-major axis radius in pixels.
         levels:              Number of decomposition levels.
         amounts:             Per-level WaveSharp amounts (0–200).
         weights:             Raw per-level gain (overrides amounts).
         power:               WaveSharp power-function exponent.
         sharpen_filter:      Soft-threshold noise-gate coefficient.
-        edge_feather_factor: Feather width multiplier. ``feather_L = 2^L × factor``.
-        ry:                  Semi-minor axis radius (pixels). If None, circular mask.
-        angle:               Ellipse tilt angle in radians (semi-major from x-axis).
-        expand_px:           Extra pixels to push the mask boundary outward beyond
-                             the detected disk edge (corrects for Otsu under-detection).
+        edge_feather_factor: Feather width multiplier.
+        ry:                  Semi-minor axis radius (pixels). None = circular.
+        angle:               Ellipse tilt angle in radians.
+        expand_px:           Extra pixels to expand the mask boundary outward.
+        denoise_amounts:     Per-level soft-threshold coefficient (0.0=off, 0.1=gentle, 1.0=strong).
+        filter_type:         'gaussian', 'zerogauss', or 'bilateral'.
 
     Returns:
         Float32 array in [0, 1], same shape as input.
@@ -784,7 +977,6 @@ def sharpen_disk_aware(
 
     use_ellipse = ry is not None and ry > 0.0
 
-    # Multi-channel: sharpen each channel with the same disk geometry
     if image.ndim == 3:
         channels = [
             sharpen_disk_aware(
@@ -794,36 +986,54 @@ def sharpen_disk_aware(
                 edge_feather_factor=edge_feather_factor,
                 ry=ry, angle=angle,
                 expand_px=expand_px,
+                denoise_amounts=denoise_amounts,
+                filter_type=filter_type,
             )
             for c in range(image.shape[2])
         ]
         return np.stack(channels, axis=2).astype(np.float32)
 
     h, w = image.shape
-
-    # Expand mask boundary outward by expand_px to compensate for Otsu-threshold
-    # under-detection: find_disk_center lands inside the true visual limb due to
-    # limb darkening.  The expanded boundary shifts the feather zone outward so
-    # the disk interior (and limb-darkening zone) receive full wavelet gain.
     rx_m = radius + expand_px
     ry_m = (ry + expand_px) if use_ellipse else None
 
-    coeffs = decompose(image.astype(np.float64), levels)
+    coeffs = decompose(image.astype(np.float64), levels, filter_type=filter_type)
 
-    # Reconstruct original (residual + all details)
     original = coeffs[-1].copy()
     for d in coeffs[:-1]:
         original = original + d
+
+    # Build a binary disk mask for noise estimation.  Using the actual disk
+    # geometry gives a precise planet-region MAD without relying on brightness
+    # thresholds or exact-zero assumptions about the background.
+    Y_g, X_g = np.mgrid[:h, :w]
+    if use_ellipse:
+        cos_a, sin_a = np.cos(angle), np.sin(angle)
+        dx = X_g - cx
+        dy = Y_g - cy
+        rx_e = rx_m if rx_m > 0 else 1.0
+        ry_e = ry_m if ry_m > 0 else rx_e
+        disk_mask = (
+            ((dx * cos_a + dy * sin_a) / rx_e) ** 2
+            + ((dx * sin_a - dy * cos_a) / ry_e) ** 2
+        ) <= 1.0
+    else:
+        disk_mask = (X_g - cx) ** 2 + (Y_g - cy) ** 2 <= rx_m ** 2
+    disk_flat = disk_mask.ravel()
+    if disk_flat.sum() < 10:
+        disk_flat = None
 
     result = original.copy()
     for level_idx, (detail, gain) in enumerate(zip(coeffs[:-1], gains)):
         if gain == 0.0:
             continue
-        thr = sharpen_filter * _noise_sigma(detail) if sharpen_filter > 0.0 else 0.0
-        d_thr = _soft_threshold(detail, thr)
 
-        # Per-level spatial weight using EXPANDED boundary so the feather zone
-        # starts at/beyond the actual limb rather than inside the disk.
+        dn = denoise_amounts[level_idx] if (denoise_amounts and level_idx < len(denoise_amounts)) else 0.0
+        d_proc = _denoise_coeff(detail, dn, mask=disk_flat)
+
+        thr = sharpen_filter * _noise_sigma(d_proc, mask=disk_flat) if sharpen_filter > 0.0 else 0.0
+        d_thr = _soft_threshold(d_proc, thr)
+
         feather_L = max((2 ** level_idx) * edge_feather_factor, 1.0)
         if use_ellipse:
             weight_map = _make_disk_weight_ellipse(
@@ -851,6 +1061,8 @@ def sharpen_color_disk_aware(
     ry: Optional[float] = None,
     angle: float = 0.0,
     expand_px: float = 0.0,
+    denoise_amounts: Optional[List[float]] = None,
+    filter_type: str = 'gaussian',
 ) -> np.ndarray:
     """Disk-aware sharpening for colour (H, W, 3) RGB float images via Lab L-channel.
 
@@ -858,7 +1070,7 @@ def sharpen_color_disk_aware(
     only, then converts back.  Chrominance is preserved unchanged.
 
     Args and returns: same as :func:`sharpen_color` plus disk geometry args
-    (including optional ry, angle for elliptical feather, and expand_px).
+    and the new denoise_amounts / filter_type parameters.
     """
     import cv2 as _cv2
     bgr = _cv2.cvtColor(image.astype(np.float32), _cv2.COLOR_RGB2BGR)
@@ -872,6 +1084,8 @@ def sharpen_color_disk_aware(
         edge_feather_factor=edge_feather_factor,
         ry=ry, angle=angle,
         expand_px=expand_px,
+        denoise_amounts=denoise_amounts,
+        filter_type=filter_type,
     )
     lab[:, :, 0] = np.clip(L_sharp * 100.0, 0.0, 100.0)
 
@@ -887,6 +1101,8 @@ def sharpen(
     weights: Optional[List[float]] = None,
     power: float = 1.0,
     sharpen_filter: float = 0.0,
+    denoise_amounts: Optional[List[float]] = None,
+    filter_type: str = 'gaussian',
 ) -> np.ndarray:
     """Apply à trous wavelet sharpening to *image*.
 
@@ -894,20 +1110,21 @@ def sharpen(
     Handles both 2-D (grayscale) and 3-D (multi-channel) inputs.
 
     Args:
-        image:          Float array in [0, 1] (normalised 16-bit input).
-        levels:         Number of decomposition levels (default 6).
-        amounts:        Per-level WaveSharp amounts, 0–200 scale.
-                        Default: [200, 200, 100, 0, 0, 0] (layers 1–3 active).
-        weights:        Raw per-level extra-gain (overrides *amounts* if given).
-        power:          WaveSharp 'power function' exponent (1.0 = linear).
-        sharpen_filter: WaveSharp 'sharpen filter' — soft-threshold factor
-                        relative to each level's std.  0.0 = no threshold.
+        image:           Float array in [0, 1] (normalised 16-bit input).
+        levels:          Number of decomposition levels (default 6).
+        amounts:         Per-level WaveSharp amounts, 0–200 scale.
+                         Default: [200, 200, 100, 0, 0, 0].
+        weights:         Raw per-level extra-gain (overrides *amounts*).
+        power:           WaveSharp 'power function' exponent (1.0 = linear).
+        sharpen_filter:  Soft-threshold factor relative to each level's MAD.
+                         0.0 = no threshold.
+        denoise_amounts: Per-level soft-threshold coefficient (0.0=off, 0.1=gentle, 1.0=strong).
+        filter_type:     Decomposition kernel: 'gaussian' (default), 'zerogauss',
+                         or 'bilateral'.
 
     Returns:
-        Float32 array in [0, 1], **same histogram shape** as *image*
-        (mean-preserving; no auto-stretch applied).
+        Float32 array in [0, 1], mean-preserving.
     """
-    # Resolve weights
     if weights is not None:
         if len(weights) != levels:
             raise ValueError(f"len(weights)={len(weights)} must equal levels={levels}")
@@ -919,15 +1136,17 @@ def sharpen(
             raise ValueError(f"len(amounts)={len(amounts)} must equal levels={levels}")
         gains = amounts_to_weights(amounts, power=power)
 
-    # Multi-channel: sharpen each channel independently
     if image.ndim == 3:
         channels = [
             sharpen(image[:, :, c], levels=levels, weights=gains,
-                    sharpen_filter=sharpen_filter)
+                    sharpen_filter=sharpen_filter,
+                    denoise_amounts=denoise_amounts,
+                    filter_type=filter_type)
             for c in range(image.shape[2])
         ]
         return np.stack(channels, axis=2).astype(np.float32)
 
-    coeffs = decompose(image.astype(np.float64), levels)
-    result = reconstruct(coeffs, gains, sharpen_filter=sharpen_filter)
+    coeffs = decompose(image.astype(np.float64), levels, filter_type=filter_type)
+    result = reconstruct(coeffs, gains, sharpen_filter=sharpen_filter,
+                         denoise_amounts=denoise_amounts)
     return np.clip(result, 0.0, 1.0).astype(np.float32)

@@ -37,9 +37,7 @@ _PANEL_SIZE = 200   # px per preview panel (200×200 each → ~410 px total widt
 class _Worker(QObject):
     """Runs in a QThread — reads TIF and applies wavelet sharpening."""
 
-    # Emit numpy arrays as bytes to avoid cross-thread mutable-object issues:
-    # convert to uint8 in the worker, pass as bytes, reconstruct QImage in main.
-    done  = Signal(bytes, bytes, int, int, int, str)  # orig_bytes, sharp_bytes, h, w, channels, name
+    done  = Signal(bytes, bytes, int, int, int, str)
     error = Signal(str)
 
     def __init__(
@@ -52,6 +50,8 @@ class _Worker(QObject):
         edge_feather_factor: float = 0.0,
         auto_params: bool = False,
         color_correct: bool = False,
+        denoise_amounts: Optional[List[float]] = None,
+        filter_type: str = 'gaussian',
     ) -> None:
         super().__init__()
         self._path                = tif_path
@@ -62,15 +62,16 @@ class _Worker(QObject):
         self._edge_feather_factor = edge_feather_factor
         self._auto_params         = auto_params
         self._color_correct       = color_correct
+        self._denoise_amounts     = denoise_amounts
+        self._filter_type         = filter_type
 
     @Slot()
     def run(self) -> None:
         try:
             from pipeline.modules import image_io, wavelet
 
-            orig = image_io.read_tif(self._path)          # float32 [0,1]
+            orig = image_io.read_tif(self._path)
 
-            # Color camera: apply correction to working copy; orig stays raw for display
             working = orig
             if self._color_correct and orig.ndim == 3:
                 from pipeline.steps.step06_rgb_composite import _auto_color_correct
@@ -103,6 +104,8 @@ class _Worker(QObject):
                         edge_feather_factor=_eff,
                         ry=_ry, angle=_angle_rad,
                         expand_px=_expand,
+                        denoise_amounts=self._denoise_amounts,
+                        filter_type=self._filter_type,
                     )
                 else:
                     sharp = wavelet.sharpen(
@@ -111,6 +114,8 @@ class _Worker(QObject):
                         amounts=self._amounts,
                         power=self._power,
                         sharpen_filter=self._sharpen_filter,
+                        denoise_amounts=self._denoise_amounts,
+                        filter_type=self._filter_type,
                     )
             else:
                 sharp = wavelet.sharpen(
@@ -119,6 +124,8 @@ class _Worker(QObject):
                     amounts=self._amounts,
                     power=self._power,
                     sharpen_filter=self._sharpen_filter,
+                    denoise_amounts=self._denoise_amounts,
+                    filter_type=self._filter_type,
                 )
 
             orig_u8  = _to_uint8(orig)
@@ -198,14 +205,16 @@ class WaveletPreviewWidget(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self._sharpen_filter      = sharpen_filter
+        self._sharpen_filter         = sharpen_filter
         self._input_dir: Optional[Path] = None
         self._amounts:   List[float]    = [200.0, 200.0, 200.0, 0.0, 0.0, 0.0]
         self._levels:    int            = 6
         self._power:     float          = 1.0
         self._edge_feather_factor: float = 0.0
-        self._auto_params: bool         = False
-        self._color_correct: bool       = False
+        self._auto_params: bool          = False
+        self._color_correct: bool        = False
+        self._denoise_amounts: Optional[List[float]] = None
+        self._filter_type: str           = 'gaussian'
 
         # State flags — more reliable than thread.isRunning()
         self._running = False
@@ -292,12 +301,16 @@ class WaveletPreviewWidget(QWidget):
         power: float = 1.0,
         edge_feather_factor: float = 0.0,
         auto_params: bool = False,
+        denoise_amounts: Optional[List[float]] = None,
+        filter_type: str = 'gaussian',
     ) -> None:
         self._amounts             = list(amounts)
         self._levels              = levels
         self._power               = power
         self._edge_feather_factor = edge_feather_factor
         self._auto_params         = auto_params
+        self._denoise_amounts     = list(denoise_amounts) if denoise_amounts is not None else None
+        self._filter_type         = filter_type
 
     def set_color_correct(self, enabled: bool) -> None:
         self._color_correct = enabled
@@ -350,6 +363,8 @@ class WaveletPreviewWidget(QWidget):
             self._edge_feather_factor,
             self._auto_params,
             self._color_correct,
+            denoise_amounts=list(self._denoise_amounts) if self._denoise_amounts is not None else None,
+            filter_type=self._filter_type,
         )
         # QThread(self): Qt parent keeps C++ object alive so Python ref-drops
         # in _on_done/_on_error are safe even if the OS thread is still quitting.
