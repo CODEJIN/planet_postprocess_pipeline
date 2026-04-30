@@ -25,7 +25,11 @@ Supports both **monochrome cameras** (filter wheel, multi-filter SER) and **colo
 - **Live preview widgets**: wavelet (Steps 05 & 07), RGB composite (Step 06), levels (Step 10), color correction (Step 06 color), AP grid (Step 02)
 - **Bilingual UI**: Korean / English (switchable at runtime)
 - **Standalone executable**: ships as a single binary via PyInstaller (no Python required)
-- **Lucky Stacking (Step 02)**: Per-AP independent patch stacking with NCC sub-pixel alignment and wide Gaussian blending (2× AP size), AS!4-compatible PDS AP grid, σ-clip post-pass, multi-level parallelism (SER-level + frame-level ThreadPool)
+- **Lucky Stacking (Step 02)**: Fourier-domain quality-weighted stacking (Mackay 2013) — per-frequency weighting by `|FFT|^power` + Gaussian rolloff; AS!4-compatible PDS AP grid; multi-level parallelism (SER-level + frame-level ThreadPool)
+- **Multi-format filename support**: Automatically recognises FireCapture/WinJUPOS (`YYYY-MM-DD-HHMM_D-CAM-FILTER-TARGET`), ASIAIR (`Target_YYYYMMDD-HHMMSS`), and SharpCap (`HH_MM_SS` under date/target folders) conventions
+- **Profile management**: Named session profiles — save, load, and delete telescope/session configurations from the Settings panel
+- **16-bit SER support**: Full 16-bit pipeline with correct centering and color debayer
+- **System info on welcome screen**: Shows active profile, CPU cores, RAM, and GPU
 - **Graceful pipeline stop**: Stop button on every step panel — confirms when all threads have truly halted
 
 ---

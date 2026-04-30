@@ -118,8 +118,9 @@ class WelcomePanel(QWidget):
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
-        outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(0, 0, 16, 10)
+
+        outer.addStretch()
 
         # Centre card
         card = QWidget()
@@ -221,6 +222,16 @@ class WelcomePanel(QWidget):
         card_layout.addLayout(btn_row)
 
         outer.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        outer.addStretch()
+
+        # Copyright — bottom-right
+        cp = QLabel("© 2026 Heejo You. All rights reserved.")
+        cp.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        cp.setStyleSheet(
+            "color: #444; font-size: 10px; background: transparent; border: none;"
+        )
+        outer.addWidget(cp)
 
     # ── Public API ────────────────────────────────────────────────────────────
 

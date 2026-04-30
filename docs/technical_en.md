@@ -98,32 +98,37 @@ Jupiter has non-uniform brightness due to belts and the Great Red Spot. A bright
 SER input file
     │
     ▼
-[Phase 1] Frame quality scoring (score_metric method)
+[Phase 1] Frame quality scoring (log_disk metric)
     │
     ▼
 Select top top_percent% frames → selected_indices
     │
     ▼
 [Phase 2] Reference frame construction
-    Top N frames → global phase-correlation alignment → unweighted average
+    Frames near 75th-percentile quality rank
+    → global NCC alignment → mean stack (stable, representative reference)
     │
     ▼
 [Phase 3] AP grid generation (uniform grid or Greedy PDS 3 layers)
     │
     ▼
-[Phase 4] Pass 1 — global alignment + per-AP score matrix
-    ├─ Global alignment per frame (limb center → fallback: phase correlation)
-    └─ Per-AP local Sobel score matrix [N_sel × N_ap]
+[Phase 4] Global alignment per frame
+    Limb-centre ellipse fitting → bicubic sub-pixel warp (INTER_CUBIC)
     │
     ▼
-[Phase 5] Pass 2 — per-AP independent patch stacking
-    ├─ For each AP: select top 50% frames by local NCC score
-    ├─ NCC sub-pixel local shift → getRectSubPix patch extraction (2× ap_size)
-    ├─ Quality-weighted patch accumulation
-    └─ Wide Gaussian blend (2× ap_size mask, σ = ap_size×2/3) → canvas
+[Phase 5] Fourier-domain quality-weighted stacking
+    For each frame n, compute F_n = FFT(aligned_frame_n)
+    Accumulate: S(f) += |F_n(f)|^power × F_n(f)
+    Weight:     W(f) += |F_n(f)|^power
+    Stacked spectrum: S(f) / W(f)
     │
     ▼
-If n_iterations = 2: use result stack as reference → repeat from [Phase 3]
+[Phase 6] Gaussian rolloff filter in frequency domain
+    Gaussian(σ_f = 0.20 in normalised freq) applied to output spectrum
+    → IFFT → stacked image
+    │
+    ▼
+If n_iterations = 2: use result as reference → repeat from [Phase 3]
     │
     ▼
 Output TIF
@@ -133,23 +138,26 @@ Output TIF
 
 | GUI Parameter | Default | Internal Behavior |
 |---|---|---|
-| **Top Frame Percent (%)** | 25 | `top_percent = 0.25`. Only the top N% of frames by quality score are used for stacking. `n_select = max(min_frames, round(n_frames × top_percent))` |
-| **AP Size (px)** | 64 | Base size s for the AP grid. With PDS: Layer 1=s, Layer 2=round(s×1.5/8)×8, Layer 3=s×3. Also controls the NCC window and blend region (blend_size = 2×s) |
-| **N Iterations** | 1 | `n_iterations`. When set to 2, the 1st-pass stack is used as the reference frame for the 2nd pass → higher reference SNR → improved AP shift estimation precision |
-| **σ-clip** | Off | Adds an extra pass after main stacking. All frames are warped to the final reference, then pixels deviating by > κσ from the pixel-wise mean are masked and re-stacked. Effective for cosmic rays and hot pixel residuals — approximately doubles processing time |
-| **Fourier Quality Power** | 1.0 | `w_n(f) = │FFT_n(f)│^power`. Per-frequency frame weight exponent (Mackay 2013, arXiv:1303.5108). Used within the AP stacking quality weight, not as the primary accumulation method |
-| **SER Parallel** | 1 | Number of SER files processed simultaneously. 0=auto (CPU cores÷4). Total thread budget = n_workers fixed. Each SER gets `n_workers ÷ N_SER` frame-level threads. RAM usage increases proportionally — use with caution |
+| **Top Frame Percent (%)** | 25 | `top_percent = 0.25`. Only the top N% of frames by quality score are used. `n_select = max(min_frames, round(n_frames × top_percent))` |
+| **AP Size (px)** | 64 | Base size s for the AP grid. With PDS: Layer 1=s, Layer 2=round(s×1.5/8)×8, Layer 3=s×3. AP step defaults to ap_size ÷ 2 (ap_step=0 = auto). |
+| **N Iterations** | 1 | `n_iterations`. When set to 2, the 1st-pass stack is used as the reference frame for the 2nd pass → higher reference SNR → improved alignment precision |
+| **Warp Method** | Gaussian KR | Warp field interpolation. **Gaussian KR** (default): C∞-continuous Nadaraya-Watson kernel regression. **TPS** (Thin Plate Spline): sharper local transitions similar to AS!4 triangulation, but slower and may extrapolate unstably at disc edges. |
+| **Fourier Quality Power** | 1.0 | `w_n(f) = │FFT_n(f)│^power`. The primary per-frequency accumulation weight. Higher values give sharper frames more influence at high spatial frequencies. 1.0=linear (default), 1.5–2.0=more aggressive. |
+| **SER Parallel** | 1 | Number of SER files processed simultaneously. 0=auto (CPU cores÷4). Total thread budget = n_workers fixed. Each SER gets `n_workers ÷ N_SER` frame-level threads. ~950 MB RAM per SER. |
 | **AS!4 AP Grid** | Off | Off=uniform grid (spacing=AP size÷2). On=Greedy PDS 3-layer: dense at disk center, sparse toward limb |
 
 ### Internal Fixed Values
 
 | Parameter | Value | Role |
 |---|---|---|
-| `score_metric` | `"laplacian"` | Frame quality scoring method. Choose from `"laplacian"` / `"log_disk"` / `"local_gradient"` (changeable in config) |
+| `score_metric` | `"log_disk"` | Frame quality scoring method. Default matches AS!4's *lapl3* metric. Also available: `"local_gradient"`, `"laplacian"` (changeable in config) |
+| `reference_midpoint_percentage` | 75 | Reference frames are centred at the 75th-percentile quality rank (not the top). "Solidly good" frames make a more representative reference than rare lucky outliers (AS!4 default). |
+| `reference_n_frames` | 50 | Number of frames used to construct the reference frame (centred at midpoint_percentage). |
 | `score_step` | 2 | Only every 2nd frame is scored; the rest are estimated by linear interpolation |
 | `ap_confidence_threshold` | 0.15 | APs with phase correlation confidence below this value are discarded |
 | `ap_sigma_factor` | 0.7 | Gaussian KR σ = ap_step × 0.7. Satisfies σ ≥ ap_step/√2 to guarantee C∞ continuous warp field |
-| `reference_n_frames` | top ~10% | Number of frames used to construct the reference frame |
+| `remap_interpolation` | `INTER_CUBIC` | cv2.remap interpolation mode for the global warp (bicubic; sharper than LINEAR, no post-stack blur needed) |
+| `fourier_rolloff_sigma` | 0.20 | Gaussian rolloff sigma in normalised frequency units (0=DC, 0.5=Nyquist). Suppresses residual high-frequency noise without blurring real planetary detail. |
 
 ### AP Size and Grid Placement
 
@@ -167,61 +175,53 @@ Acceptance criteria per AP: ① inside disk, ② mean patch brightness ≥ 0.196
 
 ### Frame Quality Scoring Modes (score_metric)
 
-Selected in config; default is `"laplacian"`.
+Selected in config; default is `"log_disk"`.
 
-**`"laplacian"`** (default): Laplacian variance on the inner 80% of the disk. Excludes the limb boundary (always large gradients regardless of seeing) to measure only atmospheric transparency.
-```
-mask = dist_from_center ≤ disk_radius × 0.80
-score = var(Laplacian(frame / 255))  on mask
-```
-
-**`"log_disk"`**: An approach developed through experimentation to approximate AS!4's lapl3 metric behavior. Spearman correlation 0.74 (sigma=3.0, threshold=0.25).
+**`"log_disk"`** (default): Matches AS!4's *lapl3* metric. Laplacian variance computed after Gaussian blur, on pixels brighter than a threshold. Spearman correlation 0.74 vs AS!4 frame rankings (sigma=3.0, threshold=0.25).
 ```
 mask = (frame / max) > 0.25
 score = var(Laplacian(GaussianBlur(frame, σ=3.0)))  on mask
 ```
 
-**`"local_gradient"`**: Maximum Sobel gradient in each AP patch. Maximum is used because its coefficient of variation (CV≈6%) is 4× higher than the mean (CV≈1.4%), giving much better inter-frame discriminability.
+**`"local_gradient"`**: Maximum Sobel gradient in each AP patch. Maximum is used because its coefficient of variation (CV≈6%) is 4× higher than the mean (CV≈1.4%), giving much better inter-frame discriminability in poor seeing.
 ```
 patch_score = max(gx² + gy²)  over ap_size × ap_size
 frame_score = mean(patch_score) over all APs
 ```
 
-### Per-AP Independent Patch Stacking
+**`"laplacian"`**: Laplacian variance on the inner 80% of the disk. Excludes the limb boundary (always large gradients regardless of seeing) to measure only atmospheric transparency.
+```
+mask = dist_from_center ≤ disk_radius × 0.80
+score = var(Laplacian(frame / 255))  on mask
+```
 
-The core stacking algorithm (`_per_ap_independent_stack`) follows the isoplanatic patch principle: atmospheric turbulence varies spatially, so the optimal frame subset differs at each disc location.
+### Fourier-Domain Quality-Weighted Stacking
 
-**Pass 1 — global alignment + per-AP score matrix**
+The primary stacking algorithm uses frequency-domain accumulation with per-frame quality weights at each spatial frequency (Mackay 2013, arXiv:1303.5108):
 
-For each globally-selected frame:
-1. Global sub-pixel alignment via limb-centre detection (`apply_shift`, bicubic warp).
-2. Per-AP local Sobel gradient score: `max(gx² + gy²)` over each AP patch.
+```
+For each globally-aligned frame n:
+    F_n(f) = FFT(aligned_frame_n)
+    weight  = |F_n(f)|^power          per-frequency weight
 
-This yields a score matrix [N_sel × N_ap].
+Stacked spectrum:
+    S(f) = Σ_n [weight_n(f) × F_n(f)] / Σ_n weight_n(f)
 
-**Pass 2 — per-AP patch stacking**
+Gaussian rolloff:
+    G(f) = exp(−f² / (2σ_f²))        σ_f = 0.20 (normalised freq)
+    S_filtered(f) = S(f) × G(f)
 
-For each AP at position (ax, ay):
-1. Select top 50% frames by local NCC score at that AP.
-2. Estimate per-frame local shift via NCC (Normalized Cross-Correlation):
-   ```
-   cc = IFFT(conj(FFT(ref-μ)) · FFT(frm-μ)) / (N · σ_ref · σ_frm)
-   peak ∈ [0,1] → natural confidence threshold
-   ```
-3. Extract `blend_size × blend_size` patch (blend_size = 2 × ap_size) via `cv2.getRectSubPix` at sub-pixel shifted centre.
-4. Accumulate with quality weight `w = score^power`.
-5. Blend onto canvas with wide Gaussian mask:
-   ```
-   blend_size = ap_size × 2      (e.g. 128px for ap_size=64)
-   sigma      = blend_size / 3   (e.g. 42.7px)
-   Gaussian weight at ap_step distance (32px): exp(-((32/42.7)²/2)) ≈ 0.76
-   ```
+Output:
+    stack = real(IFFT(S_filtered))
+```
 
-**Why wide Gaussian blending**: Frame-subset differences between adjacent APs create subtle brightness steps. With the narrow original mask (sigma = ap_size/3 ≈ 21px), Gaussian weight at the adjacent AP centre ≈ 0.31 — insufficient overlap. The 2× blend region raises this to ≈ 0.76, making brightness seams average out across the heavily overlapping regions. Patches extend well past the disc limb, eliminating any sharp boundary artifact at the planet edge. Wavelet sharpening (×200) no longer amplifies any grid pattern.
+**Why Fourier-domain weighting**: A simple mean of aligned frames weights every frame equally at every frequency. If some frames are sharper than average only at high spatial frequencies (fine planetary detail), their contribution is diluted. Fourier weighting ensures that the sharpest frame at each frequency contributes most — equivalent to optimal linear combination in the frequency domain. The result has more power at fine scales than a simple mean while maintaining natural colour and brightness.
+
+**Gaussian rolloff rationale**: All stacking methods accumulate some high-frequency noise (interpolation aliasing, camera read noise). The rolloff suppresses frequencies beyond roughly 0.2×Nyquist where signal-to-noise drops. It is tuned so that L1 wavelet sharpening (×200) can recover fine detail without amplifying noise residuals.
 
 ### Local Warp Estimation and Gaussian KR
 
-Per-AP Hann-windowed phase correlation estimates shifts for the global warp map (used in non-per-AP mode). Trusted AP shifts are then interpolated into a full-resolution warp field using Gaussian Kernel Regression (Nadaraya-Watson):
+Per-AP Hann-windowed phase correlation with QSF (quadratic surface fitting) sub-pixel refinement estimates shifts for the global warp map. Trusted AP shifts are interpolated into a full-resolution warp field using Gaussian Kernel Regression (Nadaraya-Watson):
 
 ```
 sigma = ap_step × ap_sigma_factor    (default: 32 × 0.7 = 22.4px)
@@ -497,7 +497,7 @@ RGB PNG output
 
 | GUI Parameter | Default | Internal Behavior |
 |---|---|---|
-| **Max Channel Shift (px)** | 15.0 | If the phase-correlation-computed inter-channel shift exceeds this value, alignment is not applied. Increase for sessions with severe atmospheric dispersion |
+| **Max Channel Shift (px)** | 15.0 | If the phase-correlation-computed inter-channel shift exceeds this value, alignment is not applied (prevents runaway misalignment). Raise to 20–30 on nights with strong atmospheric dispersion |
 | **Composite Specs (R/G/B/L channels)** | RGB, IR-RGB, CH4-G-IR | Defines the filter-to-channel mapping for each composite image. Specifying an L channel activates LRGB compositing mode |
 
 ### Step 08 GUI Parameters → Internal Behavior (Mono mode)
@@ -589,7 +589,7 @@ Grid layout → single summary PNG output
 | GUI Parameter | Default | Internal Behavior |
 |---|---|---|
 | **Black Point** | 0.04 | `pixel = clip((p − 0.04) / (1 − 0.04), 0, 1)`. Pushes background noise to pure black. 0.02–0.08 recommended |
-| **Gamma** | 0.9 | `pixel = pixel ^ (1/0.9) ≈ pixel ^ 1.11`. <1.0=brighter, >1.0=darker, 1.0=no change |
+| **Gamma** | 0.9 | `pixel = pixel ^ (1/0.9) ≈ pixel ^ 1.11`. <1.0=brighter (0.9 default slightly brightens the planet), >1.0=darker, 1.0=no change |
 | **Cell Size (px)** | 300 | Each composite image in the grid is resampled to this size. Total grid dimensions depend on the number of composites |
 
 ---

@@ -98,29 +98,33 @@ OpenCV `THRESH_TRIANGLE` 플래그로 구현합니다. 히스토그램의 최고
 SER 입력 파일
     │
     ▼
-[1단계] 프레임 품질 평가 (score_metric 방식으로)
+[1단계] 프레임 품질 평가 (log_disk 지표)
     │
     ▼
 상위 top_percent% 프레임 선별 → selected_indices
     │
     ▼
 [2단계] 기준 프레임(Reference) 구성
-    상위 N개 → 전역 위상 상관 정렬 → 비가중 평균
+    품질 분포 75퍼센타일 부근 프레임
+    → 전역 NCC 정렬 → 평균 스택 (안정적이고 대표적인 기준)
     │
     ▼
 [3단계] AP 격자 생성 (균일 격자 또는 Greedy PDS 3 레이어)
     │
     ▼
-[4단계] Pass 1 — 전역 정렬 + AP별 점수 행렬
-    ├─ 프레임별 전역 정렬 (림브 중심 → 폴백: 위상 상관)
-    └─ AP별 국소 Sobel 점수 행렬 [N_sel × N_ap]
+[4단계] 프레임별 전역 정렬
+    림브 중심 타원 피팅 → bicubic 서브픽셀 워프 (INTER_CUBIC)
     │
     ▼
-[5단계] Pass 2 — AP별 독립 패치 스태킹
-    ├─ AP마다: NCC 국소 점수 상위 50% 프레임 선별
-    ├─ NCC 서브픽셀 국소 시프트 → getRectSubPix 패치 추출 (2× ap_size)
-    ├─ 품질 가중 패치 누적
-    └─ 광역 Gaussian 블렌딩 (2× ap_size 마스크, σ = ap_size×2/3) → 캔버스
+[5단계] Fourier 도메인 품질 가중 스태킹
+    각 프레임 n에 대해 F_n = FFT(정렬된 프레임 n)
+    누적: S(f) += |F_n(f)|^power × F_n(f)
+    가중치: W(f) += |F_n(f)|^power
+    스택 스펙트럼: S(f) / W(f)
+    │
+    ▼
+[6단계] 주파수 도메인 Gaussian 롤오프 필터
+    Gaussian(σ_f = 0.20, 정규화 주파수 기준) → IFFT → 스택 이미지
     │
     ▼
 n_iterations = 2 이면 결과를 기준 프레임으로 → [3단계] 재반복
@@ -134,22 +138,25 @@ n_iterations = 2 이면 결과를 기준 프레임으로 → [3단계] 재반복
 | GUI 파라미터 | 기본값 | 내부 동작 |
 |---|---|---|
 | **상위 프레임 비율 (%)** | 25 | `top_percent = 0.25`. 품질 점수 기준 상위 N% 프레임만 스태킹에 사용. `n_select = max(min_frames, round(n_frames × top_percent))` |
-| **AP 크기 (px)** | 64 | AP 격자 기준 크기 s. PDS 사용 시 Layer 1=s, Layer 2=round(s×1.5/8)×8, Layer 3=s×3. NCC 윈도우 크기와 블렌딩 영역(blend_size = 2×s)도 이 값에 비례 |
-| **반복 횟수** | 1 | `n_iterations`. 2 설정 시 1회 스택 결과를 2회의 기준 프레임으로 사용 → 기준 프레임 SNR 향상 → AP 시프트 추정 정밀도 향상 |
-| **σ-clip** | Off | 메인 스태킹 후 추가 패스 실행. 최종 기준 이미지에 모든 프레임을 워핑 후 픽셀별 평균에서 κσ 이상 벗어난 픽셀을 마스킹하고 재스태킹. 핫픽셀·우주선 잔상 제거에 효과적이나 처리 시간 약 2배 |
-| **Fourier Quality Power** | 1.0 | `w_n(f) = │FFT_n(f)│^power`. 각 공간 주파수 f에서 프레임 n의 기여 가중치. 1.0=선형, <1.0=단순 평균에 가까워짐, >1.0=고품질 프레임에 지배적 가중치 (Mackay 2013, arXiv:1303.5108) |
-| **SER 병렬 처리** | 1 | 동시 처리 SER 파일 수. 0=자동(CPU 코어 수÷4). 총 스레드 예산 = n_workers 고정. 각 SER는 `n_workers ÷ N_SER` 개의 프레임 레벨 스레드를 할당. RAM 사용량이 배수로 증가하므로 주의 |
+| **AP 크기 (px)** | 64 | AP 격자 기준 크기 s. PDS 사용 시 Layer 1=s, Layer 2=round(s×1.5/8)×8, Layer 3=s×3. AP 스텝 기본값은 AP크기 ÷ 2 (ap_step=0 = 자동). |
+| **반복 횟수** | 1 | `n_iterations`. 2 설정 시 1회 스택 결과를 2회의 기준 프레임으로 사용 → 기준 프레임 SNR 향상 → 정렬 정밀도 향상 |
+| **Warp 방식** | Gaussian KR | 워프 필드 보간 방식. **Gaussian KR** (기본): C∞ 연속 Nadaraya-Watson 커널 회귀. **TPS** (Thin Plate Spline): 날카로운 국소 보정, AS!4 삼각분할과 유사하지만 속도 느림, 디스크 가장자리에서 외삽 불안정 가능. |
+| **Fourier Quality Power** | 1.0 | `w_n(f) = │FFT_n(f)│^power`. 주파수별 누적의 핵심 가중치. 값이 높을수록 선명한 프레임이 고주파수에서 더 큰 영향력을 가짐. 1.0=선형(기본), 1.5–2.0=적극적. |
+| **SER 병렬 처리** | 1 | 동시 처리 SER 파일 수. 0=자동(CPU 코어 수÷4). 총 스레드 예산 = n_workers 고정. 각 SER는 `n_workers ÷ N_SER`개 프레임 레벨 스레드 할당. SER당 약 950 MB RAM. |
 | **AS!4 AP 그리드** | Off | Off=균일 격자 (간격=AP크기÷2). On=Greedy PDS 3레이어: 디스크 중심부 조밀, 림브 방향으로 성기게 배치 |
 
 ### 내부 고정값
 
 | 파라미터 | 값 | 역할 |
 |---|---|---|
-| `score_metric` | `"log_disk"` | 프레임 품질 평가 방식. `"log_disk"` / `"local_gradient"` / `"laplacian"` 중 선택 (config에서 변경 가능) |
+| `score_metric` | `"log_disk"` | 프레임 품질 평가 방식. AS!4의 *lapl3* 지표와 동일한 원리. `"local_gradient"`, `"laplacian"`도 config에서 선택 가능 |
+| `reference_midpoint_percentage` | 75 | 기준 프레임을 품질 분포 75퍼센타일 부근으로 중심 설정 (최상위 아님). "안정적으로 좋은" 프레임으로 구성하면 위상 상관 추정 품질이 향상됨 (AS!4 기본값과 동일). |
+| `reference_n_frames` | 50 | 기준 프레임 구성에 사용할 프레임 수 (midpoint_percentage 기준으로 중심) |
 | `score_step` | 2 | 매 2번째 프레임만 실제 계산, 나머지는 선형 보간 |
 | `ap_confidence_threshold` | 0.15 | 위상 상관 신뢰도가 이 값 미만이면 해당 AP 폐기 |
-| `ap_sigma_factor` | 0.9 | 가우시안 KR의 σ = ap_step × 0.9. σ ≥ ap_step/√2 조건을 충족하여 C∞ 연속 워프 필드 보장 |
-| `reference_n_frames` | 50 프레임 | 기준 프레임 구성에 사용할 상위 프레임 수 (품질 분포 75퍼센타일 중심) |
+| `ap_sigma_factor` | 0.7 | 가우시안 KR의 σ = ap_step × 0.7. σ ≥ ap_step/√2 조건을 충족하여 C∞ 연속 워프 필드 보장 |
+| `remap_interpolation` | `INTER_CUBIC` | 전역 워프에 사용할 cv2.remap 보간 방식 (bicubic; LINEAR보다 선명, 후처리 블러 불필요) |
+| `fourier_rolloff_sigma` | 0.20 | Gaussian 롤오프 σ (정규화 주파수 단위: 0=DC, 0.5=나이퀴스트). 행성 디테일 블러 없이 잔류 고주파 노이즈 억제. |
 
 ### AP 크기와 격자 배치
 
@@ -169,56 +176,54 @@ n_iterations = 2 이면 결과를 기준 프레임으로 → [3단계] 재반복
 
 config에서 선택하며 기본값은 `"log_disk"`입니다.
 
-**`"log_disk"`** (기본): AS!4 lapl3 지표와 유사한 동작을 목표로 실험을 통해 도출한 방식. Spearman 상관계수 0.74 (sigma=3.0, threshold=0.25).
+**`"log_disk"`** (기본): AS!4 *lapl3* 지표에 대응합니다. Gaussian 블러 후 Laplacian 분산을 임계값 이상의 픽셀에서 계산합니다. AS!4 프레임 점수와 Spearman 상관계수 0.74 (sigma=3.0, threshold=0.25).
 ```
 mask = (frame / max) > 0.25
 score = var(Laplacian(GaussianBlur(frame, σ=3.0)))  on mask
 ```
 
-**`"local_gradient"`**: 각 AP 패치에서 최대 Sobel 그레디언트 계산. 최대값 사용 이유: 변동계수(CV≈6%)가 평균(CV≈1.4%)보다 4배 높아 프레임 간 변별력이 좋음.
+**`"local_gradient"`**: 각 AP 패치에서 최대 Sobel 그레디언트 계산. 최대값 사용 이유: 변동계수(CV≈6%)가 평균(CV≈1.4%)보다 4배 높아 나쁜 시잉에서도 프레임 간 변별력이 좋음.
 ```
 patch_score = max(gx² + gy²)  over ap_size × ap_size
 frame_score = mean(patch_score) over all APs
 ```
 
-### AP별 독립 패치 스태킹
+**`"laplacian"`**: 디스크 내부 80% 영역에서 Laplacian 분산. 림브 경계(시잉과 관계없이 항상 큰 그레디언트)를 제외하여 대기 투명도만 측정합니다.
+```
+mask = dist_from_center ≤ disk_radius × 0.80
+score = var(Laplacian(frame / 255))  on mask
+```
 
-핵심 스태킹 알고리즘(`_per_ap_independent_stack`)은 등방성 패치 원리를 따릅니다: 대기 난류는 공간적으로 변하므로, 원반의 각 위치에서 최적 프레임 서브셋이 다릅니다.
+### Fourier 도메인 품질 가중 스태킹
 
-**Pass 1 — 전역 정렬 + AP별 점수 행렬**
+기본 스태킹 알고리즘은 공간 주파수별 프레임 품질 가중 평균을 주파수 도메인에서 수행합니다 (Mackay 2013, arXiv:1303.5108):
 
-전역 선별 프레임 각각에 대해:
-1. 림브 중심 감지로 서브픽셀 전역 정렬 (`apply_shift`, bicubic warp).
-2. AP별 국소 Sobel 그레디언트 점수: 각 AP 패치에서 `max(gx² + gy²)`.
+```
+각 전역 정렬 프레임 n에 대해:
+    F_n(f) = FFT(정렬된 프레임 n)
+    가중치  = |F_n(f)|^power          주파수별 가중치
 
-결과: 점수 행렬 [N_sel × N_ap].
+스택 스펙트럼:
+    S(f) = Σ_n [weight_n(f) × F_n(f)] / Σ_n weight_n(f)
 
-**Pass 2 — AP별 패치 스태킹**
+Gaussian 롤오프:
+    G(f) = exp(−f² / (2σ_f²))        σ_f = 0.20 (정규화 주파수)
+    S_filtered(f) = S(f) × G(f)
 
-각 AP 위치 (ax, ay)에 대해:
-1. 국소 NCC 점수 상위 50% 프레임 선별.
-2. NCC(정규화 교차상관)로 프레임별 국소 시프트 추정:
-   ```
-   cc = IFFT(conj(FFT(ref-μ)) · FFT(frm-μ)) / (N · σ_ref · σ_frm)
-   peak ∈ [0,1] → 자연스러운 confidence 임계값
-   ```
-3. `cv2.getRectSubPix`로 서브픽셀 이동된 중심에서 `blend_size × blend_size` 패치 추출 (blend_size = 2 × ap_size).
-4. 품질 가중치 `w = score^power`로 누적.
-5. 광역 Gaussian 마스크로 캔버스에 블렌딩:
-   ```
-   blend_size = ap_size × 2      (예: ap_size=64 → 128px)
-   sigma      = blend_size / 3   (예: 42.7px)
-   ap_step 거리(32px)에서 Gaussian 가중치: exp(-((32/42.7)²/2)) ≈ 0.76
-   ```
+출력:
+    stack = real(IFFT(S_filtered))
+```
 
-**광역 Gaussian 블렌딩이 필요한 이유**: AP마다 다른 프레임 서브셋을 사용하면 인접 패치 간 미묘한 밝기 차이가 발생합니다. 기존 마스크(sigma = ap_size/3 ≈ 21px)에서는 인접 AP 중심의 Gaussian 가중치 ≈ 0.31로 오버랩이 부족합니다. 2× 블렌딩 영역은 이를 ≈ 0.76으로 높여 밝기 이음새가 대규모 오버랩 영역에서 자연스럽게 평균됩니다. 패치가 행성 림브 밖으로 충분히 연장되어 가장자리 아티팩트도 없습니다. 웨이블릿 선명화(×200) 후에도 격자 패턴이 나타나지 않습니다.
+**Fourier 도메인 가중치를 사용하는 이유**: 단순 평균은 모든 프레임을 모든 주파수에서 동등하게 처리합니다. 일부 프레임이 고주파(행성의 미세 디테일)에서만 더 선명하다면, 그 기여가 희석됩니다. Fourier 가중치는 각 주파수에서 가장 선명한 프레임이 가장 많이 기여하도록 하여 단순 평균보다 세밀한 스케일에서 더 많은 에너지를 가진 스택을 만듭니다.
+
+**Gaussian 롤오프 근거**: 모든 스태킹 방법은 고주파 노이즈(보간 앨리어싱, 카메라 읽기 노이즈)를 어느 정도 누적합니다. 롤오프는 신호 대 노이즈가 낮아지는 약 0.2×나이퀴스트 이상 주파수를 억제합니다. L1 웨이블릿 선명화(×200)가 행성 디테일을 회복할 수 있도록 조정됩니다.
 
 ### 국소 워프 추정 및 가우시안 KR
 
-AP별 Hann 윈도잉 위상 상관으로 시프트를 추정한 뒤(비-per-AP 모드), 신뢰할 수 있는 AP의 시프트를 가우시안 커널 회귀(Nadaraya-Watson)로 전해상도 워프 필드로 보간합니다:
+AP별 Hann 윈도잉 위상 상관 + QSF(2차 곡면 피팅) 서브픽셀 정밀화로 전역 워프 맵의 시프트를 추정합니다. 신뢰할 수 있는 AP의 시프트를 가우시안 커널 회귀(Nadaraya-Watson)로 전해상도 워프 필드로 보간합니다:
 
 ```
-sigma = ap_step × ap_sigma_factor    (기본: 32 × 0.9 = 28.8px)
+sigma = ap_step × ap_sigma_factor    (기본: 32 × 0.7 = 22.4px)
 
 smooth_wx = GaussianBlur(shift_x × confidence, ksize, sigma)
 smooth_w  = GaussianBlur(confidence, ksize, sigma)
@@ -583,7 +588,7 @@ Step 06 RGB 합성 PNG 목록
 | GUI 파라미터 | 기본값 | 내부 동작 |
 |---|---|---|
 | **블랙 포인트** | 0.04 | `pixel = clip((p − 0.04) / (1 − 0.04), 0, 1)`. 배경 노이즈를 순수 검정으로 밀어냄. 0.02~0.08 권장 |
-| **감마 (Gamma)** | 0.9 | `pixel = pixel ^ (1/0.9) ≈ pixel ^ 1.11`. <1.0=밝아짐, >1.0=어두워짐, 1.0=변화 없음 |
+| **감마 (Gamma)** | 0.9 | `pixel = pixel ^ (1/0.9) ≈ pixel ^ 1.11`. <1.0=밝아짐(기본 0.9는 행성을 약간 밝게), >1.0=어두워짐, 1.0=변화 없음 |
 | **셀 크기 (px)** | 300 | 그리드 내 각 합성 이미지를 이 크기로 리샘플링. 전체 그리드 크기는 합성 수에 따라 결정됨 |
 
 ---

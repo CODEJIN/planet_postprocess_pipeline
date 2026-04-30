@@ -82,7 +82,8 @@ The left side of the screen contains the step navigation list.
 
 | Element | Description |
 |---------|-------------|
-| **⚙ Settings** | Opens the global settings panel. Configure planet preset, camera mode, and filter list. |
+| **⌂ Home** | Returns to the welcome screen, which shows active profile, CPU, RAM, and GPU information. |
+| **⚙ Settings** | Opens the global settings panel. Configure planet preset, camera mode, filter list, and profiles. |
 | **Step List** | Click Step 01–Step 10 to navigate to the corresponding panel. |
 | **Optional** | Steps marked as optional can be skipped. (Steps 01, 02, 07, 08, 09, 10) |
 
@@ -137,9 +138,22 @@ Selecting a preset automatically fills in the fields below.
 | **Rotation Period (h)** | 9.9281 | The planet's rotation period in hours. This is the basis for de-rotation calculations in Step 04. |
 | **Camera Mode** | Mono | **Mono**: Uses a filter wheel, separate SER files per filter. **Color**: Single color camera. Selecting Color automatically sets the filter list to `COLOR` and disables editing. |
 | **Filter List** | IR,R,G,B,CH4 | Comma-separated list of filters used. This list populates the channel dropdowns in Step 06 compositing. Automatically set to `COLOR` when Color camera mode is selected. |
-| **Language** | ko | Interface language. Changes take effect after restarting the application. |
+| **Language** | en | Interface language. Changes take effect immediately (panels are rebuilt in-place). |
 
 > **Tip**: Settings are saved per session. When you reopen the tool, your previous configuration is automatically restored.
+
+### 3.3 Profile Management
+
+Profiles let you save and switch between named session configurations (e.g., different planets, setups, or filter sets).
+
+| Button | Description |
+|--------|-------------|
+| **Profile dropdown** | Select a saved profile to load it. The active profile is shown; *(Unsaved)* means the current session has not been saved to a profile. |
+| **Save** | Overwrites the active profile with the current settings. |
+| **Save As** | Saves the current settings as a new named profile and switches to it. |
+| **Delete** | Deletes the active profile and reverts to *(Unsaved)* state. |
+
+Whenever you save the session, the active profile (if any) is also updated automatically.
 
 ---
 
@@ -192,8 +206,9 @@ Selects the best frames from SER files and stacks them into TIF files using **pe
 | **Iterations** | 1 | 1–2 | Number of Lucky Stacking iterations. Each iteration refines the AP alignment reference using the previous stack result. **1** = default (fast); **2** = higher accuracy at ~2× processing time. |
 | **Warp Method** | Gaussian KR | — | Local warp interpolation method. **Gaussian KR** (default): smooth, boundary-safe, fast. **TPS**: Thin Plate Spline, similar to AS!4 triangulation — sharper local transitions but slower. |
 | **Fourier Quality Power** | 1.0 | 0.5–3.0 (step 0.5) | Exponent applied to each frame's Fourier amplitude when computing per-frequency weights: `w = │FFT│^power`. **1.0** = linear weighting (default, recommended). |
-| **SER Parallel Workers** | 1 | 0–32 | Number of SER files to process simultaneously. **0** = auto (cpu_count ÷ 4). **1** = sequential (default, safe for low-RAM systems). **Warning: high values multiply RAM usage**. |
+| **SER Parallel Workers** | 1 | 0–32 | Number of SER files to process simultaneously. **0** = auto (cpu_count ÷ 4). **1** = sequential (default, safe for low-RAM systems). **Warning: high values multiply RAM usage (~950 MB per SER)**. |
 | **AS!4 AP Grid** | Off | — | When enabled, AP positions are generated using the same greedy Poisson-disc sampling (PDS) algorithm as AutoStakkert!4: three-tier radial density with denser coverage at the disc centre. When disabled, a uniform grid is used. The right-panel preview updates immediately when toggled. |
+| **Debayer** | On | — | *(Color camera mode only)* Converts the Bayer-pattern stacked output to an RGB image. Required for Steps 05–08 to process the result correctly. Disable only when you need to inspect the raw Bayer stack. |
 
 ### 5.2 AP Grid Preview
 
@@ -206,15 +221,13 @@ The preview refreshes automatically when AP size changes or the AS!4 AP Grid che
 
 ### 5.3 Stacking Algorithm
 
-Lucky Stacking uses **per-AP independent patch stacking with wide Gaussian blending**:
+Lucky Stacking uses **Fourier-domain quality-weighted averaging** (Mackay 2013):
 
-1. **Global alignment**: Each selected frame is sub-pixel aligned to the reference via limb-centre detection.
-2. **Per-AP frame selection**: For each AP, the top 50% of globally-selected frames are ranked by local NCC (Normalized Cross-Correlation) sharpness at that AP position — different APs select different frame subsets (isoplanatic patch principle).
-3. **Sub-pixel patch extraction**: For each selected frame at each AP, a local shift is estimated via NCC and the patch is extracted with sub-pixel accuracy using `getRectSubPix`.
-4. **Local quality-weighted stack**: Selected patches are stacked with quality weighting.
-5. **Wide Gaussian blending**: Each AP contributes a 2× ap_size (128px for default ap_size=64) Gaussian feather mask. Adjacent AP blend regions overlap heavily, ensuring smooth transitions across the disc — no grid artifacts even after wavelet sharpening.
-
-This approach follows the isoplanatic patch principle: atmospheric turbulence varies spatially, so the optimal frame subset differs at each disc location. NCC alignment is more robust than phase correlation on low-contrast or uniform patches.
+1. **Frame quality scoring**: Each frame is scored with the `log_disk` metric (Laplacian-of-Gaussian variance on the planet disc), matching AS!4's *lapl3* quality measure.
+2. **Reference frame construction**: The top frames centred around the 75th-percentile quality rank are mean-stacked to form a stable reference (high-SNR, representative of "solidly good" seeing).
+3. **Global alignment**: Each selected frame is sub-pixel aligned to the reference via limb-centre ellipse fitting.
+4. **Fourier-domain stacking**: All aligned frames are transformed to the frequency domain. Each frequency component is accumulated with per-frame quality weighting `w(f) = |FFT(frame, f)|^power`, then inverse-transformed. This produces a stack that is sharper than a simple mean because high-quality (sharp) frames contribute more weight at high spatial frequencies.
+5. **Gaussian rolloff**: A Gaussian filter (σ_f = 0.20 in normalised frequency units) is applied to the output spectrum before IFFT, suppressing residual high-frequency noise.
 
 **Parallelism model** (e.g., 32 cores, 4 SER parallel):
 ```
@@ -405,8 +418,9 @@ Applies wavelet sharpening to TIF files output by Step 02 Lucky Stacking and con
 
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
-| **Input Folder** | Auto-set | — | Automatically set to the Step 02 Lucky Stacking TIF folder. |
-| **Output Base Folder** | (Required) | — | Parent folder where all step results are saved. Input/output folders for Steps 07 and beyond are automatically configured under this directory. |
+| **Input Folder** | Auto-set | — | TIF folder to process. Auto-filled from the Step 02 output when Step 02 is enabled; otherwise type or browse to any TIF folder. |
+| **Output Folder** | Auto-set | — | Set automatically to `step07_wavelet_preview` alongside the input folder. |
+| **Apply color correction** | On | — | *(Color camera mode only)* Applies automatic white balance and chromatic aberration (CA) correction to the output PNGs. Disable only when you want the raw-color output for inspection. |
 
 ### 10.2 Wavelet Levels (L1–L6)
 
@@ -558,6 +572,8 @@ The button label changes dynamically based on whether Steps 01 and 02 are enable
 4. **Error handling**: If an error occurs during execution, the pipeline halts at that step and an error message is printed to the log.
 
 > **Step 09 dependency**: Enabling Step 09 (Animated GIF) automatically enables Step 08 (Time-Series Composite).
+
+> **Auto-skip for de-rotation steps**: If the number of input TIF files is too small to form even one de-rotation window, Steps 03–06 and 08–10 are automatically skipped and only Step 07 (Wavelet Preview) runs. A warning banner in the confirmation dialog explains how many files were found and how many are required.
 
 ---
 
