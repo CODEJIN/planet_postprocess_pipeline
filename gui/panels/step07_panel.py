@@ -68,7 +68,7 @@ _CHECKBOX_STYLE = (
 )
 
 _WAVELET_DEFAULTS = [200.0, 200.0, 200.0, 0.0, 0.0, 0.0]
-_DENOISE_DEFAULTS = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+_DENOISE_DEFAULTS = [0.15, 0.15, 0.15, 0.0, 0.0, 0.0]
 _MAX_AMOUNT  = 500.0
 _MAX_DENOISE = 3.0
 
@@ -231,6 +231,15 @@ class _Step07MonoWidget(QWidget):
         self._wavelet_spins, self._denoise_spins = _build_combined_sliders(
             left_layout, self._on_params_changed
         )
+
+        chk_row = QHBoxLayout()
+        chk_row.setSpacing(16)
+        self._chk_stretch = QCheckBox(S("step07.stretch_enabled"))
+        self._chk_stretch.setStyleSheet(_CHECKBOX_STYLE)
+        self._chk_stretch.setChecked(False)
+        chk_row.addWidget(self._chk_stretch)
+        chk_row.addStretch()
+        left_layout.addLayout(chk_row)
         left_layout.addStretch()
 
         main_hlayout.addWidget(left_widget, 1)
@@ -240,6 +249,7 @@ class _Step07MonoWidget(QWidget):
 
     def retranslate(self) -> None:
         self._preview.retranslate()
+        self._chk_stretch.setText(S("step07.stretch_enabled"))
 
     def load_session(self, data: dict[str, Any]) -> None:
         inp = data.get("input_dir", "")
@@ -269,11 +279,13 @@ class _Step07MonoWidget(QWidget):
             amounts=amounts, levels=6, power=1.0,
             denoise_amounts=denoise, filter_type="gaussian",
         )
+        self._chk_stretch.setChecked(bool(data.get("preview_stretch_enabled", False)))
 
     def get_config_updates(self) -> dict[str, Any]:
         result: dict[str, Any] = {
-            "preview_amounts":         [s.value() for s in self._wavelet_spins],
-            "preview_denoise_amounts": [s.value() for s in self._denoise_spins],
+            "preview_amounts":          [s.value() for s in self._wavelet_spins],
+            "preview_denoise_amounts":  [s.value() for s in self._denoise_spins],
+            "preview_stretch_enabled":  self._chk_stretch.isChecked(),
         }
         inp_text = self._input_lbl.text().strip()
         if inp_text:
@@ -400,6 +412,19 @@ class _Step07ColorWidget(QWidget):
         self._wavelet_spins, self._denoise_spins = _build_combined_sliders(
             left_layout, self._on_params_changed
         )
+
+        chk_row = QHBoxLayout()
+        chk_row.setSpacing(16)
+        self._chk_stretch = QCheckBox(S("step07.stretch_enabled"))
+        self._chk_stretch.setStyleSheet(_CHECKBOX_STYLE)
+        self._chk_stretch.setChecked(False)
+        chk_row.addWidget(self._chk_stretch)
+        self._chk_saturation = QCheckBox(S("step07.saturation_boost"))
+        self._chk_saturation.setStyleSheet(_CHECKBOX_STYLE)
+        self._chk_saturation.setChecked(True)
+        chk_row.addWidget(self._chk_saturation)
+        chk_row.addStretch()
+        left_layout.addLayout(chk_row)
         left_layout.addStretch()
 
         main_hlayout.addWidget(left_widget, 1)
@@ -412,6 +437,8 @@ class _Step07ColorWidget(QWidget):
         self._preview.retranslate()
         self._chk_color_correct.setText(S("step07.color_correct"))
         self._chk_color_correct.setToolTip(S("step07.color_correct.tooltip"))
+        self._chk_stretch.setText(S("step07.stretch_enabled"))
+        self._chk_saturation.setText(S("step07.saturation_boost"))
 
     def load_session(self, data: dict[str, Any]) -> None:
         inp = data.get("input_dir", "")
@@ -447,12 +474,16 @@ class _Step07ColorWidget(QWidget):
             amounts=amounts, levels=6, power=1.0,
             denoise_amounts=denoise, filter_type="gaussian",
         )
+        self._chk_stretch.setChecked(bool(data.get("preview_stretch_enabled", False)))
+        self._chk_saturation.setChecked(bool(data.get("preview_saturation_boost", True)))
 
     def get_config_updates(self) -> dict[str, Any]:
         result: dict[str, Any] = {
-            "preview_amounts":         [s.value() for s in self._wavelet_spins],
-            "preview_denoise_amounts": [s.value() for s in self._denoise_spins],
-            "wavelet_color_correct":   self._chk_color_correct.isChecked(),
+            "preview_amounts":          [s.value() for s in self._wavelet_spins],
+            "preview_denoise_amounts":  [s.value() for s in self._denoise_spins],
+            "wavelet_color_correct":    self._chk_color_correct.isChecked(),
+            "preview_stretch_enabled":  self._chk_stretch.isChecked(),
+            "preview_saturation_boost": self._chk_saturation.isChecked(),
         }
         inp_text = self._input_lbl.text().strip()
         if inp_text:

@@ -649,6 +649,7 @@ def _run_color_series(
         print("  save_step08=False: results not written to disk")
 
     all_results: Dict[str, List[Tuple[Optional[Path], str]]] = {}
+    all_frames_corrected: Dict[str, tuple] = {}  # frame_label → (corrected, params, t_str, n_stack)
     total_written = 0
 
     for frame_idx, center_bin in enumerate(bins, start=1):
@@ -751,6 +752,40 @@ def _run_color_series(
         # ── Auto WB + CA correction ────────────────────────────────────────────
         corrected, params = _auto_color_correct(sharpened)
 
+        all_frames_corrected[frame_label] = (corrected, params, t_str, len(stacked_frames))
+        if frame_idx % 5 == 0 or frame_idx == len(bins):
+            print(f"  [Pass 1] [{frame_idx:>3}/{len(bins)}] {t_str}  "
+                  f"stack={len(stacked_frames)}  "
+                  f"R×{params['r_gain']:.3f} B×{params['b_gain']:.3f}")
+        if progress_callback is not None:
+            progress_callback(frame_idx, len(bins) * 2)  # *2: pass1 + pass2
+
+    # ── Pass 2: global luminance normalization (if enabled) ────────────────────
+    use_global_norm = config.composite.series_global_normalize_color
+    if use_global_norm and all_frames_corrected:
+        print("  [Color Pass 2] Computing global luminance mean...")
+        lum_means = [
+            float(frm.mean(axis=2).mean())
+            for frm, *_ in all_frames_corrected.values()
+        ]
+        global_mean_lum = float(np.mean(lum_means))
+        print(f"  Global luminance mean: {global_mean_lum:.5f}")
+
+    for frame_label, (corrected, params, t_str, n_stack) in all_frames_corrected.items():
+        if use_global_norm:
+            frame_lum = float(corrected.mean(axis=2).mean())
+            if frame_lum > 1e-6:
+                scale_lum = global_mean_lum / frame_lum
+                corrected = np.clip(corrected * scale_lum, 0.0, 1.0).astype(np.float32)
+
+        # ── Stretch + saturation ───────────────────────────────────────────────
+        if config.composite.series_stretch_enabled:
+            from pipeline.modules import composite as _comp_mod
+            corrected = _comp_mod.auto_stretch(corrected, 0.0, 99.0, target_hi=0.8)
+        if config.composite.series_saturation_boost:
+            from pipeline.modules import composite as _comp_mod
+            corrected = _comp_mod.auto_saturate(corrected, phigh=99.5, headroom=0.15)
+
         # ── Brightness scale ───────────────────────────────────────────────────
         corrected = np.clip(
             corrected * config.composite.series_scale, 0.0, 1.0
@@ -759,6 +794,7 @@ def _run_color_series(
         # ── Save ───────────────────────────────────────────────────────────────
         out_path: Optional[Path] = None
         if out_base is not None:
+            frame_idx_local = list(all_frames_corrected.keys()).index(frame_label) + 1
             frame_out_dir = out_base / frame_label
             frame_out_dir.mkdir(exist_ok=True)
             out_path = frame_out_dir / "COLOR_composite.png"
@@ -767,12 +803,11 @@ def _run_color_series(
 
         all_results[frame_label] = [(out_path, "COLOR")]
 
-        if frame_idx % 5 == 0 or frame_idx == len(bins):
-            print(f"  [{frame_idx:>3}/{len(bins)}] {t_str}  "
-                  f"stack={len(stacked_frames)}  "
-                  f"R×{params['r_gain']:.3f} B×{params['b_gain']:.3f}")
+        frame_idx_local = list(all_frames_corrected.keys()).index(frame_label) + 1
+        if frame_idx_local % 5 == 0 or frame_idx_local == len(all_frames_corrected):
+            print(f"  [Pass 2] [{frame_idx_local:>3}/{len(all_frames_corrected)}] {t_str}")
         if progress_callback is not None:
-            progress_callback(frame_idx, len(bins))
+            progress_callback(len(bins) + frame_idx_local, len(bins) * 2)
 
     print(f"\n  Step 8 (color) complete: {total_written} color PNGs written")
     return all_results
@@ -861,6 +896,7 @@ def run(
     align  = config.composite.align_channels
     plow   = config.composite.stretch_plow
     phigh  = config.composite.stretch_phigh
+    _series_stretch_mode = "joint" if config.composite.series_stretch_enabled else "none"
     period = config.derotation.rotation_period_hours
     scale  = config.derotation.warp_scale
 
@@ -1084,15 +1120,12 @@ def run(
                 # config value (True by default) because all channels are sharp
                 # and uniform, making phase correlation reliable.
                 _align = align if window_n == 1 else False
-                # When global_filter_normalize is on the channels are
-                # already rescaled by Pass 1.  A second stretch would
-                # double-clip and brighten the result relative to Step 6.
                 comp_img, clog = comp_module.compose(
                     spec,
                     {k: derotated[k] for k in required},
                     align=_align,
                     max_shift_px=config.composite.max_shift_px,
-                    color_stretch_mode=config.composite.color_stretch_mode,
+                    color_stretch_mode=_series_stretch_mode,
                     stretch_plow=plow,
                     stretch_phigh=phigh,
                 )
@@ -1102,6 +1135,13 @@ def run(
                     f"{spec.name}: {exc}"
                 )
                 continue
+
+            # Post-compose saturation boost
+            if config.composite.series_saturation_boost:
+                comp_img = comp_module.auto_saturate(
+                    comp_img, phigh=config.composite.saturation_phigh,
+                    headroom=config.composite.saturation_headroom,
+                )
 
             # Apply brightness scale
             series_scale = config.composite.series_scale
@@ -1236,8 +1276,8 @@ def run(
                         {k: derotated[k] for k in _required},
                         align=_align2,
                         max_shift_px=config.composite.max_shift_px,
-                        color_stretch_mode=config.composite.color_stretch_mode,
-                        stretch_plow=0.0,    # already normalised; no re-stretch
+                        color_stretch_mode="none",   # already normalised; stretch below
+                        stretch_plow=0.0,
                         stretch_phigh=100.0,
                     )
                 except Exception as _exc:
@@ -1246,6 +1286,16 @@ def run(
                         f"{spec.name}: {_exc}"
                     )
                     continue
+                # Post-compose stretch + saturation (applied after global norm)
+                if config.composite.series_stretch_enabled:
+                    _comp_img = comp_module.auto_stretch(
+                        _comp_img, plow, phigh, target_hi=config.composite.stretch_target_hi
+                    )
+                if config.composite.series_saturation_boost:
+                    _comp_img = comp_module.auto_saturate(
+                        _comp_img, phigh=config.composite.saturation_phigh,
+                        headroom=config.composite.saturation_headroom,
+                    )
                 _series_scale = config.composite.series_scale
                 if abs(_series_scale - 1.0) > 1e-6:
                     _comp_img = (_comp_img * _series_scale).clip(0.0, 1.0).astype(np.float32)

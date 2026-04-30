@@ -24,6 +24,7 @@ from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -81,6 +82,12 @@ _BTN_REFRESH = (
     " border-radius: 4px; padding: 5px 14px; font-size: 11px; }"
     "QPushButton:hover { background: #2558a0; color: #b0d8f8; }"
     "QPushButton:disabled { background: #2a2a2a; color: #555; border-color: #3a3a3a; }"
+)
+_CHK_STYLE = (
+    "QCheckBox { color: #d4d4d4; font-size: 11px; spacing: 5px; }"
+    "QCheckBox::indicator { width: 14px; height: 14px; border: 1px solid #555;"
+    " border-radius: 2px; background: #3c3c3c; }"
+    "QCheckBox::indicator:checked { background: #4da6ff; border-color: #4da6ff; }"
 )
 _SECTION_STYLE = "color: #4da6ff; font-size: 11px; font-weight: bold;"
 _INFO_STYLE    = "color: #888; font-size: 10px;"
@@ -286,6 +293,29 @@ class _Step06MonoWidget(QWidget):
         scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         left_layout.addWidget(scroll)
+
+        chk_row = QHBoxLayout()
+        chk_row.setContentsMargins(0, 6, 0, 0)
+        chk_row.setSpacing(16)
+        self._chk_global_normalize = QCheckBox(S("step06.global_normalize"))
+        self._chk_stretch  = QCheckBox(S("step06.stretch_enabled"))
+        self._chk_saturate = QCheckBox(S("step06.saturation_boost"))
+        self._chk_global_normalize.setStyleSheet(_CHK_STYLE)
+        self._chk_stretch.setStyleSheet(_CHK_STYLE)
+        self._chk_saturate.setStyleSheet(_CHK_STYLE)
+        self._chk_global_normalize.setChecked(True)
+        self._chk_global_normalize.setToolTip(S("step06.global_normalize.tooltip"))
+        self._chk_stretch.setChecked(False)
+        self._chk_saturate.setChecked(True)
+        self._chk_global_normalize.toggled.connect(self._on_params_changed)
+        self._chk_stretch.toggled.connect(self._on_params_changed)
+        self._chk_saturate.toggled.connect(self._on_params_changed)
+        chk_row.addWidget(self._chk_global_normalize)
+        chk_row.addWidget(self._chk_stretch)
+        chk_row.addWidget(self._chk_saturate)
+        chk_row.addStretch()
+        left_layout.addLayout(chk_row)
+
         left_layout.addStretch()
         main_hlayout.addWidget(left_widget, 1)
 
@@ -304,6 +334,10 @@ class _Step06MonoWidget(QWidget):
 
     def retranslate(self) -> None:
         self._preview.retranslate()
+        self._chk_global_normalize.setText(S("step06.global_normalize"))
+        self._chk_global_normalize.setToolTip(S("step06.global_normalize.tooltip"))
+        self._chk_stretch.setText(S("step06.stretch_enabled"))
+        self._chk_saturate.setText(S("step06.saturation_boost"))
 
     def load_session(self, data: dict[str, Any]) -> None:
         out = data.get("output_dir", "")
@@ -314,6 +348,9 @@ class _Step06MonoWidget(QWidget):
             if hasattr(self, "_preview"):
                 self._preview.set_input_dir(p / "step05_wavelet_master")
         self._max_shift.setValue(float(data.get("max_shift_px", 15.0)))
+        self._chk_global_normalize.setChecked(bool(data.get("global_normalize", True)))
+        self._chk_stretch.setChecked(bool(data.get("stretch_enabled", False)))
+        self._chk_saturate.setChecked(bool(data.get("saturation_boost", True)))
 
         raw = data.get("filters", "")
         if raw:
@@ -338,8 +375,11 @@ class _Step06MonoWidget(QWidget):
     def get_config_updates(self) -> dict[str, Any]:
         specs = [r.to_dict() for r in self._spec_rows if r.to_dict()["name"]]
         result: dict[str, Any] = {
-            "max_shift_px":    self._max_shift.value(),
-            "composite_specs": specs,
+            "max_shift_px":     self._max_shift.value(),
+            "composite_specs":  specs,
+            "global_normalize": self._chk_global_normalize.isChecked(),
+            "stretch_enabled":  self._chk_stretch.isChecked(),
+            "saturation_boost": self._chk_saturate.isChecked(),
         }
         out_text = self._output_lbl.text().strip()
         if out_text:
@@ -355,13 +395,13 @@ class _Step06MonoWidget(QWidget):
         if not batch_mode:
             out_base = config.get("output_dir", "").strip()
             input_path = str(Path(out_base) / "step05_wavelet_master") if out_base else ""
-            if not count_files(input_path, "*.png", "*.PNG"):
+            if not count_files(input_path, "**/*.png", "**/*.PNG"):
                 issues.append(ValidationIssue("error", S("validate.no_wavelet_png")))
             elif specs and input_path:
                 for spec in specs:
                     for role in ("R", "G", "B", "L"):
                         fname = spec.get(role, "")
-                        if fname and not count_files(input_path, f"*{fname}*.png", f"*{fname}*.PNG"):
+                        if fname and not count_files(input_path, f"**/*{fname}*.png", f"**/*{fname}*.PNG"):
                             issues.append(ValidationIssue(
                                 "error",
                                 S("validate.no_filter_png", f=fname, d=input_path),
@@ -424,6 +464,8 @@ class _Step06MonoWidget(QWidget):
     def _on_params_changed(self) -> None:
         if not hasattr(self, "_preview"):
             return
+        self._preview.set_stretch_enabled(self._chk_stretch.isChecked())
+        self._preview.set_saturate_enabled(self._chk_saturate.isChecked())
         self._sync_preview_spec()
         self._preview.schedule_update()
 
@@ -459,11 +501,12 @@ def _find_color_png(step06_dir: Path) -> Optional[Path]:
 
 
 def _img_to_uint8_rgb(img: np.ndarray) -> np.ndarray:
-    lo = float(np.percentile(img, 0.5))
-    hi = float(np.percentile(img, 99.5))
+    lo = float(np.percentile(img, 0.0))
+    hi = float(np.percentile(img, 99.0))
     if hi <= lo:
         hi = lo + 1e-6
-    return (np.clip((img - lo) / (hi - lo), 0.0, 1.0) * 255).astype(np.uint8)
+    scale = (255 * 0.8) / (hi - lo)
+    return np.clip((img - lo) * scale, 0, 255).astype(np.uint8)
 
 
 def _numpy_to_pixmap(arr_u8: np.ndarray, size: int = _PANEL_SIZE) -> QPixmap:
@@ -499,14 +542,16 @@ class _CCPreviewWorker(QObject):
     done  = Signal(bytes, bytes, int, int, float, float, float, float, float, float)
     error = Signal(str)
 
-    def __init__(self, png_path: Path) -> None:
+    def __init__(self, png_path: Path, stretch: bool = True, saturate: bool = True) -> None:
         super().__init__()
-        self._path = png_path
+        self._path     = png_path
+        self._stretch  = stretch
+        self._saturate = saturate
 
     @Slot()
     def run(self) -> None:
         try:
-            from pipeline.modules import image_io
+            from pipeline.modules import image_io, composite as comp_mod
             from pipeline.steps.step06_rgb_composite import _auto_color_correct
 
             orig = image_io.read_png(self._path)
@@ -515,8 +560,16 @@ class _CCPreviewWorker(QObject):
 
             corrected, params = _auto_color_correct(orig)
 
-            orig_u8 = _img_to_uint8_rgb(orig)
-            corr_u8 = _img_to_uint8_rgb(corrected)
+            if self._stretch:
+                lo = float(np.percentile(corrected, 0.0))
+                hi = float(np.percentile(corrected, 99.0))
+                if hi > lo:
+                    corrected = np.clip((corrected - lo) * (0.8 / (hi - lo)), 0.0, 1.0).astype(np.float32)
+            if self._saturate:
+                corrected = comp_mod.auto_saturate(corrected)
+
+            orig_u8 = (orig * 255).clip(0, 255).astype(np.uint8)
+            corr_u8 = (corrected * 255).clip(0, 255).astype(np.uint8)
             h, w = orig_u8.shape[:2]
 
             self.done.emit(
@@ -743,6 +796,27 @@ class _Step06ColorWidget(QWidget):
         btn_row.addStretch()
         left.addLayout(btn_row)
 
+        chk_row = QHBoxLayout()
+        chk_row.setContentsMargins(0, 4, 0, 0)
+        chk_row.setSpacing(16)
+        self._chk_global_normalize = QCheckBox(S("step06.global_normalize"))
+        self._chk_stretch  = QCheckBox(S("step06.stretch_enabled"))
+        self._chk_saturate = QCheckBox(S("step06.saturation_boost"))
+        self._chk_global_normalize.setStyleSheet(_CHK_STYLE)
+        self._chk_stretch.setStyleSheet(_CHK_STYLE)
+        self._chk_saturate.setStyleSheet(_CHK_STYLE)
+        self._chk_global_normalize.setChecked(True)
+        self._chk_global_normalize.setToolTip(S("step06.global_normalize.tooltip"))
+        self._chk_stretch.setChecked(False)
+        self._chk_saturate.setChecked(True)
+        self._chk_stretch.toggled.connect(lambda: self.schedule_update(0))
+        self._chk_saturate.toggled.connect(lambda: self.schedule_update(0))
+        chk_row.addWidget(self._chk_global_normalize)
+        chk_row.addWidget(self._chk_stretch)
+        chk_row.addWidget(self._chk_saturate)
+        chk_row.addStretch()
+        left.addLayout(chk_row)
+
         left.addStretch()
         root.addLayout(left, 1)
 
@@ -793,6 +867,10 @@ class _Step06ColorWidget(QWidget):
         self._status_lbl.setText(S("step06.cc.status_init"))
         self._cap_before_lbl.setText(S("step06.cc.cap_before"))
         self._cap_after_lbl.setText(S("step06.cc.cap_after"))
+        self._chk_global_normalize.setText(S("step06.global_normalize"))
+        self._chk_global_normalize.setToolTip(S("step06.global_normalize.tooltip"))
+        self._chk_stretch.setText(S("step06.stretch_enabled"))
+        self._chk_saturate.setText(S("step06.saturation_boost"))
 
     def load_session(self, data: dict[str, Any]) -> None:
         out = data.get("output_dir", "")
@@ -801,10 +879,16 @@ class _Step06ColorWidget(QWidget):
             self._input_lbl.setText(str(p / "step05_wavelet_master"))
             self._output_lbl.setText(str(p / "step06_rgb_composite"))
             self._step06_dir = p / "step05_wavelet_master"
+        self._chk_global_normalize.setChecked(bool(data.get("global_normalize", True)))
+        self._chk_stretch.setChecked(bool(data.get("stretch_enabled", False)))
+        self._chk_saturate.setChecked(bool(data.get("saturation_boost", True)))
 
     def get_config_updates(self) -> dict[str, Any]:
-        # Auto-correction has no user-configurable params
-        return {}
+        return {
+            "global_normalize": self._chk_global_normalize.isChecked(),
+            "stretch_enabled":  self._chk_stretch.isChecked(),
+            "saturation_boost": self._chk_saturate.isChecked(),
+        }
 
     def output_paths(self) -> list[Path]:
         if self._output_dir is None:
@@ -858,7 +942,7 @@ class _Step06ColorWidget(QWidget):
         self._btn_refresh.setEnabled(False)
         self._status_lbl.setText(S("preview.auto_calc", f=png.name))
 
-        worker = _CCPreviewWorker(png)
+        worker = _CCPreviewWorker(png, stretch=self._chk_stretch.isChecked(), saturate=self._chk_saturate.isChecked())
         thread = QThread(self)
         worker.moveToThread(thread)
 

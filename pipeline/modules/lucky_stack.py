@@ -3305,7 +3305,12 @@ def lucky_stack_ser(
             # Disk geometry (disk_cx, disk_cy, disk_radius) is unchanged because
             # the stack is aligned to the original reference coordinate system.
             if iteration < n_iter - 1:
-                reference = stacked  # float32 [0,1]; already clipped
+                # reference must be 2D (H,W) for alignment. When stacked is RGB
+                # (per_ap_selection + color SER), convert to grayscale.
+                if stacked.ndim == 3:
+                    reference = cv2.cvtColor(stacked, cv2.COLOR_RGB2GRAY)
+                else:
+                    reference = stacked
 
     # Post-iteration sigma-clipping pass (optional).
     # Uses final stacked result as reference for re-warping all frames.

@@ -131,12 +131,20 @@ def run(config: PipelineConfig, progress_callback=None, cancel_event=None) -> St
             out_path: Optional[Path] = None
             if filter_out_dir is not None:
                 out_path = filter_out_dir / (meta["stem"] + "_wavelet.png")
-                # Raw 16-bit output — preserves original histogram shape.
-                # No auto-stretch: mean brightness is unchanged by sharpening.
+                output = sharpened
                 if color_mode:
-                    image_io.write_png_color_16bit(sharpened, out_path)
+                    from pipeline.modules import composite as comp_mod
+                    if config.wavelet.preview_stretch_enabled:
+                        output = comp_mod.auto_stretch(output, 0.0, 99.0, target_hi=0.8)
+                    if config.wavelet.preview_saturation_boost:
+                        output = comp_mod.auto_saturate(output,
+                                                        phigh=99.5, headroom=0.15)
+                    image_io.write_png_color_16bit(output, out_path)
                 else:
-                    image_io.write_png_16bit(sharpened, out_path)
+                    if config.wavelet.preview_stretch_enabled:
+                        from pipeline.modules import composite as comp_mod
+                        output = comp_mod.auto_stretch(output, 0.0, 99.0, target_hi=0.8)
+                    image_io.write_png_16bit(output, out_path)
 
             results[filter_name].append((out_path, meta))
 

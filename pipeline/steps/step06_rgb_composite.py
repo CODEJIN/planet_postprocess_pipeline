@@ -153,11 +153,12 @@ def _color_passthrough(
     config: PipelineConfig,
     results_05: Dict[str, List[Tuple[Optional[Path], str]]],
 ) -> Dict[str, List[Tuple[Optional[Path], str]]]:
-    """Color-camera Step 6: per-window automatic WB + CA correction.
+    """Color-camera Step 6: per-window WB + CA correction with optional global norm.
 
-    Runs _auto_color_correct() independently for each time window so that
-    varying atmospheric conditions across the observation session are handled
-    without any fixed global correction values.
+    Two-pass when global_normalize is True:
+      Pass 1 — correct each window, cache the corrected image (no stretch/saturation).
+      Pass 2 — compute global mean luminance, apply scalar scale per window, then
+               apply stretch and saturation, then save.
     """
     out_base: Optional[Path] = None
     if config.save_step06:
@@ -167,7 +168,10 @@ def _color_passthrough(
     else:
         print("  save_step06=False: color results kept at Step 5 paths")
 
-    all_results: Dict[str, List[Tuple[Optional[Path], str]]] = {}
+    # ── Pass 1: WB + CA correction, cache results ──────────────────────────────
+    cache: Dict[str, Optional[np.ndarray]] = {}
+    params_cache: Dict[str, dict] = {}
+    src_paths: Dict[str, Optional[Path]] = {}
 
     for win_label, entries in sorted(results_05.items()):
         src_path: Optional[Path] = None
@@ -175,31 +179,72 @@ def _color_passthrough(
             if p is not None and p.exists():
                 src_path = p
                 break
+        src_paths[win_label] = src_path
 
         if src_path is None:
-            print(f"  [{win_label}] No Step 6 output found — skipped")
+            cache[win_label] = None
+            params_cache[win_label] = {}
+            continue
+
+        img = image_io.read_png(src_path)
+        if img.ndim == 2:
+            img = np.stack([img] * 3, axis=2)
+        corrected, params = _auto_color_correct(img)
+        cache[win_label] = corrected
+        params_cache[win_label] = params
+
+    # ── Global luminance normalization ─────────────────────────────────────────
+    global_mean_lum: Optional[float] = None
+    if config.composite.global_normalize:
+        valid = [img.mean() for img in cache.values() if img is not None]
+        if len(valid) > 1:
+            global_mean_lum = float(np.mean(valid))
+
+    # ── Pass 2: normalize + stretch + saturation + save ────────────────────────
+    all_results: Dict[str, List[Tuple[Optional[Path], str]]] = {}
+
+    for win_label in sorted(results_05.keys()):
+        corrected = cache.get(win_label)
+        params    = params_cache.get(win_label, {})
+        src_path  = src_paths.get(win_label)
+
+        if corrected is None:
+            print(f"  [{win_label}] No Step 5 output found — skipped")
             all_results[win_label] = [(None, "COLOR")]
             continue
 
         out_path: Optional[Path] = src_path
+        output = corrected.copy()
 
         if out_base is not None:
             win_out_dir = out_base / win_label
             win_out_dir.mkdir(exist_ok=True)
             out_path = win_out_dir / "COLOR_composite.png"
 
-            img = image_io.read_png(src_path)
-            if img.ndim == 2:
-                img = np.stack([img] * 3, axis=2)
+            if global_mean_lum is not None:
+                frame_lum = float(output.mean())
+                if frame_lum > 1e-6:
+                    output = np.clip(output * (global_mean_lum / frame_lum), 0.0, 1.0).astype(np.float32)
 
-            corrected, params = _auto_color_correct(img)
-            image_io.write_png_color_16bit(corrected, out_path)
+            if config.composite.stretch_enabled:
+                lo = float(np.percentile(output, 0.0))
+                hi = float(np.percentile(output, 99.0))
+                if hi > lo:
+                    output = np.clip((output - lo) * (0.8 / (hi - lo)), 0.0, 1.0).astype(np.float32)
 
+            if config.composite.saturation_boost:
+                output = composite.auto_saturate(
+                    output,
+                    phigh=config.composite.saturation_phigh,
+                    headroom=config.composite.saturation_headroom,
+                )
+
+            image_io.write_png_color_16bit(output, out_path)
             print(
                 f"  [{win_label}] COLOR → {out_path.name}  "
-                f"R×{params['r_gain']:.3f} B×{params['b_gain']:.3f}  "
-                f"R_shift=({params['r_shift_x']:+.2f},{params['r_shift_y']:+.2f})  "
-                f"B_shift=({params['b_shift_x']:+.2f},{params['b_shift_y']:+.2f})"
+                f"R×{params.get('r_gain', 1.0):.3f} B×{params.get('b_gain', 1.0):.3f}  "
+                f"R_shift=({params.get('r_shift_x', 0.0):+.2f},{params.get('r_shift_y', 0.0):+.2f})  "
+                f"B_shift=({params.get('b_shift_x', 0.0):+.2f},{params.get('b_shift_y', 0.0):+.2f})"
             )
         else:
             print(f"  [{win_label}] COLOR → {out_path.name if out_path else '(not saved)'}")
@@ -242,35 +287,43 @@ def run(
     else:
         print("  save_step06=False: results not written to disk")
 
-    specs = config.composite.specs
-    align = config.composite.align_channels
-    plow  = config.composite.stretch_plow
-    phigh = config.composite.stretch_phigh
+    specs        = config.composite.specs
+    align        = config.composite.align_channels
+    plow         = config.composite.stretch_plow
+    phigh        = config.composite.stretch_phigh
+    target_hi    = config.composite.stretch_target_hi
+    saturate     = config.composite.saturation_boost
+    sat_phigh    = config.composite.saturation_phigh
+    sat_headroom = config.composite.saturation_headroom
 
     print(f"  Composites: {[s.name for s in specs]}")
     print(f"  Channel alignment: {'enabled' if align else 'disabled'}  "
-          f"  Stretch: [{plow}%, {phigh}%]")
+          f"  Stretch: [{plow}%, {phigh}%] → {target_hi:.2f}  "
+          f"  Saturation boost: {'p{:.0f}→{:.0f}%max'.format(sat_phigh, sat_headroom*100) if saturate else 'off'}  "
+          f"  Global normalize: {'on' if config.composite.global_normalize else 'off'}")
 
-    all_results: Dict[str, List[Tuple[Optional[Path], str]]] = {}
-    total_written = 0
+    # ── Pass 1: compose all windows, cache results (saturation deferred) ───────
+    # {win_label: {spec_name: comp_img or None}}
+    cache: Dict[str, Dict[str, Optional[np.ndarray]]] = {}
+    log_cache: Dict[str, dict] = {}
+    cancelled = False
 
     for win_label, filter_entries in sorted(results_05.items()):
         if cancel_event is not None and cancel_event.is_set():
             print("  [CANCELLED] Stopping Step 6.", flush=True)
+            cancelled = True
             break
+
         filter_paths: Dict[str, Optional[Path]] = {
             filt: path for path, filt in filter_entries
         }
-
         print(f"\n  {win_label}")
 
-        win_out_dir: Optional[Path] = None
         if out_base is not None:
-            win_out_dir = out_base / win_label
-            win_out_dir.mkdir(exist_ok=True)
+            (out_base / win_label).mkdir(exist_ok=True)
 
-        win_results: List[Tuple[Optional[Path], str]] = []
-        win_log: dict = {"composites": {}}
+        cache[win_label] = {}
+        log_cache[win_label] = {"composites": {}}
 
         for spec in specs:
             required = {spec.R, spec.G, spec.B}
@@ -283,7 +336,7 @@ def run(
             }
             if unavailable:
                 print(f"    [{spec.name}] Missing filters {unavailable} — skipped")
-                win_results.append((None, spec.name))
+                cache[win_label][spec.name] = None
                 continue
 
             filter_images = {
@@ -300,14 +353,59 @@ def run(
                     spec, filter_images,
                     align=align,
                     max_shift_px=config.composite.max_shift_px,
-                    color_stretch_mode=config.composite.color_stretch_mode,
+                    color_stretch_mode=config.composite.color_stretch_mode if config.composite.stretch_enabled else "none",
                     stretch_plow=plow,
                     stretch_phigh=phigh,
+                    stretch_target_hi=target_hi,
+                    saturate=False,   # saturation applied in pass 2 after global norm
+                    saturation_phigh=sat_phigh,
+                    saturation_headroom=sat_headroom,
                 )
             except Exception as exc:
                 print(f"    [{spec.name}] ERROR: {exc}")
+                cache[win_label][spec.name] = None
+                continue
+
+            cache[win_label][spec.name] = comp_img
+            log_cache[win_label]["composites"][spec.name] = log
+
+    # ── Global luminance normalization: per composite spec across all windows ───
+    # Normalises brightness of same-type composites so step10 grid rows are
+    # visually consistent.  Only meaningful when multiple windows are present.
+    global_means: Dict[str, Optional[float]] = {}
+    if config.composite.global_normalize and len(cache) > 1:
+        for spec in specs:
+            vals = [
+                float(win_comps[spec.name].mean())
+                for win_comps in cache.values()
+                if win_comps.get(spec.name) is not None
+            ]
+            global_means[spec.name] = float(np.mean(vals)) if len(vals) > 1 else None
+
+    # ── Pass 2: normalize + saturation + save ──────────────────────────────────
+    all_results: Dict[str, List[Tuple[Optional[Path], str]]] = {}
+    total_written = 0
+
+    for win_label, win_comps in sorted(cache.items()):
+        win_out_dir: Optional[Path] = out_base / win_label if out_base is not None else None
+        win_results: List[Tuple[Optional[Path], str]] = []
+
+        for spec in specs:
+            comp_img = win_comps.get(spec.name)
+            if comp_img is None:
                 win_results.append((None, spec.name))
                 continue
+
+            # Global luminance scale
+            gm = global_means.get(spec.name)
+            if gm is not None:
+                frame_lum = float(comp_img.mean())
+                if frame_lum > 1e-6:
+                    comp_img = np.clip(comp_img * (gm / frame_lum), 0.0, 1.0).astype(np.float32)
+
+            # Saturation boost (deferred from compose())
+            if saturate:
+                comp_img = composite.auto_saturate(comp_img, phigh=sat_phigh, headroom=sat_headroom)
 
             out_path: Optional[Path] = None
             if win_out_dir is not None:
@@ -315,7 +413,6 @@ def run(
                 image_io.write_png_color_16bit(comp_img, out_path)
                 total_written += 1
 
-            win_log["composites"][spec.name] = log
             win_results.append((out_path, spec.name))
             status = f"→ {out_path.name}" if out_path else "(not saved)"
             print(f"    [{spec.name}] {status}")
@@ -323,7 +420,7 @@ def run(
         if win_out_dir is not None:
             log_path = win_out_dir / "composite_log.json"
             with open(log_path, "w") as f:
-                json.dump(win_log, f, indent=2)
+                json.dump(log_cache.get(win_label, {}), f, indent=2)
 
         all_results[win_label] = win_results
 

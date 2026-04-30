@@ -53,6 +53,10 @@ class WaveletConfig:
     # more aggressive), 'bilateral' (edge-preserving, reduces limb overshoot)
     master_filter_type: str = 'gaussian'
 
+    # Step 7 – preview output stretch / saturation (independent from Step 5 master)
+    preview_stretch_enabled: bool = False
+    preview_saturation_boost: bool = True   # color camera only (ignored for mono)
+
     # Step 8 – time-series animation frames (independent from Step 5)
     # Defaults match master_amounts so existing behaviour is unchanged.
     # Tune separately if the animation needs gentler/stronger sharpening.
@@ -210,9 +214,30 @@ class CompositeConfig:
     #                   preserves natural colour ratios (recommended, matches GIMP)
     #   "independent" – each channel stretched to its own full range (over-bright)
     #   "none"        – no pre-stretch; use native pixel values (matches raw GIMP compose)
-    color_stretch_mode: str = "none"
-    stretch_plow: float = 0.1        # percentile low  (used in joint / independent mode)
-    stretch_phigh: float = 99.9      # percentile high (used in joint / independent mode)
+    stretch_enabled: bool = False      # Step 6: apply p0-p99 stretch to composite output
+    color_stretch_mode: str = "joint"
+    stretch_plow: float = 0.0        # percentile low  (used in joint / independent mode)
+    stretch_phigh: float = 99.0      # percentile high (used in joint / independent mode)
+    stretch_target_hi: float = 0.8   # p(stretch_phigh) maps to this float value; above can reach 1.0
+    saturation_boost: bool = True      # Step 6: auto-boost chroma after compositing
+    saturation_phigh: float = 99.5    # percentile of disk chroma used as reference
+    saturation_headroom: float = 0.15 # p(phigh) targets headroom × 127 (Lab max chroma)
+
+    # Step 6 – cross-window luminance normalization (mean-matching, per composite spec).
+    # When True and multiple windows exist, each composite is scaled so its mean
+    # brightness matches the global average across all windows.  Applied per composite
+    # type (e.g. RGB windows are normalized against other RGB windows) to preserve
+    # relative brightness differences between composite variants.
+    # No-op when only one window is present.
+    global_normalize: bool = True
+
+    # Step 8 – series-specific stretch / saturation (independent from Step 6)
+    series_stretch_enabled: bool = False
+    series_saturation_boost: bool = True
+    # Step 8 color camera: cross-frame luminance normalization (mean-matching)
+    # Scales each frame so its mean luminance matches the global mean across all
+    # frames.  Preserves color ratios (only scalar scale applied to all channels).
+    series_global_normalize_color: bool = True
 
     # Output brightness scale applied to every Step 8 series composite.
     # Simple multiplication: comp *= series_scale.  1.0 = no change.

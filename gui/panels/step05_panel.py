@@ -44,7 +44,7 @@ _SLIDER_STYLE_DENOISE = (
 )
 
 _WAVELET_DEFAULTS = [200.0, 200.0, 200.0, 0.0, 0.0, 0.0]
-_DENOISE_DEFAULTS = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+_DENOISE_DEFAULTS = [0.15, 0.15, 0.15, 0.0, 0.0, 0.0]
 _MAX_AMOUNT  = 500.0
 _MAX_DENOISE = 3.0
 
@@ -312,7 +312,7 @@ class Step05Panel(BasePanel):
         if not batch_mode:
             out_base = config.get("output_dir", "").strip()
             input_path = str(Path(out_base) / "step04_derotated") if out_base else ""
-            if not count_files(input_path, "*.tif", "*.TIF"):
+            if not count_files(input_path, "**/*.tif", "**/*.TIF"):
                 issues.append(ValidationIssue("error", S("validate.no_derotation_tif")))
         return issues
 

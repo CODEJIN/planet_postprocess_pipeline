@@ -61,7 +61,7 @@ _DBLSPIN_STYLE = (
 )
 
 _SERIES_WAVELET_DEFAULTS = [200.0, 200.0, 200.0, 0.0, 0.0, 0.0]
-_SERIES_DENOISE_DEFAULTS = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+_SERIES_DENOISE_DEFAULTS = [0.15, 0.15, 0.15, 0.0, 0.0, 0.0]
 
 # Default composite specs for step 8 (mirrors step 7 defaults)
 _DEFAULT_SERIES_SPECS = [
@@ -128,6 +128,28 @@ class _Step08MonoWidget(QWidget):
         lbl_norm = QLabel(S("step08.global_normalize"))
         lbl_norm.setToolTip(S("step08.global_normalize.tooltip"))
         opt_fl.addRow(lbl_norm, self._global_normalize)
+
+        _chk_row_w = QWidget()
+        _chk_row_w.setStyleSheet("background: transparent;")
+        _chk_row = QHBoxLayout(_chk_row_w)
+        _chk_row.setContentsMargins(0, 0, 0, 0)
+        _chk_row.setSpacing(16)
+        _CHK_STYLE = (
+            "QCheckBox { color: #d4d4d4; font-size: 12px; }"
+            "QCheckBox::indicator { width: 14px; height: 14px; border: 1px solid #555;"
+            " border-radius: 3px; background: #3c3c3c; }"
+            "QCheckBox::indicator:checked { background: #4da6ff; border-color: #4da6ff; }"
+        )
+        self._chk_stretch = QCheckBox(S("step08.stretch_enabled"))
+        self._chk_stretch.setStyleSheet(_CHK_STYLE)
+        self._chk_stretch.setChecked(False)
+        _chk_row.addWidget(self._chk_stretch)
+        self._chk_saturation = QCheckBox(S("step08.saturation_boost"))
+        self._chk_saturation.setStyleSheet(_CHK_STYLE)
+        self._chk_saturation.setChecked(True)
+        _chk_row.addWidget(self._chk_saturation)
+        _chk_row.addStretch()
+        opt_fl.addRow(QLabel(""), _chk_row_w)
 
         self._series_scale = QDoubleSpinBox()
         self._series_scale.setStyleSheet(_DBLSPIN_STYLE)
@@ -265,6 +287,8 @@ class _Step08MonoWidget(QWidget):
             "series_amounts":               [s.value() for s in self._series_wavelet_spins],
             "series_denoise_amounts":       [s.value() for s in self._series_denoise_spins],
             "series_composite_specs":       series_specs,
+            "series_stretch_enabled":       self._chk_stretch.isChecked(),
+            "series_saturation_boost":      self._chk_saturation.isChecked(),
         }
 
     def validate(self, config: dict, batch_mode: bool = False) -> list:
@@ -309,6 +333,8 @@ class _Step08MonoWidget(QWidget):
             self._output_lbl.setText(str(p / "step08_series"))
             self._output_dir = p
         self._global_normalize.setChecked(bool(data.get("global_filter_normalize", True)))
+        self._chk_stretch.setChecked(bool(data.get("series_stretch_enabled", False)))
+        self._chk_saturation.setChecked(bool(data.get("series_saturation_boost", True)))
         self._series_scale.setValue(float(data.get("series_scale", 1.00)))
         self._series_cycle_seconds.setValue(int(data.get("series_cycle_seconds",
                                                           data.get("cycle_seconds", 225))))
@@ -472,6 +498,33 @@ class _Step08ColorWidget(QWidget):
         lbl_minq.setToolTip(S("step08.stack_min_quality.tooltip"))
         opt_fl.addRow(lbl_minq, self._stack_min_quality)
 
+        _CHK_STYLE = (
+            "QCheckBox { color: #d4d4d4; font-size: 12px; }"
+            "QCheckBox::indicator { width: 14px; height: 14px; border: 1px solid #555;"
+            " border-radius: 3px; background: #3c3c3c; }"
+            "QCheckBox::indicator:checked { background: #4da6ff; border-color: #4da6ff; }"
+        )
+        _chk_row_w = QWidget()
+        _chk_row_w.setStyleSheet("background: transparent;")
+        _chk_row = QHBoxLayout(_chk_row_w)
+        _chk_row.setContentsMargins(0, 0, 0, 0)
+        _chk_row.setSpacing(16)
+        self._chk_global_norm = QCheckBox(S("step08.global_normalize_color"))
+        self._chk_global_norm.setStyleSheet(_CHK_STYLE)
+        self._chk_global_norm.setToolTip(S("step08.global_normalize_color.tooltip"))
+        self._chk_global_norm.setChecked(True)
+        _chk_row.addWidget(self._chk_global_norm)
+        self._chk_stretch = QCheckBox(S("step08.stretch_enabled"))
+        self._chk_stretch.setStyleSheet(_CHK_STYLE)
+        self._chk_stretch.setChecked(False)
+        _chk_row.addWidget(self._chk_stretch)
+        self._chk_saturation = QCheckBox(S("step08.saturation_boost"))
+        self._chk_saturation.setStyleSheet(_CHK_STYLE)
+        self._chk_saturation.setChecked(True)
+        _chk_row.addWidget(self._chk_saturation)
+        _chk_row.addStretch()
+        opt_fl.addRow(QLabel(""), _chk_row_w)
+
         root.addWidget(opt_widget)
 
         # ── Wavelet sharpening (series) ───────────────────────────────────────
@@ -502,12 +555,15 @@ class _Step08ColorWidget(QWidget):
 
     def get_config_updates(self) -> dict[str, Any]:
         return {
-            "series_scale":          self._series_scale.value(),
-            "series_cycle_seconds":  self._series_cycle_seconds.value(),
-            "stack_window_n":        self._stack_window_n.value(),
-            "stack_min_quality":     self._stack_min_quality.value(),
-            "series_amounts":        [s.value() for s in self._series_wavelet_spins],
-            "series_denoise_amounts": [s.value() for s in self._series_denoise_spins],
+            "series_scale":                  self._series_scale.value(),
+            "series_cycle_seconds":          self._series_cycle_seconds.value(),
+            "stack_window_n":                self._stack_window_n.value(),
+            "stack_min_quality":             self._stack_min_quality.value(),
+            "series_amounts":                [s.value() for s in self._series_wavelet_spins],
+            "series_denoise_amounts":        [s.value() for s in self._series_denoise_spins],
+            "series_global_normalize_color": self._chk_global_norm.isChecked(),
+            "series_stretch_enabled":        self._chk_stretch.isChecked(),
+            "series_saturation_boost":       self._chk_saturation.isChecked(),
         }
 
     def load_session(self, data: dict[str, Any]) -> None:
@@ -523,6 +579,9 @@ class _Step08ColorWidget(QWidget):
         self._series_cycle_seconds.setValue(int(data.get("series_cycle_seconds", 30)))
         self._stack_window_n.setValue(int(data.get("stack_window_n", 5)))
         self._stack_min_quality.setValue(float(data.get("stack_min_quality", 0.05)))
+        self._chk_global_norm.setChecked(bool(data.get("series_global_normalize_color", True)))
+        self._chk_stretch.setChecked(bool(data.get("series_stretch_enabled", False)))
+        self._chk_saturation.setChecked(bool(data.get("series_saturation_boost", True)))
         amounts = data.get("series_amounts", _SERIES_WAVELET_DEFAULTS)
         for spin, val in zip(self._series_wavelet_spins, amounts):
             spin.setValue(float(val))

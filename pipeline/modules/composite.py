@@ -28,16 +28,56 @@ from pipeline.modules.derotation import subpixel_align, apply_shift, find_disk_c
 
 # ── Per-channel stretch ────────────────────────────────────────────────────────
 
+def auto_saturate(
+    img: np.ndarray,
+    phigh: float = 99.5,
+    headroom: float = 0.30,
+    mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Auto-boost saturation in Lab space.
+
+    Computes gain so that p(phigh) of disk chroma reaches headroom × 127
+    (Lab max chroma).  gain is clamped to [1.0, 4.0] so the function never
+    desaturates and never amplifies more than 4×.
+
+    Args:
+        img:      float32 [0,1] RGB (H,W,3).
+        phigh:    Chroma percentile used as reference (mirrors stretch_phigh).
+        headroom: Fraction of Lab max chroma (127) that p(phigh) should reach.
+                  Data-adaptive: low-saturation images get more boost, high-
+                  saturation images get less, without needing per-dataset tuning.
+        mask:     Boolean mask selecting pixels to sample (e.g. disk interior).
+    Returns:
+        Saturation-boosted float32 [0,1] RGB image.
+    """
+    lab = cv2.cvtColor(img, cv2.COLOR_RGB2Lab)
+    a, b = lab[:, :, 1], lab[:, :, 2]
+    chroma = np.sqrt(a ** 2 + b ** 2)
+
+    sample = chroma[mask] if (mask is not None and mask.any()) else chroma.ravel()
+    current = float(np.percentile(sample, phigh))
+    if current < 1e-3:
+        return img
+
+    target = 127.0 * headroom
+    gain = float(np.clip(target / current, 1.0, 2.0))
+    lab[:, :, 1] = np.clip(a * gain, -127.0, 127.0)
+    lab[:, :, 2] = np.clip(b * gain, -127.0, 127.0)
+    return np.clip(cv2.cvtColor(lab, cv2.COLOR_Lab2RGB), 0.0, 1.0).astype(np.float32)
+
+
 def auto_stretch(
     img: np.ndarray,
     plow: float = 0.1,
     phigh: float = 99.9,
+    target_hi: float = 1.0,
 ) -> np.ndarray:
-    """Percentile-based linear stretch to [0, 1]."""
+    """Percentile-based linear stretch.  p(phigh) maps to target_hi; values above can reach 1.0."""
     lo, hi = np.percentile(img, [plow, phigh])
     if hi - lo < 1e-9:
         return np.zeros_like(img)
-    return np.clip((img - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
+    scale = target_hi / (hi - lo)
+    return np.clip((img - lo) * scale, 0.0, 1.0).astype(np.float32)
 
 
 # ── Channel alignment ──────────────────────────────────────────────────────────
@@ -129,6 +169,10 @@ def compose(
     color_stretch_mode: str = "joint",
     stretch_plow: float = 0.1,
     stretch_phigh: float = 99.9,
+    stretch_target_hi: float = 1.0,
+    saturate: bool = False,
+    saturation_phigh: float = 99.5,
+    saturation_headroom: float = 0.30,
 ) -> Tuple[np.ndarray, dict]:
     """Build a composite image from per-filter images according to *spec*.
 
@@ -177,7 +221,7 @@ def compose(
         else:
             lo = float(np.percentile(img, stretch_plow))
             hi = float(np.percentile(img, stretch_phigh))
-            stretched[lum_key] = auto_stretch(img, stretch_plow, stretch_phigh)
+            stretched[lum_key] = auto_stretch(img, stretch_plow, stretch_phigh, stretch_target_hi)
             stretch_log[lum_key] = {"mode": "independent",
                                     "plow": round(lo, 5), "phigh": round(hi, 5)}
 
@@ -188,9 +232,10 @@ def compose(
         lo = float(np.percentile(combined, stretch_plow))
         hi = float(np.percentile(combined, stretch_phigh))
         span = hi - lo if hi > lo else 1.0
+        scale = stretch_target_hi / span
         for key in colour_keys:
             stretched[key] = np.clip(
-                (filter_images[key] - lo) / span, 0.0, 1.0
+                (filter_images[key] - lo) * scale, 0.0, 1.0
             ).astype(np.float32)
             stretch_log[key] = {"mode": "joint",
                                 "plow": round(lo, 5), "phigh": round(hi, 5)}
@@ -199,7 +244,7 @@ def compose(
             img = filter_images[key]
             lo = float(np.percentile(img, stretch_plow))
             hi = float(np.percentile(img, stretch_phigh))
-            stretched[key] = auto_stretch(img, stretch_plow, stretch_phigh)
+            stretched[key] = auto_stretch(img, stretch_plow, stretch_phigh, stretch_target_hi)
             stretch_log[key] = {"mode": "independent",
                                 "plow": round(lo, 5), "phigh": round(hi, 5)}
     else:  # "none"
@@ -283,11 +328,36 @@ def compose(
     except Exception:
         pass  # disk detection failed — skip post-composite desaturation
 
+    # ── Auto saturation boost ──────────────────────────────────────────────────
+    sat_gain: Optional[float] = None
+    if saturate:
+        try:
+            ref_img_s = aligned[reference_key]
+            cx_s, cy_s, r_s, _, _ = find_disk_center(ref_img_s)
+            h_s, w_s = ref_img_s.shape[:2]
+            yy_s, xx_s = np.ogrid[:h_s, :w_s]
+            # Sample inside 0.85× radius to stay away from limb fringe
+            disk_mask = ((xx_s - cx_s) ** 2 + (yy_s - cy_s) ** 2) <= (r_s * 0.85) ** 2
+
+            lab_s = cv2.cvtColor(result, cv2.COLOR_RGB2Lab)
+            current = float(np.percentile(
+                np.sqrt(lab_s[:, :, 1] ** 2 + lab_s[:, :, 2] ** 2)[disk_mask],
+                saturation_phigh,
+            ))
+            if current >= 1e-3:
+                sat_gain = float(np.clip(127.0 * saturation_headroom / current, 1.0, 2.0))
+                lab_s[:, :, 1] = np.clip(lab_s[:, :, 1] * sat_gain, -127.0, 127.0)
+                lab_s[:, :, 2] = np.clip(lab_s[:, :, 2] * sat_gain, -127.0, 127.0)
+                result = np.clip(cv2.cvtColor(lab_s, cv2.COLOR_Lab2RGB), 0.0, 1.0).astype(np.float32)
+        except Exception:
+            pass  # disk detection failed — skip saturation boost
+
     log = {
         "type":               "LRGB" if lum_key else "RGB",
         "color_stretch_mode": color_stretch_mode,
         "channels":           {"L": lum_key, "R": spec.R, "G": spec.G, "B": spec.B},
         "stretch":            stretch_log,
         "alignment":          shift_log,
+        "saturation_gain":    round(sat_gain, 4) if sat_gain is not None else None,
     }
     return result, log

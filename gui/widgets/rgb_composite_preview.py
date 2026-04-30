@@ -35,6 +35,25 @@ _STATUS_STYLE = "color: #666; font-size: 10px; font-style: italic;"
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+def _stretch(img: np.ndarray) -> np.ndarray:
+    """p0–p99 stretch; p99 → 255*0.8.  Values above p99 can reach 255."""
+    lo = float(np.percentile(img, 0.0))
+    hi = float(np.percentile(img, 99.0))
+    if hi <= lo:
+        hi = lo + 1e-6
+    scale = (255 * 0.8) / (hi - lo)
+    return np.clip((img - lo) * scale, 0, 255).astype(np.uint8)
+
+
+def _stretch_f(img: np.ndarray) -> np.ndarray:
+    """p0–p99 stretch to float32 [0,1]; p99 → 0.8."""
+    lo = float(np.percentile(img, 0.0))
+    hi = float(np.percentile(img, 99.0))
+    if hi <= lo:
+        hi = lo + 1e-6
+    return np.clip((img - lo) * (0.8 / (hi - lo)), 0.0, 1.0).astype(np.float32)
+
+
 def _fit(img: np.ndarray, max_px: int) -> np.ndarray:
     """Downscale img so max(h, w) <= max_px.  Never upscales."""
     h, w = img.shape[:2]
@@ -93,6 +112,8 @@ class _Worker(QObject):
         g_filt: str,
         b_filt: str,
         l_filt: str,
+        stretch: bool = True,
+        saturate: bool = True,
     ) -> None:
         super().__init__()
         self._step06_dir = step06_dir
@@ -100,6 +121,8 @@ class _Worker(QObject):
         self._g = g_filt
         self._b = b_filt
         self._l = l_filt or None
+        self._stretch  = stretch
+        self._saturate = saturate
 
     @Slot()
     def run(self) -> None:
@@ -130,13 +153,6 @@ class _Worker(QObject):
             b_img = _load(self._b)
             l_img = _load(self._l) if self._l else None
 
-            # No extra stretch — use raw float [0,1] values from step 5 PNGs directly.
-            # Step 5 masters are stored as 16-bit PNGs (float * 65535 on write,
-            # /65535 on read), so their pixel values already reflect the true
-            # sensor output.  Adding auto_stretch on top would be a second stretch
-            # that makes the preview artificially brighter than the actual step 6
-            # output that step 10 reads.  Matching step 10's _to_uint8_levels
-            # approach: just multiply by 255, no additional normalisation.
             l_s = l_img   # may be None
 
             # Composite
@@ -149,10 +165,13 @@ class _Worker(QObject):
                 left_f    = r_img
                 spec_desc = f"RGB  (R={self._r}, G={self._g}, B={self._b})"
 
-            # _to_uint8_levels: direct [0,1] → uint8, identical to step 10 rendering
             left_u8  = (left_f * 255).clip(0, 255).astype(np.uint8)
             left_rgb = cv2.cvtColor(left_u8, cv2.COLOR_GRAY2RGB)
 
+            if self._stretch:
+                right_f = _stretch_f(right_f)
+            if self._saturate:
+                right_f = comp_mod.auto_saturate(right_f)
             right_u8  = (right_f * 255).clip(0, 255).astype(np.uint8)
             right_rgb = np.ascontiguousarray(right_u8[:, :, :3])
 
@@ -186,6 +205,8 @@ class RgbCompositePreviewWidget(QWidget):
         self._g_filt: str = "G"
         self._b_filt: str = "B"
         self._l_filt: str = ""
+        self._stretch_enabled:  bool = True
+        self._saturate_enabled: bool = True
 
         self._running = False
         self._pending = False
@@ -256,6 +277,12 @@ class RgbCompositePreviewWidget(QWidget):
         elif self.isVisible():
             self.schedule_update(100)
 
+    def set_stretch_enabled(self, enabled: bool) -> None:
+        self._stretch_enabled = enabled
+
+    def set_saturate_enabled(self, enabled: bool) -> None:
+        self._saturate_enabled = enabled
+
     def set_spec(
         self,
         r_filter: str,
@@ -299,6 +326,8 @@ class RgbCompositePreviewWidget(QWidget):
             self._g_filt,
             self._b_filt,
             self._l_filt,
+            stretch=self._stretch_enabled,
+            saturate=self._saturate_enabled,
         )
         thread = QThread(self)
         worker.moveToThread(thread)
