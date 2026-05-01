@@ -6,6 +6,7 @@ from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
@@ -45,6 +46,7 @@ class Step10Panel(BasePanel):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         self._output_dir: Path | None = None
+        self._is_color: bool = False
         super().__init__(parent)
 
     def build_form(self) -> None:
@@ -70,6 +72,13 @@ class Step10Panel(BasePanel):
         fl.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         # Folder display (auto-derived, read-only)
+        self._input05_lbl = QLineEdit()
+        self._input05_lbl.setReadOnly(True)
+        self._input05_lbl.setStyleSheet(_READONLY_STYLE)
+        lbl_in05 = QLabel(S("step10.input05_dir"))
+        lbl_in05.setToolTip(S("step10.input05_dir.tooltip"))
+        fl.addRow(lbl_in05, self._input05_lbl)
+
         self._input_lbl = QLineEdit()
         self._input_lbl.setReadOnly(True)
         self._input_lbl.setStyleSheet(_READONLY_STYLE)
@@ -116,6 +125,12 @@ class Step10Panel(BasePanel):
         lbl_cell.setToolTip(S("step10.cell_size.tooltip"))
         fl.addRow(lbl_cell, self._cell_size)
 
+        self._save_analytic = QCheckBox(S("step10.save_analytic"))
+        self._save_analytic.setChecked(True)
+        self._save_analytic.setToolTip(S("step10.save_analytic.tooltip"))
+        self._save_analytic.setStyleSheet("QCheckBox { color: #d4d4d4; }")
+        fl.addRow("", self._save_analytic)
+
         left_layout.addWidget(form_widget)
         left_layout.addStretch()
         main_hlayout.addWidget(left_widget, 1)
@@ -136,15 +151,17 @@ class Step10Panel(BasePanel):
 
     def get_config_updates(self) -> dict[str, Any]:
         return {
-            "black_point":  self._black_point.value(),
-            "gamma":        self._gamma.value(),
-            "cell_size_px": self._cell_size.value(),
+            "black_point":    self._black_point.value(),
+            "gamma":          self._gamma.value(),
+            "cell_size_px":   self._cell_size.value(),
+            "save_analytic":  self._save_analytic.isChecked(),
         }
 
     def load_session(self, data: dict[str, Any]) -> None:
         out = data.get("output_dir", "")
         if out:
             p = Path(out)
+            self._input05_lbl.setText(str(p / "step05_wavelet_master"))
             self._input_lbl.setText(str(p / "step06_rgb_composite"))
             self._output_lbl.setText(str(p / "step10_summary_grid"))
             if hasattr(self, "_preview"):
@@ -152,6 +169,9 @@ class Step10Panel(BasePanel):
         self._black_point.setValue(float(data.get("black_point", 0.04)))
         self._gamma.setValue(float(data.get("gamma", 0.9)))
         self._cell_size.setValue(int(data.get("cell_size_px", 300)))
+        self._save_analytic.setChecked(bool(data.get("save_analytic", True)))
+        self._is_color = data.get("camera_mode", "mono") == "color"
+        self._save_analytic.setVisible(not self._is_color)
         if hasattr(self, "_preview"):
             self._preview.set_params(
                 black_point=float(data.get("black_point", 0.04)),
@@ -181,7 +201,12 @@ class Step10Panel(BasePanel):
 
     def set_output_dir(self, path: Path | str) -> None:
         self._output_dir = Path(path) if path else None
-        step06_dir = self._output_dir / "step06_rgb_composite" if self._output_dir else None
+        if self._output_dir:
+            self._input05_lbl.setText(str(self._output_dir / "step05_wavelet_master"))
+            step06_dir = self._output_dir / "step06_rgb_composite"
+        else:
+            self._input05_lbl.setText("")
+            step06_dir = None
         if hasattr(self, "_preview"):
             self._preview.set_input_dir(step06_dir)
 

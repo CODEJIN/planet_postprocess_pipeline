@@ -352,11 +352,15 @@
   "step09.fps.tooltip": "GIF 애니메이션의 재생 속도입니다.\n일반적으로 6~10 FPS가 좋습니다.",
   "step09.resize.tooltip": "GIF 출력 크기 배율입니다.\n1.0 = 원본 크기, 0.5 = 절반 크기로 파일 용량 절감.",
 
+  "step10.input05_dir": "입력 폴더 — Step 5 (자동)",
+  "step10.input05_dir.tooltip": "분석 뷰에서 사용하는 Step 5 웨이블릿 마스터 결과 폴더 (자동 설정)",
   "step10.input_dir.tooltip": "Step 6 RGB 합성 결과 폴더 (자동 설정)",
   "step10.output_dir.tooltip": "요약 그리드 PNG가 저장될 폴더 (자동 설정)",
   "step10.black_point.tooltip": "이 값 이하의 픽셀을 순수 검정으로 처리합니다.\n배경 노이즈를 억제하고 행성 배경을 깔끔하게 만듭니다. (0.0~0.5)",
   "step10.gamma.tooltip": "감마 보정값입니다.\n1.0 = 선형 / < 1.0 = 밝아짐 / > 1.0 = 어두워짐\n행성 표면 디테일 강조를 위해 0.8~1.0 범위를 권장합니다.",
   "step10.cell_size.tooltip": "요약 그리드에서 각 이미지 셀의 크기(px)입니다. (100~1024px 범위)",
+  "step10.save_analytic": "분석 뷰 저장 (모노캠 전용)",
+  "step10.save_analytic.tooltip": "각 시간 윈도우별로 개별 필터 이미지(상단)와 채널 매핑 공식이 표시된 합성 결과(하단)를 담은 분석 PNG를 생성합니다.\n출력: step10_summary_grid/analytic/window_XX_analytic.png",
 
   "settings.max_workers.auto": "자동 ({n}코어)",
 

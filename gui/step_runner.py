@@ -191,7 +191,7 @@ class StepRunner(QThread):
             elif step_id == "09":
                 r = mods["09"].run(cfg, res.get("08", {}), progress_callback=pcb, cancel_event=ce)
             elif step_id == "10":
-                r = mods["10"].run(cfg, res.get("06", {}), res.get("04", {}), cancel_event=ce)
+                r = mods["10"].run(cfg, res.get("06", {}), res.get("04", {}), res.get("05", {}), cancel_event=ce)
             else:
                 print(f"  [WARN] Step {step_id} has no runner implementation.")
                 r = {}

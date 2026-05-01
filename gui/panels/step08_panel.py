@@ -122,13 +122,6 @@ class _Step08MonoWidget(QWidget):
         opt_fl.setContentsMargins(0, 0, 0, 0)
         opt_fl.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        self._global_normalize = QCheckBox()
-        self._global_normalize.setChecked(True)
-        self._global_normalize.setToolTip(S("step08.global_normalize.tooltip"))
-        lbl_norm = QLabel(S("step08.global_normalize"))
-        lbl_norm.setToolTip(S("step08.global_normalize.tooltip"))
-        opt_fl.addRow(lbl_norm, self._global_normalize)
-
         _chk_row_w = QWidget()
         _chk_row_w.setStyleSheet("background: transparent;")
         _chk_row = QHBoxLayout(_chk_row_w)
@@ -140,6 +133,11 @@ class _Step08MonoWidget(QWidget):
             " border-radius: 3px; background: #3c3c3c; }"
             "QCheckBox::indicator:checked { background: #4da6ff; border-color: #4da6ff; }"
         )
+        self._global_normalize = QCheckBox(S("step08.global_normalize"))
+        self._global_normalize.setStyleSheet(_CHK_STYLE)
+        self._global_normalize.setChecked(True)
+        self._global_normalize.setToolTip(S("step08.global_normalize.tooltip"))
+        _chk_row.addWidget(self._global_normalize)
         self._chk_stretch = QCheckBox(S("step08.stretch_enabled"))
         self._chk_stretch.setStyleSheet(_CHK_STYLE)
         self._chk_stretch.setChecked(False)

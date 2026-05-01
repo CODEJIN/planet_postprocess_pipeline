@@ -352,11 +352,15 @@
   "step09.fps.tooltip": "Playback speed for the animated GIF.\n6–10 FPS is generally recommended.",
   "step09.resize.tooltip": "Output size scale factor for the GIF.\n1.0 = original size, 0.5 = half size (reduces file size).",
 
+  "step10.input05_dir": "Input folder — Step 5 (auto)",
+  "step10.input05_dir.tooltip": "Step 5 wavelet master result folder used by analytic view (auto-set)",
   "step10.input_dir.tooltip": "Step 6 RGB composite result folder (auto-set)",
   "step10.output_dir.tooltip": "Folder where summary grid PNG files are saved (auto-set)",
   "step10.black_point.tooltip": "Pixels below this value are rendered as pure black.\nSuppresses background noise for a cleaner planet background. (0.0–0.5)",
   "step10.gamma.tooltip": "Gamma correction value.\n1.0 = linear / < 1.0 = brighter / > 1.0 = darker\n0.8–1.0 is recommended to emphasize planetary surface detail.",
   "step10.cell_size.tooltip": "Size (px) of each image cell in the summary grid. (100–1024 px)",
+  "step10.save_analytic": "Save analytic view (mono only)",
+  "step10.save_analytic.tooltip": "For each time window, save a separate analytic PNG showing individual filter images (top strip) and the composites with channel-mapping formulas (bottom strip).\nOutput: step10_summary_grid/analytic/window_XX_analytic.png",
 
   "settings.max_workers.auto": "Auto ({n} cores)",
 

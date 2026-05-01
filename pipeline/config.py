@@ -314,6 +314,8 @@ class SummaryGridConfig:
     font_size: int = 20           # label font size in pixels
     title_font_size: int = 24     # title font size in pixels (0 = no title)
     time_format: str = "%H%M"     # strftime format for row labels (e.g. "1233")
+    save_analytic: bool = True             # per-window analytic PNG (mono only)
+    analytic_filter_cell_ratio: float = 0.65  # filter cell size relative to cell_size_px
 
 
 # ── Step 09: Animated GIF ─────────────────────────────────────────────────────

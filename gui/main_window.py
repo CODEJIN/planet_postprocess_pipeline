@@ -245,16 +245,20 @@ class MainWindow(QMainWindow):
         # Home entry
         home_item = QWidget()
         home_item.setStyleSheet(
-            "QWidget { background: transparent; padding: 2px; }"
+            "QWidget { background: transparent; }"
             "QWidget:hover { background: #2a2a2a; }"
         )
         home_item_layout = QHBoxLayout(home_item)
         home_item_layout.setContentsMargins(8, 6, 8, 6)
+        home_item_layout.setSpacing(6)
         home_icon = QLabel("⌂")
+        home_icon.setFont(QFont("Arial", 11))
         home_icon.setFixedWidth(18)
+        home_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         home_icon.setStyleSheet("color: #888;")
         home_item_layout.addWidget(home_icon)
         self._home_lbl = QLabel(S("app.home"))
+        self._home_lbl.setFont(QFont("Arial", 10))
         self._home_lbl.setStyleSheet("color: #ccc;")
         home_item_layout.addWidget(self._home_lbl)
         home_item_layout.addStretch()
@@ -265,16 +269,20 @@ class MainWindow(QMainWindow):
         # Settings entry
         settings_item = QWidget()
         settings_item.setStyleSheet(
-            "QWidget { background: transparent; padding: 2px; }"
+            "QWidget { background: transparent; }"
             "QWidget:hover { background: #2a2a2a; }"
         )
         settings_item_layout = QHBoxLayout(settings_item)
         settings_item_layout.setContentsMargins(8, 6, 8, 6)
+        settings_item_layout.setSpacing(6)
         settings_icon = QLabel("⚙")
+        settings_icon.setFont(QFont("Arial", 11))
         settings_icon.setFixedWidth(18)
+        settings_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         settings_icon.setStyleSheet("color: #888;")
         settings_item_layout.addWidget(settings_icon)
         self._settings_lbl = QLabel(S("app.settings"))
+        self._settings_lbl.setFont(QFont("Arial", 10))
         self._settings_lbl.setStyleSheet("color: #ccc;")
         settings_item_layout.addWidget(self._settings_lbl)
         settings_item_layout.addStretch()
@@ -1142,11 +1150,12 @@ class MainWindow(QMainWindow):
                 dep = self._step_panels.get("05")
                 if dep and hasattr(dep, "load_session"):
                     dep.load_session(self._session_data)
-            # After step 05 completes (wavelet master) → refresh step 06 rgb composite
+            # After step 05 completes (wavelet master) → refresh step 06 rgb composite and step 10
             if step_id == "05":
-                dep = self._step_panels.get("06")
-                if dep and hasattr(dep, "load_session"):
-                    dep.load_session(self._session_data)
+                for dep_id in ("06", "10"):
+                    dep = self._step_panels.get(dep_id)
+                    if dep and hasattr(dep, "load_session"):
+                        dep.load_session(self._session_data)
             # After step 06 completes (RGB composite) → refresh step 10 summary grid
             if step_id == "06":
                 dep = self._step_panels.get("10")
@@ -1317,10 +1326,11 @@ class MainWindow(QMainWindow):
             grid_composites = ["RGB", "IR-RGB", "CH4-G-IR"]
 
         grid = SummaryGridConfig(
-            black_point  = float(d.get("black_point", 0.04)),
-            gamma        = float(d.get("gamma", 0.8)),
-            cell_size_px = int(d.get("cell_size_px", 300)),
-            composites   = grid_composites,
+            black_point    = float(d.get("black_point", 0.04)),
+            gamma          = float(d.get("gamma", 0.8)),
+            cell_size_px   = int(d.get("cell_size_px", 300)),
+            composites     = grid_composites,
+            save_analytic  = bool(d.get("save_analytic", True)),
         )
 
         filters_raw = d.get("filters", "IR,R,G,B,CH4")
