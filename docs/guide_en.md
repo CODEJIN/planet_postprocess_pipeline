@@ -461,7 +461,7 @@ The parameters shown differ depending on camera mode.
 |-----------|---------|-------|-------------|
 | **Global filter normalize** | On | — | Unifies the brightness range of each filter across all frames. Greatly reduces colour inconsistency between frames in Step 09 GIFs. **Recommended when using Step 09.** |
 | **Brightness scale** | 1.00 | 0.1–1.0 (step 0.05) | Multiplier applied to composite brightness. 1.0 = unchanged, 0.80 = 80% brightness. |
-| **Window (frames)** | 3 | 1–9 (odd recommended) | Sliding-window stacking frame count. 1 = single frame, 3 = ±1 frame (SNR ×√3), 5 = ±2 frames (SNR ×√5). Recommended upper limit for Jupiter: 5 frames (~20 min). |
+| **Window (frames)** | 3 | 1–9 (odd recommended) | Sliding-window stacking frame count. 1 = single frame, 3 = ±1 frame (SNR ×√3), 5 = ±2 frames (SNR ×√5). |
 | **Filter cycle (seconds)** | 225 | 10–600 (step 15) | Time for one complete filter cycle (IR→R→G→B→CH4→IR). Used to group Step 07 PNGs into per-epoch time-series sets. **Set independently from Step 03's filter cycle time.** |
 | **Min quality filter** | 0.05 | 0.0–0.9 (step 0.05) | Quality filter for frames (0.0 = no filter). Low-quality frames receive reduced weighting (soft down-weighting, not hard exclusion). |
 | **Save mono filter GIFs** | Off | — | When checked: saves each filter's monochrome frames alongside the color composites. Step 09 will also generate per-filter monochrome GIFs. |
@@ -525,7 +525,14 @@ Combines the time-series composite results from Step 08 into a planetary rotatio
 ![Step 10 panel](images_en/step10.png)
 *Figure 13-1: Step 10 panel — Summary grid with levels adjustment (Left: controls, Right: live preview)*
 
-Applies levels correction to Step 06 RGB composite results and combines them into a single summary grid image. Used for generating final images for observation reports or forum posts.
+Applies levels correction to Step 06 RGB composite results and produces summary grid images. Used for generating final images for observation reports or forum posts.
+
+Two output files are produced:
+
+| File | Contents | When generated |
+|------|----------|----------------|
+| `summary_grid_simple.png` | Composites only (all camera modes) | Always |
+| `summary_grid.png` | Composites (left) + filter images from Step 05 (right), same cell size | Mono mode only, when Step 05 output exists |
 
 > **Optional Step**: Use only when needed.
 
@@ -533,15 +540,54 @@ Applies levels correction to Step 06 RGB composite results and combines them int
 
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
-| **Input Folder** | Auto-set | — | Automatically set to the Step 06 RGB composite result folder. |
-| **Output Folder** | Auto-set | — | Summary grid PNG is saved here. |
+| **Input Folder (Step 06)** | Auto-set | — | Automatically set to the Step 06 RGB composite result folder. |
+| **Input Folder (Step 05)** | Auto-set | — | Step 05 wavelet master folder. Used to populate the filter image zone in the two-zone grid (`summary_grid.png`). Only shown in mono mode. |
+| **Output Folder** | Auto-set | — | Summary grid PNGs are saved here. |
 | **Black Point** | 0.04 | 0.0–0.5 (step 0.01) | Pixels at or below this value are remapped to pure black (0). Suppresses background sky noise and gives the planet a clean dark border. Recommended range: **0.02–0.08**. |
 | **Gamma** | 0.9 | 0.1–3.0 (step 0.05) | Brightness gamma correction. **1.0** = no correction / **< 1.0** = brighter (typically 0.8–1.0 recommended) / **> 1.0** = darker. |
 | **Cell Size (px)** | 300 | 100–1024 (step 50) | Size in pixels of each composite image cell within the summary grid. |
+| **Save Analytic View** | Off | — | When checked, generates one `window_XX_analytic.png` per time window in the `analytic/` subdirectory. Only available in mono mode. |
 
 ### 13.2 Live Preview
 
+![analytic_view](./images/analytic_view_sample.png)
+
 The right panel shows before/after levels adjustment previews. The preview automatically refreshes 400ms after changing any parameter.
+
+### 13.3 Analytic View Metric Reference
+
+The Analytic View (`window_XX_analytic.png`) generates one image per time window. Below each image, two metric blocks are displayed.
+
+#### Per-filter metrics (directly below filter images, above the divider)
+
+Values are column-aligned to the filter image above them.
+
+| Metric | Meaning | How to read |
+|--------|---------|-------------|
+| **Frames** | `frames used / total frames` | A low ratio means many frames were rejected due to poor seeing or planet motion. Below 50% generally indicates poor observing conditions. |
+| **Q.Post** | Mean quality score of the retained frames after outlier removal (0–1) | Higher is better. Absolute values vary by planet size and seeing conditions — relative comparison between filters in the same session is more useful than comparing across nights. |
+| **Stab.** | Atmospheric stability (0–1) | Higher means quality varied little over time. A low value means seeing was turbulent and only a subset of frames were usable. |
+| **Stacked** | Final number of frames summed in the lucky stack | Frames that passed an additional quality filter after the `Frames` selection step. |
+
+#### Composite align table (below composite images, above the separator)
+
+For each composite (RGB, IR-RGB, etc.), shows how much each filter image was shifted to align it as a channel in that composite.
+
+- **Rows** = filter names (IR, R, G, B, CH4 …) — one row per filter used across any composite
+- **Cell values** = `[role] shift` — `[role]` is the channel this filter fills in that composite (`[L]`, `[R]`, `[G]`, `[B]`), and `shift` is `(Δx, Δy)` in pixels
+- **`[role] ref`** — this filter was used as the alignment reference for that composite (no shift applied)
+- **`—`** — this filter is not used in that composite
+- **`[Sat]`** row — saturation boost factor applied to each composite (1.00 = original saturation preserved)
+
+#### Bottom global parameter line
+
+| Metric | Meaning | How to read |
+|--------|---------|-------------|
+| **Win.Q** | Overall window quality score (0–1) | General seeing quality for the time window. Useful for comparing multiple windows within the same session. |
+| **Rot** | Accumulated planetary rotation within the window (degrees) | Higher values make de-rotation correction more important. Jupiter rotates fast, so long windows can accumulate several degrees. |
+| **Wvl** | Wavelet sharpening layer strengths `[L1 L2 L3 L4 L5 L6]` | Higher values emphasize that spatial frequency band more strongly. 0 disables that layer. |
+| **bp** | Black point | Pixels at or below this value are clipped to pure black. Controls background sky suppression. |
+| **γ** | Gamma correction | < 1.0 brightens midtones, > 1.0 darkens them. 1.0 = no correction. |
 
 ---
 
@@ -611,6 +657,10 @@ After pipeline execution, the following folders are created under the output bas
 │   └── ...
 ├── step09_gif/                 # Step 09: Animated GIF
 │   └── RGB_animation.gif
-└── step10_summary_grid/        # Step 10: Summary grid PNG
-    └── summary_grid.png
+└── step10_summary_grid/        # Step 10: Summary grid PNGs
+    ├── summary_grid_simple.png   # Composites only (always generated)
+    ├── summary_grid.png          # Composites + filters (mono camera, when Step 05 data exists)
+    └── analytic/
+        ├── window_01_analytic.png
+        └── window_02_analytic.png
 ```

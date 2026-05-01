@@ -570,18 +570,103 @@ GIF 출력 (loop=0, 무한 반복)
 
 **소스**: `pipeline/steps/step10_summary_grid.py`
 
+Step 10은 항상 `summary_grid_simple.png`를 생성하고, 모노 모드 + Step 05 출력이 있는 경우 추가로 `summary_grid.png`(2존)와 선택적으로 `analytic/` 하위 폴더에 윈도우별 Analytic PNG를 생성합니다.
+
+### 출력 파일
+
+| 파일 | 내용 | 생성 조건 |
+|------|------|-----------|
+| `summary_grid_simple.png` | 합성 이미지만 (전체 윈도우 × 전체 합성) | 항상 |
+| `summary_grid.png` | 합성(왼쪽 존) + Step 05 필터 이미지(오른쪽 존), 동일 셀 크기, 수직 구분선 | 모노 모드 + Step 05 데이터 있을 때 |
+| `analytic/window_XX_analytic.png` | 윈도우별 상세 분석 뷰 (하단 참고) | `save_analytic=True`, 모노 모드 |
+
+### 단순 그리드 (`summary_grid_simple.png`)
+
 ```
-Step 06 RGB 합성 PNG 목록
+Step 06 합성 PNG (전체 윈도우)
     │
     ▼
 각 이미지:
-    블랙 포인트 보정: pixel = clip((p − bp) / (1 − bp), 0, 1)
-    감마 보정:        pixel = pixel ^ (1 / gamma)
+    블랙 포인트: pixel = clip((p − bp) / (1 − bp), 0, 1)
+    감마:        pixel = pixel ^ (1 / gamma)
     cell_size로 리샘플링
     │
     ▼
-그리드 배치 → 단일 요약 PNG 출력
+그리드 배치 (행=윈도우, 열=합성) → PNG
 ```
+
+### 2존 그리드 (`summary_grid.png`)
+
+```
+왼쪽 존: Step 06 합성 (각 cell_size × cell_size)
+오른쪽 존: Step 05 필터 PNG (동일 cell_size)
+    │
+    ▼
+존 사이에 수직 구분선
+각 이미지 위에 열 라벨
+왼쪽에 행(윈도우) 시간 라벨
+    │
+    ▼
+summary_grid.png
+```
+
+두 존 모두 동일한 `cell_px`(설정된 **셀 크기** 값)를 사용합니다. 필터 존 너비 = `n_filters × cell_px + 간격`.
+
+### Analytic View (`analytic/window_XX_analytic.png`)
+
+윈도우당 한 장씩 생성됩니다. 레이아웃(위에서 아래):
+
+```
+[헤더: 윈도우 시간 범위]
+
+[필터 이미지 행]              ← Step 05 PNG, 각 cell_size
+[필터 통계 블록]              ← 필터별 Frames / Q.Post / Stab. / Stacked, 위 이미지와 열 정렬
+
+─────────────────────────────────── (구분선)
+
+[합성 이미지 행]              ← Step 06 PNG, 각 cell_size
+[Align 테이블]               ← 행=필터명; 열=합성명
+                               셀값 = "[역할] 이동량" 또는 "[역할] ref" 또는 "—"
+[Sat 행]                     ← 합성별 채도 강화 배율
+
+─────────────────────────────────── (구분선)
+
+[글로벌 파라미터 줄]          ← Win.Q / Rot / Wvl / bp / γ
+```
+
+#### 필터 통계 블록
+
+구분선 위, 필터 이미지 열과 x좌표 정렬. 필터명 헤더 행 없음(위의 이미지 라벨이 이미 표시).
+
+| 행 | 값 |
+|----|----|
+| **Frames** | `n_used / n_total` (품질 임계값을 통과한 프레임 / 윈도우 전체 프레임) |
+| **Q.Post** | σ-클리핑 후 남은 프레임들의 평균 품질 점수 (0~1) |
+| **Stab.** | `1 / (1 + CV)`, `CV = std/mean` (프레임별 품질 점수의 변동계수) |
+| **Stacked** | Lucky stacking에서 실제 합산된 최종 프레임 수 |
+
+#### Align 테이블
+
+- **행** = 필터명 (IR, R, G, B, CH4 …) — 전체 합성의 `CompositeSpec` 필드에서 도출
+- **열** = 합성명 (RGB, IR-RGB, …)
+- **셀 값** = `[역할] 이동량`, `역할` ∈ {L, R, G, B}, `이동량` = `composite_log.json`의 `(Δx, Δy)`; 기준 채널이면 `ref`; 해당 합성에 미사용이면 `—`
+- **`composite_log.json`의 정렬 키**는 채널 역할(L/R/G/B)이 아닌 필터명(IR/R/G/B/CH4)
+
+#### 캔버스 높이 사전 계산
+
+`Image.new()` 호출 전에 1×1 프로브 드로우로 높이를 계산합니다:
+
+```python
+canvas_h = (pad + header_h
+            + filter_lbl_h + filter_px   # 필터 이미지
+            + fstats_h                   # 필터 통계 (구분선 위)
+            + section_gap                # 구분선
+            + comp_lbl_h + comp_px       # 합성 이미지 (이름만 라벨)
+            + apar_h                     # align 테이블 + 구분선 + 글로벌 파라미터
+            + pad)
+```
+
+`label_margin`(가장 넓은 행 라벨 너비 + 12px)을 `canvas_w`에 추가하여 행 라벨이 왼쪽 경계 밖으로 넘치지 않도록 합니다.
 
 ### GUI 파라미터 → 내부 동작
 
@@ -589,7 +674,8 @@ Step 06 RGB 합성 PNG 목록
 |---|---|---|
 | **블랙 포인트** | 0.04 | `pixel = clip((p − 0.04) / (1 − 0.04), 0, 1)`. 배경 노이즈를 순수 검정으로 밀어냄. 0.02~0.08 권장 |
 | **감마 (Gamma)** | 0.9 | `pixel = pixel ^ (1/0.9) ≈ pixel ^ 1.11`. <1.0=밝아짐(기본 0.9는 행성을 약간 밝게), >1.0=어두워짐, 1.0=변화 없음 |
-| **셀 크기 (px)** | 300 | 그리드 내 각 합성 이미지를 이 크기로 리샘플링. 전체 그리드 크기는 합성 수에 따라 결정됨 |
+| **셀 크기 (px)** | 300 | 그리드의 합성 및 필터 이미지를 이 크기로 리샘플링. 2존 그리드에서도 두 존 모두 동일한 셀 크기 사용 |
+| **Analytic View 저장** | False | True 시 각 시간 윈도우에 대해 `analytic/window_XX_analytic.png` 생성. 모노 모드 전용 |
 
 ---
 

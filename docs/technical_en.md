@@ -571,18 +571,103 @@ GIF output (loop=0, infinite repeat)
 
 **Source**: `pipeline/steps/step10_summary_grid.py`
 
+Step 10 always produces `summary_grid_simple.png` and, when in mono mode with Step 05 output present, additionally produces `summary_grid.png` (two-zone) and optionally per-window analytic PNGs in `analytic/`.
+
+### Output Files
+
+| File | Contents | Condition |
+|------|----------|-----------|
+| `summary_grid_simple.png` | Composites only (all windows × all composites) | Always |
+| `summary_grid.png` | Composites (left zone) + Step 05 filter images (right zone), same cell size, vertical divider | Mono mode + Step 05 data exists |
+| `analytic/window_XX_analytic.png` | Per-window detailed view (see below) | `save_analytic=True`, mono mode |
+
+### Simple Grid (`summary_grid_simple.png`)
+
 ```
-Step 06 RGB composite PNG list
+Step 06 composite PNGs (all windows)
     │
     ▼
 Per image:
-    Black point correction: pixel = clip((p − bp) / (1 − bp), 0, 1)
-    Gamma correction:       pixel = pixel ^ (1 / gamma)
+    Black point: pixel = clip((p − bp) / (1 − bp), 0, 1)
+    Gamma:       pixel = pixel ^ (1 / gamma)
     Resample to cell_size
     │
     ▼
-Grid layout → single summary PNG output
+Grid layout (rows = windows, columns = composites) → PNG
 ```
+
+### Two-Zone Grid (`summary_grid.png`)
+
+```
+Left zone: Step 06 composites (cell_size × cell_size each)
+Right zone: Step 05 filter PNGs (same cell_size)
+    │
+    ▼
+Vertical divider between zones
+Column labels above each image
+Row (window) time labels on the left
+    │
+    ▼
+summary_grid.png
+```
+
+Both zones use `cell_px` = the configured **Cell Size** value. The filter zone width = `n_filters × cell_px + gaps`.
+
+### Analytic View (`analytic/window_XX_analytic.png`)
+
+One PNG per time window. Layout (top to bottom):
+
+```
+[Header: window time range]
+
+[Filter images row]           ← Step 05 PNGs, cell_size each
+[Filter stats block]          ← Frames / Q.Post / Stab. / Stacked per filter, column-aligned to images above
+
+─────────────────────────────────── (divider)
+
+[Composite images row]        ← Step 06 PNGs, cell_size each
+[Align table]                 ← rows = filter names; columns = composites
+                                 cell = "[role] shift" or "[role] ref" or "—"
+[Sat row]                     ← saturation boost per composite
+
+─────────────────────────────────── (separator)
+
+[Global params line]          ← Win.Q / Rot / Wvl / bp / γ
+```
+
+#### Filter Stats Block
+
+Drawn above the divider, x-aligned to filter image columns. No duplicate filter name header (filter names already appear as image labels above).
+
+| Row | Value |
+|-----|-------|
+| **Frames** | `n_used / n_total` (frames passing quality threshold / all frames in window) |
+| **Q.Post** | Mean quality score of retained frames after σ-clipping, 0–1 |
+| **Stab.** | `1 / (1 + CV)` where `CV = std/mean` of per-frame quality scores |
+| **Stacked** | Final frame count actually summed in the lucky stack |
+
+#### Align Table
+
+- **Rows** = filter names (IR, R, G, B, CH4 …) derived from `CompositeSpec` fields across all composites
+- **Columns** = composite names (RGB, IR-RGB, …)
+- **Cell value** = `[role] shift` where `role` ∈ {L, R, G, B} and `shift` = `(Δx, Δy)` from `composite_log.json`; `ref` if the filter was the reference channel; `—` if the filter is not used in that composite
+- **Alignment keys** in `composite_log.json` are filter names (IR/R/G/B/CH4), not channel roles
+
+#### Canvas Height Pre-calculation
+
+Height is computed before `Image.new()` using a 1×1 probe draw:
+
+```python
+canvas_h = (pad + header_h
+            + filter_lbl_h + filter_px   # filter images
+            + fstats_h                   # filter stats (above divider)
+            + section_gap                # divider
+            + comp_lbl_h + comp_px       # composite images (name only label)
+            + apar_h                     # align table + separator + global params
+            + pad)
+```
+
+`label_margin` (width of widest row label + 12 px) is added to `canvas_w` to prevent row labels from overflowing the left edge.
 
 ### GUI Parameters → Internal Behavior
 
@@ -590,7 +675,8 @@ Grid layout → single summary PNG output
 |---|---|---|
 | **Black Point** | 0.04 | `pixel = clip((p − 0.04) / (1 − 0.04), 0, 1)`. Pushes background noise to pure black. 0.02–0.08 recommended |
 | **Gamma** | 0.9 | `pixel = pixel ^ (1/0.9) ≈ pixel ^ 1.11`. <1.0=brighter (0.9 default slightly brightens the planet), >1.0=darker, 1.0=no change |
-| **Cell Size (px)** | 300 | Each composite image in the grid is resampled to this size. Total grid dimensions depend on the number of composites |
+| **Cell Size (px)** | 300 | Each composite and filter image in the grid is resampled to this size. Both zones use the same cell size in the two-zone grid |
+| **Save Analytic View** | False | When True, generates `analytic/window_XX_analytic.png` for each time window. Mono mode only |
 
 ---
 

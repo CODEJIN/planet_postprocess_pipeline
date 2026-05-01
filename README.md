@@ -21,7 +21,7 @@ Supports both **monochrome cameras** (filter wheel, multi-filter SER) and **colo
 - **Independent time-series compositing**: Step 08 has its own composite specs, separate from Step 06
 - **Auto white balance + chromatic aberration correction** for color camera mode (Steps 06 & 08)
 - **Time-series animation**: sliding-window stacking with quality weighting + animated GIF export
-- **Summary contact sheet**: all windows × composites in a single image
+- **Summary contact sheet**: two output formats — composites-only grid always generated; two-zone grid (composites + filter images) for mono sessions with Step 05 data; optional per-window analytic views with filter stats and channel alignment tables
 - **Live preview widgets**: wavelet (Steps 05 & 07), RGB composite (Step 06), levels (Step 10), color correction (Step 06 color), AP grid (Step 02)
 - **Bilingual UI**: Korean / English (switchable at runtime)
 - **Standalone executable**: ships as a single binary via PyInstaller (no Python required)
@@ -47,7 +47,7 @@ Supports both **monochrome cameras** (filter wheel, multi-filter SER) and **colo
 | 07 | Wavelet Preview | Apply wavelet sharpening to individual TIF stacks; export per-filter PNGs (Optional) |
 | 08 | Time-Series Composite | Sliding-window stacks with independent composite specs; global filter normalisation (Optional) |
 | 09 | Animated GIF | Assemble time-series frames into animated GIFs (Optional) |
-| 10 | Summary Grid | Contact sheet with black-point + gamma levels adjustment (Optional) |
+| 10 | Summary Grid | Composites-only grid (always) + optional two-zone grid with filter images (mono); per-window analytic views; black-point + gamma levels (Optional) |
 
 ---
 
@@ -135,7 +135,10 @@ Both scripts use a shared PyInstaller spec (`astro_pipeline.spec`) that collects
 ├── step07_wavelet_preview/   # Per-filter PNG previews (IR/R/G/B/CH4)
 ├── step08_series/            # Time-series composite frames
 ├── step09_gif/               # Animated GIFs
-└── step10_summary_grid/      # Final contact sheet PNG
+└── step10_summary_grid/      # Final summary grid PNGs
+    ├── summary_grid_simple.png   # Composites only (always generated)
+    ├── summary_grid.png          # Composites + filters (mono camera, when Step 05 data exists)
+    └── analytic/                 # Per-window analytic views (optional, mono only)
 ```
 
 > Steps 01 (PIPP) and 02 (Lucky Stacking) use their own user-configured output folders, separate from `<output_dir>`.
