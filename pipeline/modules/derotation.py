@@ -32,6 +32,15 @@ Saturn notes:
     (<15°) the horizontal approximation (pole_pa=0) is acceptable.
   - Ring features do NOT co-rotate with the atmosphere; they will be slightly
     smeared in the stack (atmosphere is the primary target).
+  - find_disk_center() isolates the disk from an attached ring before fitting
+    (gated on the raw fit's aspect ratio — see its docstring), so semi_major/
+    semi_minor/warp_radius describe the disk only, not the disk+ring blob.
+  - CH4-band Saturn frames invert this: atmospheric methane absorption makes
+    the globe darker than the icy rings, so no brightness-based disk/ring
+    separation applies. find_disk_center() cannot locate the disk in CH4
+    frames; callers should reuse geometry detected from a sibling filter
+    (R/G/B/IR) in the same session instead — Saturn's apparent size/position
+    barely changes across one filter cycle.
 
 Comparison with WinJUPOS:
   - WinJUPOS: requires manual CML entry and frame selection
@@ -301,6 +310,7 @@ def find_disk_center(
     image: np.ndarray,
     margin_factor: float = 0.10,
     fixed_threshold: int = 0,
+    core_percentile: float = 60.0,
 ) -> Tuple[float, float, float, float, float]:
     """Locate planet disk via ellipse fitting.
 
@@ -312,6 +322,12 @@ def find_disk_center(
                          Otsu and uses this value directly — matches AS!4
                          _stabilization_planet_threshold=20 for consistent
                          disk detection across frames.
+        core_percentile: Intensity percentile (within the loose blob) used to
+                         isolate the brighter disk core from a fainter attached
+                         ring — see "Disk-core isolation" below. Not meaningful
+                         for filters where the disk is darker than the ring
+                         (e.g. Saturn's CH4 band); such frames should get their
+                         geometry from a sibling filter instead of this function.
 
     Returns:
         (cx, cy, semi_major, semi_minor, angle_deg) — ellipse parameters.
@@ -359,8 +375,54 @@ def find_disk_center(
             semi_a = mi / 2
             semi_b = ma / 2
             angle_major = (angle + 90.0) % 180.0
-        semi_a_refined = _gradient_disk_r(image, float(cx), float(cy), float(semi_a))
-        return float(cx), float(cy), float(semi_a_refined), float(semi_b), float(angle_major)
+
+        # ── Disk-core isolation (ringed planets only) ─────────────────────────
+        # A ringed planet's loose mask fuses the disk and its (fainter) rings
+        # into one blob — Saturn's rings span ~2.2x the disk diameter — so the
+        # raw fit above fits the disk+ring shape, not the disk: massively
+        # overestimating the equatorial radius and understating the oblateness
+        # (confirmed on real data: a naive fit gave semi_major=129px /
+        # semi_minor=59px, aspect 0.46, on a frame whose actual disk was
+        # ~65-70px radius). A real oblate planet's raw aspect never gets this
+        # low (Jupiter ~0.94, Saturn's own disk ~0.90), so gate on aspect
+        # first — this keeps Jupiter/Mars/Venus on the untouched original path
+        # (any percentile re-threshold shrinks even a plain limb-darkened disk,
+        # e.g. Jupiter's blob keeps only ~40% of its area at the 60th
+        # percentile — that is NOT ring-stripping, just a smaller "hot core"
+        # of the same disk, and would regress the non-ringed case if applied
+        # unconditionally).
+        raw_aspect = semi_b / semi_a if semi_a > 0 else 1.0
+        if raw_aspect < 0.80:
+            x, y, bw, bh = cv2.boundingRect(largest)
+            roi_vals = arr8[y : y + bh, x : x + bw]
+            roi_mask = binary[y : y + bh, x : x + bw] > 0
+            vals = roi_vals[roi_mask]
+            if vals.size > 0:
+                core_thv = np.percentile(vals, core_percentile)
+                core_bin = (((roi_vals >= core_thv) & roi_mask).astype(np.uint8)) * 255
+                core_contours, _ = cv2.findContours(core_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+                if core_contours:
+                    core_largest = max(core_contours, key=cv2.contourArea)
+                    if len(core_largest) >= 5:
+                        (cx, cy), (cma, cmi), cangle = cv2.fitEllipse(core_largest + np.array([x, y], dtype=core_largest.dtype))
+                        if cma >= cmi:
+                            semi_a, semi_b, angle_major = cma / 2, cmi / 2, cangle
+                        else:
+                            semi_a, semi_b, angle_major = cmi / 2, cma / 2, (cangle + 90.0) % 180.0
+
+        # The core fit (when used) is itself a high-threshold underestimate of
+        # the true visual disk, on top of the same limb-darkening bias that
+        # motivates this refinement for the non-ringed case — so widen the
+        # search window when we just isolated a ring-stripped core (raw_aspect
+        # already told us which case we're in).
+        search_frac = (0.6, 1.8) if raw_aspect < 0.80 else (0.75, 1.30)
+        semi_a_refined = _gradient_disk_r(
+            image, float(cx), float(cy), float(semi_a), search_frac=search_frac
+        )
+        # Preserve the fitted oblateness ratio while correcting the absolute
+        # scale via the more robust gradient-edge search.
+        semi_b_refined = semi_a_refined * (float(semi_b) / float(semi_a)) if semi_a > 0 else float(semi_b)
+        return float(cx), float(cy), float(semi_a_refined), float(semi_b_refined), float(angle_major)
     else:
         # Fallback: centroid of bounding box
         x, y, w, h = cv2.boundingRect(largest)
