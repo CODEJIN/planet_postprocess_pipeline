@@ -121,7 +121,14 @@ class _Worker(QObject):
             overlay = disp.copy()
             h, w    = overlay.shape[:2]
 
-            result = planet_detect.analyze_planet(frame, min_diameter=self._min_diam)
+            stem = self._path.stem
+            # CH4 (methane-band) Saturn frames are darker on the disk than the
+            # rings, so the usual brightness-based disk/ring shape check can't
+            # apply here — skip it, same as pipeline.steps.ser_crop.
+            skip_shape_check = "-CH4-" in stem or "_CH4_" in stem
+            result = planet_detect.analyze_planet(
+                frame, min_diameter=self._min_diam, skip_shape_check=skip_shape_check
+            )
 
             # Coordinate bookmarks for text labels (populated below)
             bbox_pt: tuple[int, int] | None = None   # top-left of planet bbox

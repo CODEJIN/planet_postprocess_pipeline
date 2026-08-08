@@ -655,6 +655,11 @@ class SerCropConfig:
     aspect_ratio_limit:  Max deviation from 1:1 aspect ratio (0.2 = 20%).
     straight_edge_limit: Fraction of a bounding-box edge that may be lit before the
                          frame is considered clipped by a straight edge (0.5 = 50%).
+    core_percentile:     Intensity percentile (within the detected blob) used to
+                         isolate the bright disk core from a fainter attached ring
+                         — e.g. Saturn's rings — before the aspect-ratio /
+                         straight-edge checks run. Lower = more permissive (keeps
+                         more of the ring in the "disk"); higher = stricter.
     """
     roi_size: int = 448
     min_diameter: int = 50
@@ -662,6 +667,7 @@ class SerCropConfig:
     window_size: int = 100
     aspect_ratio_limit: float = 0.2
     straight_edge_limit: float = 0.5
+    core_percentile: float = 60.0
     # Parallel file processing: number of SER files processed simultaneously.
     # Capped at 4 in ser_crop.py regardless of this value (I/O contention).
     # 0 = auto (min(4, cpu_count)); 1 = sequential.

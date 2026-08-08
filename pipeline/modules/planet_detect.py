@@ -13,6 +13,12 @@ Key design decisions:
   - Aspect-ratio and straight-edge checks catch partially-clipped frames that
     the boundary test alone might miss (e.g. when the planet is centred but
     one side is cut by a data-transfer error).
+  - Ringed planets (e.g. Saturn) attach a wide, faint ring to the disk in the
+    thresholded mask, which would otherwise fail the circularity checks. A
+    percentile re-threshold isolates the brighter disk core before those
+    checks run, while boundary/diameter/centroid still use the full
+    disk+ring extent. Filters where the disk is *not* the brightest part of
+    the blob (e.g. Saturn's CH4 band) should pass ``skip_shape_check=True``.
 """
 from __future__ import annotations
 
@@ -59,6 +65,8 @@ def analyze_planet(
     padding: int = 1,
     aspect_ratio_limit: float = 0.2,
     straight_edge_limit: float = 0.5,
+    core_percentile: float = 60.0,
+    skip_shape_check: bool = False,
 ) -> Optional[Dict]:
     """Detect the planet in *image* and validate its shape.
 
@@ -75,6 +83,17 @@ def analyze_planet(
                          shorter axis must be ≥ 80 % of the longer axis.
     straight_edge_limit: Fraction of a bounding-box edge that may be lit
                          before the frame is considered clipped.
+    core_percentile:     Intensity percentile (within the detected blob) used
+                         to isolate the bright disk core from a fainter
+                         attached ring before the shape checks run — see
+                         "Disk-core isolation" below.
+    skip_shape_check:    When True, bypass the aspect-ratio and straight-edge
+                         checks entirely (still applies boundary + diameter).
+                         Use for filters where the disk is *not* the brightest
+                         part of the blob (e.g. Saturn's CH4/methane band,
+                         where atmospheric absorption makes the globe darker
+                         than its icy rings) — there, no brightness-based
+                         core isolation can find a round "disk" to validate.
 
     Returns
     -------
@@ -98,7 +117,7 @@ def analyze_planet(
         blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_TRIANGLE
     )
 
-    # ── Largest connected component ────────────────────────────────────────────
+    # ── Largest connected component (disk, plus any attached rings) ───────────
     stats, _ = _largest_component(thresh)
     if stats is None:
         return None
@@ -112,7 +131,7 @@ def analyze_planet(
     )
     h, w = thresh.shape
 
-    # 1. Boundary check — planet must not touch the image edge
+    # 1. Boundary check — planet (incl. rings) must not touch the image edge
     if (
         x < padding
         or y < padding
@@ -121,21 +140,55 @@ def analyze_planet(
     ):
         return None
 
-    # 2. Aspect-ratio check — planet must be roughly circular
-    aspect = bw / bh if bw < bh else bh / bw
-    if aspect < (1.0 - aspect_ratio_limit):
-        return None
+    if not skip_shape_check:
+        # ── Disk-core isolation ─────────────────────────────────────────────
+        # Ringed planets (e.g. Saturn) attach a wide, faint ring to the disk in
+        # the loose triangle-threshold mask, which blows out the blob's
+        # bounding-box aspect ratio (rings span ~2.2x the disk diameter) and
+        # would otherwise fail the circularity check below even for a good
+        # frame. In continuum filters the disk is brighter than the ring, so
+        # re-thresholding at a high percentile of the blob's own pixel values
+        # isolates a compact, round core (the disk) and drops the fainter
+        # ring. Shape-based stripping (e.g. morphological opening) is not
+        # enough on heavily-blurred/noisy single frames, where the ring's
+        # binarised footprint can be nearly as thick as the disk itself —
+        # intensity is the more reliable signal here.
+        # If nothing distinct survives (e.g. a solid Venus crescent has no
+        # separate faint appendage to strip), fall back to the full blob.
+        shape_x, shape_y, shape_bw, shape_bh = x, y, bw, bh
+        core_mask_roi = None
+        roi_vals = blurred[y : y + bh, x : x + bw]
+        roi_mask = thresh[y : y + bh, x : x + bw] > 0
+        vals = roi_vals[roi_mask]
+        if vals.size > 0:
+            core_thv = np.percentile(vals, core_percentile)
+            core_bin = (((roi_vals >= core_thv) & roi_mask).astype(np.uint8)) * 255
+            core_stats, _ = _largest_component(core_bin)
+            if core_stats is not None:
+                cx0 = int(core_stats[cv2.CC_STAT_LEFT])
+                cy0 = int(core_stats[cv2.CC_STAT_TOP])
+                shape_bw = int(core_stats[cv2.CC_STAT_WIDTH])
+                shape_bh = int(core_stats[cv2.CC_STAT_HEIGHT])
+                shape_x, shape_y = x + cx0, y + cy0
+                core_mask_roi = core_bin[cy0 : cy0 + shape_bh, cx0 : cx0 + shape_bw]
 
-    # 3. Straight-edge check — bounding-box edges must be curved, not flat
-    roi = thresh[y : y + bh, x : x + bw]
-    edge_ratios = [
-        np.count_nonzero(roi[0, :]) / bw,    # top edge
-        np.count_nonzero(roi[-1, :]) / bw,   # bottom edge
-        np.count_nonzero(roi[:, 0]) / bh,    # left edge
-        np.count_nonzero(roi[:, -1]) / bh,   # right edge
-    ]
-    if max(edge_ratios) > straight_edge_limit:
-        return None
+        # 2. Aspect-ratio check — disk core (ring excluded) must be roughly circular
+        aspect = shape_bw / shape_bh if shape_bw < shape_bh else shape_bh / shape_bw
+        if aspect < (1.0 - aspect_ratio_limit):
+            return None
+
+        # 3. Straight-edge check — disk-core edges must be curved, not flat
+        roi = core_mask_roi if core_mask_roi is not None else (
+            thresh[shape_y : shape_y + shape_bh, shape_x : shape_x + shape_bw]
+        )
+        edge_ratios = [
+            np.count_nonzero(roi[0, :]) / shape_bw,    # top edge
+            np.count_nonzero(roi[-1, :]) / shape_bw,   # bottom edge
+            np.count_nonzero(roi[:, 0]) / shape_bh,    # left edge
+            np.count_nonzero(roi[:, -1]) / shape_bh,   # right edge
+        ]
+        if max(edge_ratios) > straight_edge_limit:
+            return None
 
     # 4. Minimum diameter
     diameter = max(bw, bh)

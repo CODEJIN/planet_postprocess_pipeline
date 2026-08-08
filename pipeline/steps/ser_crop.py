@@ -171,12 +171,19 @@ def _process_one(
     if not timestamps:
         timestamps = [0] * num_frames
 
+    filter_name = ("color" if config.camera_mode == "color"
+                   else next((f for f in ["IR", "R", "G", "B", "CH4"]
+                              if f"-{f}-" in stem or f"_{f}_" in stem), "L"))
+    # CH4 (methane-band) frames invert Saturn's usual contrast — atmospheric
+    # absorption makes the globe darker than its icy rings — so no
+    # brightness-based core isolation can find a round "disk" to validate.
+    # Skip the shape checks there; boundary + diameter + size-consistency
+    # (below) still catch genuinely bad frames.
+    skip_shape_check = filter_name == "CH4"
+
     out_path: Optional[Path] = None
     writer: Optional[ser_io.SERWriter] = None
     if out_dir is not None:
-        filter_name = ("color" if config.camera_mode == "color"
-                       else next((f for f in ["IR", "R", "G", "B", "CH4"]
-                                  if f"-{f}-" in stem or f"_{f}_" in stem), "L"))
         out_stem = image_io.infer_winjupos_stem(
             ser_path, filter_name=filter_name, target=config.target
         )
@@ -203,6 +210,8 @@ def _process_one(
                 min_diameter=ser_crop.min_diameter,
                 aspect_ratio_limit=ser_crop.aspect_ratio_limit,
                 straight_edge_limit=ser_crop.straight_edge_limit,
+                core_percentile=ser_crop.core_percentile,
+                skip_shape_check=skip_shape_check,
             )
 
             if info is None:
