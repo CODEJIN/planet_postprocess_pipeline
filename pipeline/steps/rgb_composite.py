@@ -321,6 +321,23 @@ def run(
             for f in (spec.R, spec.G, spec.B, spec.L):
                 if f:
                     all_filters.add(f)
+
+        # NOTE: this used to share one probed filter's disk geometry across
+        # every filter's median mask (mirroring derotation.py's old
+        # shared_geometry), because find_disk_center() used to be unreliable
+        # for CH4 (Saturn's methane band: disk darker than an attached ring,
+        # or a ring band crossing the disk — confirmed disk-median mask
+        # fraction swinging ~0.09 to ~0.41 across windows of the same
+        # session). find_disk_center() itself is now polarity-aware and
+        # falls back to a direct radial limb search when brightness-based
+        # core isolation fails (see its docstring), giving every filter
+        # including CH4 a stable, independently-measured radius (confirmed
+        # on real session data: ~56px consistently across all 10 CH4 frames
+        # in a session, vs. 66-68px for sibling filters — plausible, since
+        # deep methane absorption is expected to show a smaller apparent
+        # disk than broadband filters). This mask only needs a radius (no
+        # oblateness), so no cross-filter sharing is needed any more here —
+        # each filter/window just measures its own.
         for filt in sorted(all_filters):
             win_medians: Dict[str, float] = {}
             for win_label, filter_entries in results_05.items():

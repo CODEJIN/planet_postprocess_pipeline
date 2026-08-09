@@ -55,6 +55,7 @@ import re
 import urllib.parse
 import urllib.request
 import warnings
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -252,6 +253,38 @@ def _gaussian_filter1d_np(x: np.ndarray, sigma: float) -> np.ndarray:
 
 # ── Disk geometry ──────────────────────────────────────────────────────────────
 
+def _has_ring_signature(image: np.ndarray, aspect_threshold: float = 0.80) -> bool:
+    """Cheap check: does the raw (uncorrected) disk blob look ring-contaminated?
+
+    Mirrors the raw Otsu + fitEllipse step inside find_disk_center() — same
+    threshold, same morphology, same raw_aspect test — without the expensive
+    core-isolation/gradient refinement that follows it. Used by
+    lucky_stack.score_frames_log_disk() to decide whether to restrict its
+    Laplacian-variance quality mask to the disk interior (ring edges
+    otherwise bias that AS!4-mirroring metric toward "the ring looks sharp"
+    rather than the atmosphere). find_disk_center() itself now does the
+    equivalent aspect-based gating inline (see raw_aspect < 0.80 there) and
+    no longer calls this function directly — resolve_shared_shape()/
+    resolve_filter_pose() decide cross-filter sharing from the confidence/
+    shape_reliable fields _find_disk_center_impl() already returns instead.
+    """
+    arr8 = np.clip(image * 255, 0, 255).astype(np.uint8)
+    thresh_val, _ = cv2.threshold(arr8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    _, binary = cv2.threshold(arr8, max(1, int(thresh_val * 0.90)), 255, cv2.THRESH_BINARY)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
+        return False
+    largest = max(contours, key=cv2.contourArea)
+    if len(largest) < 5:
+        return False
+    (_, _), (ma, mi), _ = cv2.fitEllipse(largest)
+    semi_a, semi_b = (ma, mi) if ma >= mi else (mi, ma)
+    if semi_a <= 0:
+        return False
+    return (semi_b / semi_a) < aspect_threshold
+
+
 def _gradient_disk_r(
     image: np.ndarray,
     cx: float,
@@ -262,12 +295,21 @@ def _gradient_disk_r(
     n_samples: int = 100,
     smooth_sigma: float = 1.5,
     outlier_sigma: float = 2.0,
-) -> float:
+    return_n_valid: bool = False,
+):
     """Estimate disk radius from steepest-gradient limb edge along radial rays.
 
     Replaces the Otsu-threshold disk_r (which underestimates the true limb by
     ~5 px due to limb darkening) with a gradient-profile measurement.  cx/cy
-    are unchanged.  Falls back to r_rough if fewer than 8 valid rays are found.
+    are unchanged.  Falls back to r_rough if fewer than 8 valid rays are found
+    — callers that need to distinguish that internal failure from a genuine
+    measurement (which can legitimately return a value equal to r_rough, so
+    comparing the return value alone is not reliable) should pass
+    return_n_valid=True to additionally get the number of rays that
+    contributed to the result.
+
+    Returns:
+        float radius, or (float radius, int n_valid_rays) if return_n_valid.
     """
     h, w = image.shape[:2]
     angles  = np.linspace(0.0, 2.0 * np.pi, n_rays, endpoint=False)
@@ -296,14 +338,15 @@ def _gradient_disk_r(
         edge_radii.append(float(r_vals[idx] + sub * dr))
 
     if len(edge_radii) < 8:
-        return r_rough
+        return (r_rough, len(edge_radii)) if return_n_valid else r_rough
     arr = np.array(edge_radii)
     med = float(np.median(arr))
     std = float(np.std(arr))
     keep = arr[np.abs(arr - med) < outlier_sigma * (std + 0.5)]
     if len(keep) < 6:
         keep = arr
-    return float(np.median(keep))
+    result = float(np.median(keep))
+    return (result, len(edge_radii)) if return_n_valid else result
 
 
 def find_disk_center(
@@ -323,15 +366,70 @@ def find_disk_center(
                          _stabilization_planet_threshold=20 for consistent
                          disk detection across frames.
         core_percentile: Intensity percentile (within the loose blob) used to
-                         isolate the brighter disk core from a fainter attached
-                         ring — see "Disk-core isolation" below. Not meaningful
-                         for filters where the disk is darker than the ring
-                         (e.g. Saturn's CH4 band); such frames should get their
-                         geometry from a sibling filter instead of this function.
+                         isolate the disk core from a fainter/brighter attached
+                         ring — see "Disk-core isolation" below. Both bright-
+                         core and dark-core polarities are tried automatically
+                         (e.g. Saturn's CH4 band has a disk darker than its
+                         ring), so this is filter-agnostic.
 
     Returns:
         (cx, cy, semi_major, semi_minor, angle_deg) — ellipse parameters.
         Falls back to image centroid if ellipse fitting fails.
+    """
+    cx, cy, semi_a, semi_b, angle_major, _confidence, _shape_reliable = _find_disk_center_impl(
+        image, margin_factor, fixed_threshold, core_percentile
+    )
+    return cx, cy, semi_a, semi_b, angle_major
+
+
+def _find_disk_center_impl(
+    image: np.ndarray,
+    margin_factor: float = 0.10,
+    fixed_threshold: int = 0,
+    core_percentile: float = 60.0,
+) -> Tuple[float, float, float, float, float, float, bool]:
+    """Implementation for find_disk_center(), plus confidence/reliability info.
+
+    Returns (cx, cy, semi_major, semi_minor, angle_major_deg, confidence, shape_reliable).
+
+    confidence semantics:
+        1.0  — raw_aspect >= 0.80, no ring-core isolation was needed at all
+               (ringless target: Jupiter/Mars/Venus).
+        (0,1]— bright-core percentile isolation ran and found a plausible
+               core; value is isolated-core-pixels / raw-blob-pixels
+               (smaller = more confidently shrunk down from the disk+ring
+               blob to just the disk). Note this can coincidentally overlap
+               the fixed 0.5/0.3 values below in rare cases — check
+               shape_reliable, not confidence alone, to distinguish "real"
+               percentile isolation from the radial-limb fallback paths.
+        0.5  — bright-core isolation failed (disk darker than an attached
+               ring, e.g. Saturn's CH4 band, or a ring band crossing in
+               front of the disk splits the blob regardless of polarity —
+               both confirmed on real data); fell back to a direct radial
+               limb search for semi_major, and that search found >= 8 valid
+               edge crossings — a genuine, gradient-confirmed measurement
+               (see shape_reliable).
+        0.3  — same fallback, but the radial limb search found too few valid
+               edge crossings to trust on its own (confirmed common on real
+               Saturn CH4 data — its limb gradient is weak/smooth enough that
+               most rays' steepest drop lands at the search window's edge,
+               not a clean interior minimum). semi_major is the geometric
+               seed (bounding-box vertical half-extent) alone, unconfirmed by
+               direct edge detection — empirically stable and physically
+               plausible, but a weaker claim than the 0.5 case.
+        0.0  — neither approach found a plausible disk; fell back to the raw
+               (disk+ring) fit, which is known-unreliable for this frame.
+
+    shape_reliable: False when semi_minor/angle_major are just a circular
+        placeholder (the confidence=0.5/0.3 radial-limb-only paths measure
+        semi_major directly but have no independent oblateness/orientation
+        measurement) — callers that need shape should borrow aspect_ratio/
+        angle from a sibling filter's reliable fit in this case (this is
+        exactly what resolve_shared_shape/resolve_filter_pose do).
+
+    Only find_disk_center()'s 5-tuple is part of the public API; the rest is
+    for internal callers (resolve_shared_shape) that need to compare/combine
+    candidates across filters.
     """
     # Convert to uint8 for thresholding
     arr8 = np.clip(image * 255, 0, 255).astype(np.uint8)
@@ -351,7 +449,7 @@ def find_disk_center(
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if not contours:
         h, w = image.shape[:2]
-        return float(w / 2), float(h / 2), float(min(h, w) / 4), float(min(h, w) / 4), 0.0
+        return float(w / 2), float(h / 2), float(min(h, w) / 4), float(min(h, w) / 4), 0.0, 0.0, False
 
     # Use the largest contour
     largest = max(contours, key=cv2.contourArea)
@@ -392,23 +490,118 @@ def find_disk_center(
         # of the same disk, and would regress the non-ringed case if applied
         # unconditionally).
         raw_aspect = semi_b / semi_a if semi_a > 0 else 1.0
+        confidence = 1.0
+        shape_reliable = True
         if raw_aspect < 0.80:
+            confidence = 0.0  # overwritten below if a plausible result is found
+            shape_reliable = False
             x, y, bw, bh = cv2.boundingRect(largest)
             roi_vals = arr8[y : y + bh, x : x + bw]
             roi_mask = binary[y : y + bh, x : x + bw] > 0
             vals = roi_vals[roi_mask]
+            core_found = False
             if vals.size > 0:
+                # Bright-core isolation: works when the disk is brighter than
+                # an attached ring (the common case).
                 core_thv = np.percentile(vals, core_percentile)
                 core_bin = (((roi_vals >= core_thv) & roi_mask).astype(np.uint8)) * 255
                 core_contours, _ = cv2.findContours(core_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
                 if core_contours:
                     core_largest = max(core_contours, key=cv2.contourArea)
                     if len(core_largest) >= 5:
-                        (cx, cy), (cma, cmi), cangle = cv2.fitEllipse(core_largest + np.array([x, y], dtype=core_largest.dtype))
+                        (ccx, ccy), (cma, cmi), cangle = cv2.fitEllipse(
+                            core_largest + np.array([x, y], dtype=core_largest.dtype)
+                        )
                         if cma >= cmi:
-                            semi_a, semi_b, angle_major = cma / 2, cmi / 2, cangle
+                            c_semi_a, c_semi_b, c_angle = cma / 2, cmi / 2, cangle
                         else:
-                            semi_a, semi_b, angle_major = cmi / 2, cma / 2, (cangle + 90.0) % 180.0
+                            c_semi_a, c_semi_b, c_angle = cmi / 2, cma / 2, (cangle + 90.0) % 180.0
+                        c_aspect = c_semi_b / c_semi_a if c_semi_a > 0 else 0.0
+                        # Plausible only if it's a real, non-degenerate shrink
+                        # from the raw disk+ring blob — a real oblate disk
+                        # never has aspect < 0.4, and a genuine core isolation
+                        # should shrink meaningfully, not barely move.
+                        if c_semi_a > 0 and c_aspect >= 0.4 and c_semi_a < 0.95 * semi_a:
+                            cx, cy, semi_a, semi_b, angle_major = ccx, ccy, c_semi_a, c_semi_b, c_angle
+                            confidence = int(np.count_nonzero(core_bin)) / vals.size
+                            shape_reliable = True
+                            core_found = True
+
+            if not core_found:
+                # Bright-core isolation failed. This happens when the disk is
+                # actually DARKER than an attached ring (e.g. Saturn's CH4
+                # band: methane absorption makes the globe darker than the
+                # icy rings — confirmed: bright-core isolation there stayed
+                # ring-sized, aspect ~0.16-0.34), or when a bright ring band
+                # crosses directly in front of the disk and splits the
+                # brightness-based blob into disconnected pieces, defeating
+                # single-threshold segmentation at ANY polarity (confirmed
+                # visually on real CH4 data — a symmetric "dark core"
+                # percentile attempt there also failed, for this reason).
+                # Neither cause is filter-specific, so don't special-case by
+                # name: fall back to a direct radial limb search for the
+                # outer edge instead of blob segmentation. Seed it from the
+                # bounding box's VERTICAL extent (bh/2), not the horizontal
+                # extent or the raw ellipse fit — a sideways-extending ring
+                # inflates width/semi_major but rarely inflates the blob's
+                # height nearly as much (confirmed on real Saturn CH4 data:
+                # this seed landed at ~56px, matching the true disk, vs. the
+                # raw ellipse fit's 145+px). The wide search window plus
+                # _gradient_disk_r's existing median/outlier-sigma robustness
+                # then lets the majority of ring-free rays outvote the
+                # minority that do cross the ring.
+                bx, by, bw2, bh2 = cv2.boundingRect(largest)
+                # Moments-based centroid (mass-weighted centre of the actual
+                # blob shape), not the bounding-box corner-midpoint — more
+                # robust if the blob is asymmetric (e.g. a ring band
+                # occluding only one side of the disk), though it does not
+                # fully solve that case (still a single blob-wide estimate,
+                # not disk-limb-specific).
+                _m = cv2.moments(largest)
+                if _m["m00"] > 0:
+                    seed_cx, seed_cy = _m["m10"] / _m["m00"], _m["m01"] / _m["m00"]
+                else:
+                    seed_cx, seed_cy = bx + bw2 / 2.0, by + bh2 / 2.0
+                seed_r = bh2 / 2.0
+                limb_r, _n_valid_rays = _gradient_disk_r(
+                    image, seed_cx, seed_cy, seed_r, search_frac=(0.5, 1.6),
+                    outlier_sigma=1.5, return_n_valid=True,
+                )
+                # _n_valid_rays >= 8 is required for _gradient_disk_r() to
+                # even attempt a real measurement (see its own docstring) —
+                # without checking this explicitly, its internal too-few-rays
+                # fallback (which just echoes r_rough back unchanged) would be
+                # indistinguishable from a genuine successful measurement.
+                # This matters in practice: real Saturn CH4 data typically
+                # gets very few valid rays here (confirmed 0-6 of 72) because
+                # CH4's limb gradient is weak/smooth enough that most rays'
+                # steepest drop lands at the search window's edge rather than
+                # a clean interior minimum — so most CH4 frames land in the
+                # "unconfirmed seed" branch below, not this one.
+                if _n_valid_rays >= 8 and limb_r > 5.0 and 0.5 * seed_r <= limb_r <= 1.5 * seed_r:
+                    # Semi-minor/angle are unknown here — a circular
+                    # placeholder (shape_reliable=False signals this to
+                    # callers that can borrow a sibling filter's oblateness).
+                    cx, cy, semi_a, semi_b, angle_major = seed_cx, seed_cy, limb_r, limb_r, 0.0
+                    confidence = 0.5  # genuine gradient-confirmed measurement
+                    shape_reliable = False
+                elif seed_r > 5.0:
+                    # Gradient search inconclusive — fall back to the
+                    # geometric seed itself (bounding-box vertical
+                    # half-extent), unconfirmed by direct edge detection.
+                    # Empirically stable and physically plausible on real
+                    # Saturn CH4 data (consistently ~56px across a whole
+                    # session, smaller than sibling filters' ~66-68px, as
+                    # expected for methane-band depth-sensing), but this is a
+                    # weaker, lower-confidence claim than a real measurement,
+                    # so it must not be indistinguishable from one — a caller
+                    # comparing confidence across filters (resolve_shared_shape)
+                    # should prefer an actual measurement when one exists.
+                    cx, cy, semi_a, semi_b, angle_major = seed_cx, seed_cy, seed_r, seed_r, 0.0
+                    confidence = 0.3  # unconfirmed geometric estimate
+                    shape_reliable = False
+                # else: neither approach worked — keep the raw (disk+ring)
+                # fit; confidence stays 0.0, a known-unreliable result.
 
         # The core fit (when used) is itself a high-threshold underestimate of
         # the true visual disk, on top of the same limb-darkening bias that
@@ -422,11 +615,163 @@ def find_disk_center(
         # Preserve the fitted oblateness ratio while correcting the absolute
         # scale via the more robust gradient-edge search.
         semi_b_refined = semi_a_refined * (float(semi_b) / float(semi_a)) if semi_a > 0 else float(semi_b)
-        return float(cx), float(cy), float(semi_a_refined), float(semi_b_refined), float(angle_major)
+        return (
+            float(cx), float(cy), float(semi_a_refined), float(semi_b_refined),
+            float(angle_major), float(confidence), bool(shape_reliable),
+        )
     else:
         # Fallback: centroid of bounding box
         x, y, w, h = cv2.boundingRect(largest)
-        return float(x + w / 2), float(y + h / 2), float(max(w, h) / 2), float(min(w, h) / 2), 0.0
+        return float(x + w / 2), float(y + h / 2), float(max(w, h) / 2), float(min(w, h) / 2), 0.0, 0.0, False
+
+
+# ── Shared disk geometry across filters (shape/pose separation) ───────────────
+#
+# A ringed planet's per-filter disk fits disagree slightly (different SNR/
+# contrast per filter — confirmed on real Saturn data: fitted semi_b/semi_a
+# ranged 0.84-0.93 across IR/R/G/B in one window) and some filters can fail
+# to determine their own oblateness at all (see shape_reliable in
+# _find_disk_center_impl). Sharing helps, but naively sharing (cx, cy,
+# semi_a, semi_b) wholesale from one "probe" filter onto every other filter
+# — as this module used to do — conflates two physically different things:
+#
+#   shape (aspect_ratio, equator_pa_deg): pure geometry (this instant's
+#       oblate silhouette orientation), genuinely the same across every
+#       filter and safe to share.
+#   size (semi_major_px):  can legitimately differ per filter — e.g.
+#       Saturn's CH4-band disk is measurably smaller than broadband filters
+#       because deep methane absorption only lets us see the highest
+#       atmospheric layer (well-known radiative-transfer effect, confirmed
+#       on real data: CH4 ~56px vs. IR/R/G/B ~66-68px in the same session).
+#   pose (cx, cy): this filter's own optical registration — never borrowed
+#       by default, since filter-wheel decentering or differential
+#       refraction between filters could otherwise silently corrupt every
+#       non-probe filter's position.
+#
+# PlanetShape carries only the first (shape); FilterPose carries only pose.
+# Each filter's own semi_major_px always comes from its own detection.
+# No filter name is ever treated specially by either resolver below —
+# whichever filter's own fit happens to be shape_reliable/high-confidence
+# wins, so a different filter with a similar issue in the future is handled
+# the same way, and CH4 itself is free to win if some future frame's own
+# detection succeeds.
+
+@dataclass
+class PlanetShape:
+    """Oblateness/orientation shared across filters at one instant."""
+    aspect_ratio: float       # semi_minor / semi_major
+    equator_pa_deg: float
+    # Reserved for a future true oblate-spheroid re-projection warp (see
+    # project notes on WinJUPOS-style de-rotation) — unused today.
+    sub_observer_lat_deg: Optional[float] = None
+
+
+@dataclass
+class FilterPose:
+    """This filter's own disk center (pixels)."""
+    center_x_px: float
+    center_y_px: float
+    # Only set for the "registered_to_probe" fallback (this filter's own
+    # detection failed outright, confidence==0.0): the probe filter's own
+    # semi_major, usable as a size estimate since this filter has none of
+    # its own. None for the normal "own_detection" case (this filter's own
+    # semi_a from _find_disk_center_impl is used directly instead).
+    semi_major_px: Optional[float] = None
+
+
+def resolve_shared_shape(
+    candidate_fits: Dict[str, Tuple[float, float, float, float, float, float, bool]],
+) -> Optional[Tuple[PlanetShape, str]]:
+    """Pick the most confident shape-reliable disk fit among candidates.
+
+    Args:
+        candidate_fits: {filter_name: _find_disk_center_impl(...) result},
+            for whichever filters/frames the caller already evaluated.
+
+    Returns:
+        (PlanetShape, source_filter_name), or None if no candidate has a
+        reliable shape (mirrors the "no ring detected -> stay independent"
+        behaviour this replaces).
+    """
+    best: Optional[Tuple[str, float, PlanetShape]] = None
+    for filt, fit in candidate_fits.items():
+        _cx, _cy, semi_a, semi_b, angle, confidence, shape_reliable = fit
+        if not shape_reliable or semi_a <= 0:
+            continue
+        if best is None or confidence > best[1]:
+            shape = PlanetShape(aspect_ratio=semi_b / semi_a, equator_pa_deg=angle)
+            best = (filt, confidence, shape)
+    if best is None:
+        return None
+    filt, _confidence, shape = best
+    return shape, filt
+
+
+def resolve_filter_pose(
+    fit: Tuple[float, float, float, float, float, float, bool],
+    lum: Optional[np.ndarray] = None,
+    probe_lum: Optional[np.ndarray] = None,
+    probe_pose: Optional[FilterPose] = None,
+    probe_semi_major_px: Optional[float] = None,
+) -> Tuple[FilterPose, str]:
+    """Return this filter's own disk-center pose.
+
+    Args:
+        fit: this filter's own _find_disk_center_impl(...) result.
+        lum, probe_lum, probe_pose, probe_semi_major_px: only used for the
+            fallback path — a probe filter's luminance/pose to register
+            against when this filter's own detection fails outright.
+            probe_semi_major_px should always be supplied by real callers
+            (it sizes the ROI crop and seeds FilterPose.semi_major_px below);
+            omitting it falls back to a generic, probe-frame-size-based ROI
+            (NOT this filter's own semi_a, which is exactly the known-bad
+            disk+ring value that got us into this fallback in the first
+            place) and leaves the returned pose's semi_major_px unset.
+
+    Returns:
+        (FilterPose, method) where method is "own_detection" (the default —
+        used even when shape_reliable is False, since pose is still
+        trustworthy there) or "registered_to_probe" (this filter's own
+        detection failed completely — confidence == 0.0 — and a probe was
+        available to register against instead).
+    """
+    cx, cy, _semi_a, _semi_b, _angle, confidence, _shape_reliable = fit
+    if confidence > 0.0 or probe_lum is None or probe_pose is None or lum is None:
+        return FilterPose(cx, cy), "own_detection"
+
+    # ROI-cropped registration against the probe frame — same pattern as
+    # composite.align_channels() and derotate_filter()'s pre-warp shift
+    # measurement, so a ring elsewhere in frame can't bias the correlation.
+    h, w = probe_lum.shape[:2]
+    if probe_semi_major_px and probe_semi_major_px > 0:
+        r = probe_semi_major_px
+    else:
+        # No validated size available — this filter's own _semi_a here is
+        # the raw disk+ring fit (confidence==0.0's documented meaning), so
+        # using it would defeat the ROI crop's whole purpose. Fall back to a
+        # generic, geometry-agnostic fraction of the probe frame instead.
+        r = min(h, w) * 0.25
+    ys = max(0, int(probe_pose.center_y_px - r)); ye = min(h, int(probe_pose.center_y_px + r))
+    xs = max(0, int(probe_pose.center_x_px - r)); xe = min(w, int(probe_pose.center_x_px + r))
+    if (ye - ys) > 10 and (xe - xs) > 10:
+        dx, dy = subpixel_align(probe_lum[ys:ye, xs:xe], lum[ys:ye, xs:xe])
+    else:
+        dx, dy = subpixel_align(probe_lum, lum)
+    # subpixel_align(reference, target) returns the shift to apply to TARGET
+    # (via apply_shift(target, dx, dy)) to align it onto REFERENCE — i.e.
+    # target's true position expressed in reference coordinates is
+    # target_pos + (dx, dy) = reference_pos, so target_pos = reference_pos -
+    # (dx, dy). Here reference=probe (known position), target=this filter's
+    # own frame (unknown true position, what we're solving for) — so this
+    # filter's true centre is probe_pose.center - (dx, dy), NOT + (dx, dy).
+    return (
+        FilterPose(
+            probe_pose.center_x_px - dx,
+            probe_pose.center_y_px - dy,
+            semi_major_px=probe_semi_major_px,
+        ),
+        "registered_to_probe",
+    )
 
 
 # ── Spherical de-rotation warp ────────────────────────────────────────────────
@@ -1090,6 +1435,8 @@ def derotate_filter(
     pole_pa_deg: float = 0.0,
     color_mode: bool = False,
     flip_direction: bool = False,
+    shared_shape: Optional[PlanetShape] = None,
+    filter_pose: Optional[FilterPose] = None,
     weight_power: float = 1.0,
 ) -> Tuple[np.ndarray, dict]:
     """De-rotate and stack a single filter's images for one time window.
@@ -1108,6 +1455,18 @@ def derotate_filter(
                         and alignment are computed on the luminance channel.
         flip_direction: If True, negate the warp drift direction (South-up camera).
                         Must match the flip_ns detected by auto_detect_ns_flip().
+        shared_shape:   Optional oblateness/orientation (aspect_ratio,
+                        equator_pa_deg) to use ONLY when this filter's own
+                        reference-frame detection couldn't determine shape
+                        reliably (see resolve_shared_shape()). This filter's
+                        own semi_major is always used regardless — apparent
+                        disk size can legitimately differ per filter (e.g.
+                        Saturn's CH4 band is measurably smaller than
+                        broadband filters), so size is never borrowed.
+        filter_pose:    Optional (cx, cy) to use ONLY when this filter's own
+                        reference-frame detection failed outright (see
+                        resolve_filter_pose()) — never used to override a
+                        successful independent pose measurement.
         weight_power:   Exponent applied to norm_score weights before
                         stacking (see quality_weighted_stack). 1.0 (default)
                         = unchanged linear blend.
@@ -1149,7 +1508,31 @@ def derotate_filter(
         _ref_lum = _to_luminance(_ref_raw)
     else:
         _ref_lum = _ref_raw if _ref_raw.ndim == 2 else _ref_raw.mean(axis=2).astype(np.float32)
-    ref_cx, ref_cy, ref_semi_a, ref_semi_b, _ = find_disk_center(_ref_lum)
+    _ref_fit = _find_disk_center_impl(_ref_lum)
+    _rcx, _rcy, ref_semi_a, _rsemi_b, _rangle, _rconf, _rshape_ok = _ref_fit
+    if _rconf <= 0.0 and filter_pose is not None:
+        # This filter's own detection failed outright — use the pose
+        # registered against a sibling filter's frame instead. Its own
+        # ref_semi_a at this point is the raw disk+ring fit (confidence==0.0
+        # means exactly that, per _find_disk_center_impl's docstring) — if
+        # the caller also supplied a probe-derived size estimate (only set
+        # in this exact fallback case; see resolve_filter_pose), use that
+        # instead of the known-bad raw fit.
+        ref_cx, ref_cy = filter_pose.center_x_px, filter_pose.center_y_px
+        if filter_pose.semi_major_px is not None and filter_pose.semi_major_px > 0:
+            ref_semi_a = filter_pose.semi_major_px
+        _geometry_source = "pose_registered"
+    else:
+        ref_cx, ref_cy = _rcx, _rcy
+        _geometry_source = "pose_independent"
+    if not _rshape_ok and shared_shape is not None:
+        # Own detection couldn't determine oblateness (e.g. ring crossing
+        # the disk) — borrow orientation/aspect, but keep this filter's own
+        # semi_major (apparent size legitimately differs per filter).
+        ref_semi_b = ref_semi_a * shared_shape.aspect_ratio
+        _geometry_source += "+shape_shared"
+    else:
+        ref_semi_b = _rsemi_b
     # Measured polar/equatorial ratio from the reference frame ellipse fit.
     # For Jupiter ~0.935; clamped to [0.85, 1.0] to guard against fitting errors.
     _polar_eq_ratio = float(np.clip(ref_semi_b / max(ref_semi_a, 1.0), 0.85, 1.0))
@@ -1179,14 +1562,46 @@ def derotate_filter(
                 img = img.mean(axis=2).astype(np.float32)
 
         # Measure disk center from the raw (pre-warp) frame for later alignment.
+        # When shared_shape is set (ring detected somewhere in this window),
+        # per-frame ellipse-fit disk detection is untrustworthy for at least
+        # one filter in the window — most acutely CH4, whose brightness
+        # inversion (or a ring band crossing the disk) can make
+        # find_disk_center() silently return a plausible-looking but wrong
+        # centre (no exception, so the abs(dx)<=15 sanity gate below can't
+        # catch it). Content-based phase correlation against the reference
+        # frame of the SAME filter doesn't require identifying "the disk" at
+        # all, so it isn't fooled by which feature is brighter — use it
+        # instead whenever this window has any ring involvement.
+        #
+        # MUST be cropped to the disk ROI first: a full-frame phaseCorrelate
+        # here reintroduces the exact ring-pollution bug fixed in
+        # composite.align_channels() (2026-08-09) — confirmed on real data,
+        # this returned -14.19px on a Saturn R-channel frame pair (vs. the
+        # true ~0.5px, measured both via find_disk_center-on-target and via
+        # ROI-cropped correlation). The ring is large, elongated, and its
+        # exact appearance isn't perfectly frame-to-frame stable, so it can
+        # dominate an unmasked correlation regardless of which filter it is.
         _raw_lum = _to_luminance(img)
         try:
-            _cx_i, _cy_i, _semi_i, *_ = find_disk_center(_raw_lum)
-            if _semi_i >= 5:
-                _dx = float(ref_cx - _cx_i)
-                _dy = float(ref_cy - _cy_i)
+            if shared_shape is not None:
+                _rh, _rw = _ref_lum.shape[:2]
+                _rys = max(0, int(ref_cy - ref_semi_a)); _rye = min(_rh, int(ref_cy + ref_semi_a))
+                _rxs = max(0, int(ref_cx - ref_semi_a)); _rxe = min(_rw, int(ref_cx + ref_semi_a))
+                if (_rye - _rys) > 10 and (_rxe - _rxs) > 10:
+                    _dx, _dy = subpixel_align(
+                        _ref_lum[_rys:_rye, _rxs:_rxe], _raw_lum[_rys:_rye, _rxs:_rxe]
+                    )
+                else:
+                    _dx, _dy = subpixel_align(_ref_lum, _raw_lum)
                 if abs(_dx) <= 15.0 and abs(_dy) <= 15.0:
                     _pre_warp_shifts[row["stem"]] = (_dx, _dy)
+            else:
+                _cx_i, _cy_i, _semi_i, *_ = find_disk_center(_raw_lum)
+                if _semi_i >= 5:
+                    _dx = float(ref_cx - _cx_i)
+                    _dy = float(ref_cy - _cy_i)
+                    if abs(_dx) <= 15.0 and abs(_dy) <= 15.0:
+                        _pre_warp_shifts[row["stem"]] = (_dx, _dy)
         except Exception:
             pass
 
@@ -1314,6 +1729,7 @@ def derotate_filter(
         "warp_scale":            warp_scale,
         "pole_pa_deg":           pole_pa_deg,
         "flip_direction":        flip_direction,
+        "geometry_source":       _geometry_source,
         "weight_power":          weight_power,
         "align_enabled":         align,
         "normalize_brightness":  normalize_brightness,
@@ -1362,6 +1778,83 @@ def derotate_window(
     t_ref = window["center_time"]
     results: Dict[str, Tuple[Optional[Path], dict]] = {}
 
+    # ── Ring-aware shared shape/pose ───────────────────────────────────────────
+    # Each filter's disk centre/radius is normally fit independently (in
+    # derotate_filter, from that filter's own reference frame). For a ringed
+    # planet this is unreliable: find_disk_center()'s disk-core isolation runs
+    # per filter on a blob whose SNR/contrast differs by filter, so R/G/B/IR
+    # can each converge on a measurably different centre/radius/oblateness for
+    # the *same* instant (confirmed on real Saturn data: fitted semi_b/semi_a
+    # ranged 0.84-0.93 across IR/R/G/B in one window). Some filters can also
+    # fail outright (e.g. Saturn's CH4 band, or a ring band crossing directly
+    # in front of the disk — see _find_disk_center_impl's fallback chain).
+    #
+    # Fix: fit every candidate filter's reference frame once, then let
+    # resolve_shared_shape()/resolve_filter_pose() decide — by confidence, not
+    # by filter name — which filter's oblateness/orientation to share with
+    # filters that couldn't determine their own, and which filter (if any) to
+    # register a totally-failed filter's pose against. Shape is shared;
+    # apparent SIZE (semi_major) and POSE are always this filter's own
+    # measurement unless its own detection failed outright — see the
+    # PlanetShape/FilterPose module docstring for why size/pose are never
+    # borrowed the way the old single shared_geometry tuple used to.
+    # Ringless targets (Jupiter, Mars, Venus) never trigger any of this: every
+    # filter's own fit already has shape_reliable=True and confidence=1.0, so
+    # shared_shape stays None and filter_pose is never used.
+    _fits: Dict[str, Tuple[float, float, float, float, float, float, bool]] = {}
+    _lums: Dict[str, np.ndarray] = {}
+    for cfilt in required_filters:
+        c_included = window.get("per_filter", {}).get(cfilt, {}).get("included")
+        if not c_included:
+            continue
+        # Mirror derotate_filter()'s own reference-row selection exactly (same
+        # quality-threshold drop, then nearest-to-t_ref) so this is the same
+        # frame that filter will actually use as its reference.
+        if min_quality_threshold > 0.0:
+            c_filtered = [r for r in c_included if float(r["norm_score"]) >= min_quality_threshold]
+            c_included = c_filtered if c_filtered else c_included
+        c_ref_row = min(c_included, key=lambda r: abs((r["timestamp"] - t_ref).total_seconds()))
+        try:
+            c_raw = image_io.read_tif(c_ref_row["path"])
+            if color_mode:
+                if c_raw.ndim == 2:
+                    c_raw = np.stack([c_raw] * 3, axis=2)
+                c_lum = _to_luminance(c_raw)
+            else:
+                c_lum = c_raw if c_raw.ndim == 2 else c_raw.mean(axis=2).astype(np.float32)
+        except Exception as exc:
+            print(f"    [geometry] {cfilt} reference frame read failed ({exc}) — excluded from shape/pose resolution")
+            continue
+        _lums[cfilt] = c_lum
+        _fits[cfilt] = _find_disk_center_impl(c_lum)
+
+    shared_shape_result = resolve_shared_shape(_fits)
+    shared_shape: Optional[PlanetShape] = None
+    _shape_source: Optional[str] = None
+    if shared_shape_result is not None:
+        shared_shape, _shape_source = shared_shape_result
+        print(
+            f"    [geometry] sharing disk shape from {_shape_source} "
+            f"(aspect_ratio={shared_shape.aspect_ratio:.3f} equator_pa={shared_shape.equator_pa_deg:.1f}°)"
+        )
+
+    filter_poses: Dict[str, FilterPose] = {}
+    for cfilt, fit in _fits.items():
+        probe_pose = filter_poses.get(_shape_source) if _shape_source else None
+        if probe_pose is None and _shape_source is not None:
+            _sf = _fits[_shape_source]
+            probe_pose = FilterPose(_sf[0], _sf[1])
+        pose, method = resolve_filter_pose(
+            fit,
+            lum=_lums.get(cfilt),
+            probe_lum=_lums.get(_shape_source) if _shape_source else None,
+            probe_pose=probe_pose,
+            probe_semi_major_px=_fits[_shape_source][2] if _shape_source else None,
+        )
+        filter_poses[cfilt] = pose
+        if method != "own_detection":
+            print(f"    [geometry] {cfilt} pose {method} (own detection failed outright)")
+
     for filt in required_filters:
         if filt not in window["per_filter"]:
             print(f"    [{filt}] Not in window — skipped")
@@ -1385,6 +1878,8 @@ def derotate_window(
                 pole_pa_deg=pole_pa_deg,
                 color_mode=color_mode,
                 flip_direction=flip_ns,
+                shared_shape=shared_shape,
+                filter_pose=filter_poses.get(filt),
                 weight_power=weight_power,
             )
         except Exception as exc:
