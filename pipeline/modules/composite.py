@@ -86,8 +86,18 @@ def align_channels(
     channels: Dict[str, np.ndarray],
     reference_key: str,
     max_shift_px: float = 0.0,
-) -> Dict[str, np.ndarray]:
+) -> Tuple[Dict[str, np.ndarray], Dict[str, Tuple[float, float]]]:
     """Align all channels to *reference_key* via sub-pixel phase correlation.
+
+    Correlation is restricted to a square ROI around the reference channel's
+    detected planet disk (via find_disk_center) when detection succeeds, so
+    that a ring system attached to the disk — whose brightness relative to
+    the disk varies strongly by filter (e.g. far brighter than the disk in a
+    methane band vs. broadband filters) — cannot bias the phase-correlation
+    peak away from the true disk-to-disk registration. Falls back to
+    whole-frame correlation if disk detection fails (matches prior behaviour
+    for planets without a ring, and is the same fallback the disk mask below
+    already uses).
 
     Args:
         channels:      {filter_name: float [0,1] 2D image}
@@ -96,21 +106,45 @@ def align_channels(
                        Prevents runaway shifts from low-SNR phase correlation.
 
     Returns:
-        New dict with aligned images (reference unchanged, others shifted).
+        (aligned, shifts):
+            aligned: New dict with aligned images (reference unchanged, others shifted).
+            shifts:  {filter_name: (dx, dy)} actually applied for every key
+                     (0.0, 0.0 for the reference and for any discarded shift).
     """
     ref = channels[reference_key]
+
+    roi = None
+    try:
+        cx, cy, sr, _, _ = find_disk_center(ref)
+        h, w = ref.shape[:2]
+        if sr >= 10:
+            ys, ye = int(max(0, cy - sr)), int(min(h, cy + sr))
+            xs, xe = int(max(0, cx - sr)), int(min(w, cx + sr))
+            if (ye - ys) > 10 and (xe - xs) > 10:
+                roi = (ys, ye, xs, xe)
+    except Exception:
+        pass
+
     aligned: Dict[str, np.ndarray] = {}
+    shifts: Dict[str, Tuple[float, float]] = {}
     for key, img in channels.items():
         if key == reference_key:
             aligned[key] = img
+            shifts[key] = (0.0, 0.0)
+            continue
+        if roi is not None:
+            ys, ye, xs, xe = roi
+            dx, dy = subpixel_align(ref[ys:ye, xs:xe], img[ys:ye, xs:xe])
         else:
             dx, dy = subpixel_align(ref, img)
-            if max_shift_px > 0 and (abs(dx) > max_shift_px or abs(dy) > max_shift_px):
-                # Shift is unreasonably large — phase correlation failed; skip
-                aligned[key] = img
-            else:
-                aligned[key] = apply_shift(img, dx, dy)
-    return aligned
+        if max_shift_px > 0 and (abs(dx) > max_shift_px or abs(dy) > max_shift_px):
+            # Shift is unreasonably large — phase correlation failed; skip
+            aligned[key] = img
+            shifts[key] = (0.0, 0.0)
+        else:
+            aligned[key] = apply_shift(img, dx, dy)
+            shifts[key] = (dx, dy)
+    return aligned, shifts
 
 
 # ── RGB composite ──────────────────────────────────────────────────────────────
@@ -271,14 +305,9 @@ def compose(
     # ── Align ──────────────────────────────────────────────────────────────────
     shift_log: Dict[str, list] = {k: [0.0, 0.0] for k in required}
     if align and len(stretched) > 1:
-        aligned = align_channels(stretched, reference_key, max_shift_px=max_shift_px)
-        for key in required:
-            if key != reference_key:
-                dx, dy = subpixel_align(stretched[reference_key], stretched[key])
-                if max_shift_px > 0 and (abs(dx) > max_shift_px or abs(dy) > max_shift_px):
-                    shift_log[key] = [0.0, 0.0]
-                else:
-                    shift_log[key] = [round(dx, 3), round(dy, 3)]
+        aligned, shifts = align_channels(stretched, reference_key, max_shift_px=max_shift_px)
+        for key, (dx, dy) in shifts.items():
+            shift_log[key] = [round(dx, 3), round(dy, 3)]
     else:
         aligned = stretched
 
