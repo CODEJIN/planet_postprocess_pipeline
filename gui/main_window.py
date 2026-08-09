@@ -43,6 +43,7 @@ from gui.widgets.log_widget import LogWidget
 from gui.widgets.step_item import StepItem
 from pipeline.config import (
     PipelineConfig,
+    APGridMode,
     LuckyStackConfig,
     SerCropConfig,
     WaveletConfig,
@@ -1202,7 +1203,7 @@ class MainWindow(QMainWindow):
             n_workers             = _global_workers,   # Step 2 uses all available cores
             n_ser_parallel        = int(d.get("lucky_n_ser_parallel", 1)),
             use_tps               = bool(d.get("lucky_use_tps", False)),
-            use_as4_ap_grid       = bool(d.get("lucky_use_as4_ap_grid", False)),
+            ap_grid_mode          = APGridMode.AS4 if bool(d.get("lucky_use_as4_ap_grid", False)) else APGridMode.UNIFORM,
             use_ncc               = bool(d.get("lucky_use_ncc", False)),
             per_ap_selection      = bool(d.get("lucky_per_ap_selection", False)),
             fourier_quality_power = float(d.get("lucky_fourier_power", 1.0)),

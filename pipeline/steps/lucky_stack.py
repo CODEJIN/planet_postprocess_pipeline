@@ -45,7 +45,7 @@ from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor, as_com
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from pipeline.config import PipelineConfig
+from pipeline.config import APGridMode, PipelineConfig
 from pipeline.modules import image_io
 from pipeline.modules.lucky_stack import lucky_stack_ser, compute_session_aps_from_ser
 
@@ -136,7 +136,7 @@ def run(
     _session_ref_cx = 0.0
     _session_ref_cy = 0.0
 
-    if getattr(cfg, "use_as4_ap_grid", False):
+    if getattr(cfg, "ap_grid_mode", APGridMode.UNIFORM) == APGridMode.AS4:
         ref_ser = _pick_reference_ser(ser_files, getattr(cfg, "ap_reference_filter", ""))
         if ref_ser is not None:
             print(f"  [Step2] Session AP reference: {ref_ser.name}", flush=True)

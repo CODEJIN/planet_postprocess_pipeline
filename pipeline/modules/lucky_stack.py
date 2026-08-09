@@ -46,7 +46,7 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from pipeline.config import LuckyStackConfig
+from pipeline.config import APGridMode, LuckyStackConfig
 from pipeline.modules.derotation import (
     apply_shift,
     find_disk_center,
@@ -2965,10 +2965,7 @@ def lucky_stack_ser(
             # ── Phase 4: AP grid ──────────────────────────────────────────
             # On iteration > 0, the reference is the previous stacked result
             # (much higher SNR → more accurate AP shifts).
-            use_multiscale    = bool(getattr(cfg, "use_multiscale_ap", False))
-            use_double        = bool(getattr(cfg, "use_double_ap_grid", False))
-            use_adaptive      = bool(getattr(cfg, "use_adaptive_ap", True))
-            use_as4_ap_grid   = bool(getattr(cfg, "use_as4_ap_grid", False))
+            ap_grid_mode = getattr(cfg, "ap_grid_mode", APGridMode.UNIFORM)
             from collections import Counter as _Counter
             if _session_ap_positions is not None:
                 # Session-wide AS4 AP mode: pre-shifted APs from reference SER.
@@ -2984,7 +2981,7 @@ def lucky_stack_ser(
                 ap_desc = "local_q: " + " ".join(
                     f"{sz}px×{ap_size_info[sz]}" for sz in sorted(ap_size_info)
                 )
-            elif use_as4_ap_grid:
+            elif ap_grid_mode == APGridMode.AS4:
                 # Standalone AS4 greedy PDS mode (no session sharing).
                 ap_positions = generate_as4_ap_grid(
                     disk_cx, disk_cy, disk_radius, reference, cfg
@@ -2993,7 +2990,7 @@ def lucky_stack_ser(
                 ap_desc = "as4_pds: " + " ".join(
                     f"{sz}px×{ap_size_info[sz]}" for sz in sorted(ap_size_info)
                 )
-            elif use_multiscale:
+            elif ap_grid_mode == APGridMode.MULTISCALE:
                 ap_positions = generate_multiscale_ap_grid(
                     disk_cx, disk_cy, disk_radius, reference, cfg
                 )
@@ -3001,7 +2998,7 @@ def lucky_stack_ser(
                 ap_desc = "multiscale: " + " ".join(
                     f"{sz}px×{ap_size_info[sz]}" for sz in sorted(ap_size_info)
                 )
-            elif use_double:
+            elif ap_grid_mode == APGridMode.DOUBLE:
                 ap_positions = generate_double_ap_grid(
                     disk_cx, disk_cy, disk_radius, reference, cfg
                 )
@@ -3009,7 +3006,7 @@ def lucky_stack_ser(
                 ap_desc = "double_ap_grid: " + " ".join(
                     f"{sz}px×{ap_size_info[sz]}" for sz in sorted(ap_size_info)
                 )
-            elif use_adaptive:
+            elif ap_grid_mode == APGridMode.ADAPTIVE:
                 ap_positions = generate_adaptive_ap_grid(
                     disk_cx, disk_cy, disk_radius, reference, cfg
                 )

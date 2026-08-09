@@ -9,8 +9,25 @@ Edit this file (or instantiate PipelineConfig in main.py) to control:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import List, Optional
+
+
+class APGridMode(str, Enum):
+    """Which AP (alignment point) grid generator ``lucky_stack.py`` uses.
+
+    Precedence when several might apply is fixed in the dispatch code
+    (session-shared APs, then ``score_metric="local_gradient"``'s own
+    preloaded grid, both independent of this enum) — this only selects
+    among the generator functions below once neither of those apply.
+    """
+
+    UNIFORM    = "uniform"     # generate_ap_grid (default)
+    ADAPTIVE   = "adaptive"    # generate_adaptive_ap_grid (try49: did not reach AS!4 quality)
+    DOUBLE     = "double"      # generate_double_ap_grid (no recorded validation)
+    MULTISCALE = "multiscale"  # generate_multiscale_ap_grid (try64, no recorded outcome)
+    AS4        = "as4"         # generate_as4_ap_grid (validated: 96-100% match vs AS!4)
 
 
 # ── Step 7 & 5: Wavelet sharpening ────────────────────────────────────────────
@@ -435,25 +452,26 @@ class LuckyStackConfig:
     # Marginally below theoretical minimum but empirically optimal (wider sigma over-smooths).
     ap_sigma_factor: float = 0.9     # σ = ap_step × 0.9 = 14.4px (April-11 code optimal)
 
-    # Adaptive AP grid (try14+: LoG scale detection + dynamic AP sizes + wide KR)
-    # When True, replaces the uniform 64px grid with a local-scale-aware sparse AP
-    # set (8-11 APs at mixed sizes 64–128px) selected by LoG energy + cross-size NMS.
-    # Max AP size scales with disk_radius (max = disk_radius × 1.28 rounded to 8px),
-    # so larger telescopes automatically get proportionally larger AP patches.
-    # ap_kr_sigma: Gaussian KR smoothing sigma; 64px covers sparse AP gaps across
-    #   a ~200px disk (vs legacy 14.4px which was sized for ~122 dense APs).
-    # ap_candidate_step: dense candidate search step before NMS (pixels).
-    # try49 베이스라인: uniform 64px grid (adaptive는 6~9개만 생성, AS!4 수준 안됨)
-    use_adaptive_ap: bool = False
-    # Multi-scale AP grid matching AS!4 double_ap_grid: 64px + 96px + 192px layers.
-    # Overrides use_adaptive_ap when True (implies use_adaptive_ap=False path +
-    # multi-size triples → adaptive warp map KR).
-    use_double_ap_grid: bool = False
-    # Minimum-sufficient-size multi-scale AP grid (try64).
-    # Candidate grid at ap_size//2 spacing; for each position tries ap_size, ap_size*2, ...
-    # up to disk_radius — uses the smallest size meeting ap_min_contrast.
-    # Overrides use_adaptive_ap and use_double_ap_grid.
-    use_multiscale_ap: bool = False
+    # Which AP grid generator to use — see APGridMode. UNIFORM (plain grid,
+    # cfg.ap_size everywhere) is the validated default.
+    #   ADAPTIVE   — try14+: local-scale-aware sparse AP set (8-11 APs at
+    #                mixed sizes 64-128px) selected by LoG energy + NMS.
+    #                Max AP size scales with disk_radius (×1.28, rounded to
+    #                8px). try49 baseline found only 6-9 APs generated,
+    #                did not reach AS!4 quality.
+    #   DOUBLE     — AS!4-style double_ap_grid: 64+96+192px layers. No
+    #                recorded validation outcome.
+    #   MULTISCALE — try64: minimum-sufficient-size grid (smallest AP size
+    #                meeting ap_min_contrast at each position). No recorded
+    #                validation outcome.
+    #   AS4        — greedy Poisson Disk Sampling matching AS!4's exact
+    #                placement algorithm. Validated: 96-100% match vs AS!4.
+    #                Only mode with GUI wiring (lucky_use_as4_ap_grid).
+    # ap_kr_sigma: Gaussian KR smoothing sigma for ADAPTIVE/DOUBLE/MULTISCALE/
+    #   AS4's multi-size warp maps; 64px covers sparse AP gaps across a
+    #   ~200px disk (vs legacy 14.4px which was sized for ~122 dense APs).
+    # ap_candidate_step: dense candidate search step before NMS (pixels, ADAPTIVE only).
+    ap_grid_mode: APGridMode = APGridMode.UNIFORM
     ap_kr_sigma: float = 64.0        # KR sigma for adaptive warp maps (px)
     ap_candidate_step: int = 8       # candidate grid search step (px)
 
@@ -597,13 +615,13 @@ class LuckyStackConfig:
     use_patch_blend: bool = False
 
     # ── AS!4 greedy PDS AP grid (session-wide) ────────────────────────────────
-    # When True, generates APs via greedy Poisson Disk Sampling (raster scan)
-    # matching AS!4's exact placement algorithm (reverse-engineered, 96-100% match).
+    # Set ap_grid_mode=APGridMode.AS4 to enable. Generates APs via greedy
+    # Poisson Disk Sampling (raster scan) matching AS!4's exact placement
+    # algorithm (reverse-engineered, 96-100% match).
     # Three independent layers: s, round(s×1.5/8)×8, s×3.
     # min_dist per layer = round(ap_size × 35/64).
     # In session-wide mode (step02): APs are generated once from the reference SER
     # and shared across all SERs (with per-SER disk offset correction).
-    use_as4_ap_grid: bool = False
     # Reference filter for session-wide AP generation.
     # Priority when empty (auto): IR > R > G > B > CH4 > color.
     # Set explicitly (e.g. "IR") to force a specific filter.
