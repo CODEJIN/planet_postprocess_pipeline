@@ -12,7 +12,7 @@ from typing import Any
 SESSION_DIR  = Path.home() / ".astropipe"
 SESSION_FILE = SESSION_DIR / "session.json"
 
-SESSION_VERSION = 13  # bump when _DEFAULTS or migration logic changes
+SESSION_VERSION = 14  # bump when _DEFAULTS or migration logic changes
 
 # Default values written on first run
 _DEFAULTS: dict[str, Any] = {
@@ -24,6 +24,7 @@ _DEFAULTS: dict[str, Any] = {
     "target":           "Jup",
     "horizons_id":      "599",
     "rotation_period":  9.9281,
+    "warp_scale":       1.00,
     "filters":          "IR,R,G,B,CH4",
     "ser_input_dir":      "",
     "input_dir":          "",
@@ -149,6 +150,16 @@ def _migrate(data: dict[str, Any]) -> dict[str, Any]:
             val = data.get(key, "")
             if val and "step01_pipp" in val:
                 data[key] = val.replace("step01_pipp", "step01_ser_crop")
+
+    # v13→v14: warp_scale is now planet-dependent (2026-08-09 NCC sweep found
+    # the inherited Jupiter default of 1.00 badly overcorrects for Saturn —
+    # empirical best-fit was 0.05-0.15). Existing Saturn sessions that never
+    # had this field (or still carry the un-tuned 1.00/0.80 defaults) get
+    # bumped to the validated 0.10; anything the user already customised
+    # away from those defaults is left alone.
+    if ver < 14:
+        if data.get("planet") == "Saturn" and float(data.get("warp_scale", 1.00)) in (1.00, 0.80):
+            data["warp_scale"] = 0.10
 
     data["session_version"] = SESSION_VERSION
     return data

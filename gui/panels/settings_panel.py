@@ -29,16 +29,38 @@ from PySide6.QtWidgets import (
 from gui.i18n import S
 from gui import profile_manager
 
-# Planet preset data: name → (target, horizons_id, rotation_period_hours)
-_PLANET_PRESETS: dict[str, tuple[str, str, float]] = {
-    "Jupiter": ("Jup", "599",   9.9281),
-    "Saturn":  ("Sat", "699",  10.56),
-    "Mars":    ("Mar", "499",  24.6229),
-    "Uranus":  ("Ura", "799",  17.24),
-    "Neptune": ("Nep", "899",  16.11),
-    "Mercury": ("Mer", "199", 1407.6),
-    "Venus":   ("Ven", "299", 5832.5),
-    "Custom":  ("",    "",      9.9281),
+# Planet preset data: name → (target, horizons_id, rotation_period_hours, warp_scale)
+#
+# warp_scale is the empirical de-rotation warp strength (see DerotationConfig /
+# spherical_derotation_warp). Only Jupiter (1.00) and Saturn (0.10) have been
+# validated via an NCC sweep against real session data.
+#
+# Saturn's 0.10 has been specifically re-verified (2026-08-09) against three
+# progressively stricter masks (baseline 0.70R disk, 0.55R disk, and a
+# 0.35-0.60R inner annulus that excludes the outer 40% of the disk radius
+# entirely — i.e. as far from any possible ring/Cassini-division/limb
+# contamination as practical). All three masks independently converge on the
+# same median best-fit scale (~0.05-0.10) and the same overwhelming NCC
+# preference for low scale over the full-strength warp — so this is NOT an
+# artifact of the measurement window including ring/limb structure. What IS
+# still unconfirmed is *why* Saturn's atmosphere needs such a small warp
+# (candidates: real differential rotation, or a mismatch between System III's
+# reference period and the actual cloud-top motion) — do not describe this as
+# simply "System III period isn't cloud-top calibrated, therefore 10x
+# overcorrection": the ~7% period difference between System II and System III
+# cannot by itself explain a 10x amplitude difference, so that specific causal
+# story remains an open question even though the 0.10 value itself is solid.
+# The remaining planets keep the old default of 1.00 unvalidated — run an NCC
+# sweep before trusting de-rotation quality for those targets.
+_PLANET_PRESETS: dict[str, tuple[str, str, float, float]] = {
+    "Jupiter": ("Jup", "599",   9.9281, 1.00),
+    "Saturn":  ("Sat", "699",  10.56,   0.10),
+    "Mars":    ("Mar", "499",  24.6229, 1.00),
+    "Uranus":  ("Ura", "799",  17.24,   1.00),
+    "Neptune": ("Nep", "899",  16.11,   1.00),
+    "Mercury": ("Mer", "199", 1407.6,   1.00),
+    "Venus":   ("Ven", "299", 5832.5,   1.00),
+    "Custom":  ("",    "",      9.9281, 1.00),
 }
 
 _PANEL_BG   = "#252526"
@@ -255,6 +277,16 @@ class SettingsPanel(QWidget):
         self._rotation_period.setToolTip(S("settings.rotation_period.tooltip"))
         fl.addRow(_lbl(S("settings.rotation_period"), S("settings.rotation_period.tooltip")), self._rotation_period)
 
+        # De-rotation warp scale (empirical, planet-dependent — see _PLANET_PRESETS comment)
+        self._warp_scale = QDoubleSpinBox()
+        self._warp_scale.setStyleSheet(_SPINBOX_STYLE)
+        self._warp_scale.setRange(0.0, 3.0)
+        self._warp_scale.setDecimals(3)
+        self._warp_scale.setSingleStep(0.01)
+        self._warp_scale.setValue(1.00)
+        self._warp_scale.setToolTip(S("settings.warp_scale.tooltip"))
+        fl.addRow(_lbl(S("settings.warp_scale"), S("settings.warp_scale.tooltip")), self._warp_scale)
+
         # Camera mode (above filters so the user sees why filters is disabled)
         mode_widget = QWidget()
         mode_widget.setStyleSheet("background: transparent;")
@@ -442,11 +474,12 @@ class SettingsPanel(QWidget):
         pname = self._planet_combo.itemData(index)
         if pname not in _PLANET_PRESETS:
             return
-        target, horizons_id, period = _PLANET_PRESETS[pname]
+        target, horizons_id, period, warp_scale = _PLANET_PRESETS[pname]
         if pname != "Custom":
             self._target.setText(target)
             self._horizons_id.setText(horizons_id)
             self._rotation_period.setValue(period)
+            self._warp_scale.setValue(warp_scale)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -462,6 +495,7 @@ class SettingsPanel(QWidget):
             "target":             self._target.text().strip(),
             "horizons_id":        self._horizons_id.text().strip(),
             "rotation_period":    self._rotation_period.value(),
+            "warp_scale":         self._warp_scale.value(),
             "filters":            self._filters.text().strip(),
             "camera_mode":        camera_mode,
             "language":           language,
@@ -480,6 +514,7 @@ class SettingsPanel(QWidget):
         self._target.setText(data.get("target", "Jup"))
         self._horizons_id.setText(data.get("horizons_id", "599"))
         self._rotation_period.setValue(float(data.get("rotation_period", 9.9281)))
+        self._warp_scale.setValue(float(data.get("warp_scale", 1.00)))
         self._filters.setText(data.get("filters", "IR,R,G,B,CH4"))
 
         camera_mode = data.get("camera_mode", "mono")
