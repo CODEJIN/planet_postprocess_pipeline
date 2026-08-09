@@ -1252,6 +1252,7 @@ class MainWindow(QMainWindow):
             warp_scale            = float(d.get("warp_scale", 1.00)),
             normalize_brightness  = bool(d.get("normalize_brightness", False)),
             min_quality_threshold = float(d.get("min_quality_threshold", 0.3)),
+            stack_weight_power    = float(d.get("stack_weight_power", 1.0)),
         )
 
         _sat_composite_on = bool(d.get("satellite_composite_enabled", False))

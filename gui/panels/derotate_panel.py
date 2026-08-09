@@ -90,6 +90,18 @@ class DerotatePanel(BasePanel):
         lbl_mq.setToolTip(S("step04.min_quality.tooltip"))
         fl.addRow(lbl_mq, self._min_quality)
 
+        # Stack weight power (quality-weighted stacking exponent)
+        self._stack_weight_power = QDoubleSpinBox()
+        self._stack_weight_power.setStyleSheet(_SPINBOX_STYLE)
+        self._stack_weight_power.setRange(0.5, 5.0)
+        self._stack_weight_power.setDecimals(1)
+        self._stack_weight_power.setSingleStep(0.5)
+        self._stack_weight_power.setValue(1.0)
+        self._stack_weight_power.setToolTip(S("step04.stack_weight_power.tooltip"))
+        lbl_swp = QLabel(S("step04.stack_weight_power"))
+        lbl_swp.setToolTip(S("step04.stack_weight_power.tooltip"))
+        fl.addRow(lbl_swp, self._stack_weight_power)
+
         # Normalize brightness
         self._normalize = QCheckBox()
         self._normalize.setStyleSheet(_CHECK_STYLE)
@@ -117,6 +129,7 @@ class DerotatePanel(BasePanel):
     def get_config_updates(self) -> dict[str, Any]:
         result: dict[str, Any] = {
             "min_quality_threshold":       self._min_quality.value(),
+            "stack_weight_power":          self._stack_weight_power.value(),
             "normalize_brightness":        self._normalize.isChecked(),
             "satellite_composite_enabled": self._satellite_composite.isChecked(),
         }
@@ -153,6 +166,7 @@ class DerotatePanel(BasePanel):
             self._step_status.refresh(p)
 
         self._min_quality.setValue(float(data.get("min_quality_threshold", 0.05)))
+        self._stack_weight_power.setValue(float(data.get("stack_weight_power", 1.0)))
         self._normalize.setChecked(bool(data.get("normalize_brightness", False)))
         self._satellite_composite.setChecked(
             bool(data.get("satellite_composite_enabled", False))
