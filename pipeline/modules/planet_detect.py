@@ -15,10 +15,15 @@ Key design decisions:
     one side is cut by a data-transfer error).
   - Ringed planets (e.g. Saturn) attach a wide, faint ring to the disk in the
     thresholded mask, which would otherwise fail the circularity checks. A
-    percentile re-threshold isolates the brighter disk core before those
-    checks run, while boundary/diameter/centroid still use the full
-    disk+ring extent. Filters where the disk is *not* the brightest part of
-    the blob (e.g. Saturn's CH4 band) should pass ``skip_shape_check=True``.
+    percentile re-threshold isolates the disk core (assumed brighter than
+    the ring) before those checks run, while boundary/diameter/centroid
+    still use the full disk+ring extent. Some filters invert this contrast
+    (e.g. Saturn's CH4/methane band, where atmospheric absorption makes the
+    globe darker than its icy rings) — rather than name that filter, a
+    failure to isolate a plausible round core is treated as "brightness
+    can't validate this frame's shape" and the aspect/edge checks are
+    skipped, matching what a per-filter-name workaround would have done
+    without hardcoding the name.
 """
 from __future__ import annotations
 
@@ -66,7 +71,6 @@ def analyze_planet(
     aspect_ratio_limit: float = 0.2,
     straight_edge_limit: float = 0.5,
     core_percentile: float = 60.0,
-    skip_shape_check: bool = False,
 ) -> Optional[Dict]:
     """Detect the planet in *image* and validate its shape.
 
@@ -84,16 +88,11 @@ def analyze_planet(
     straight_edge_limit: Fraction of a bounding-box edge that may be lit
                          before the frame is considered clipped.
     core_percentile:     Intensity percentile (within the detected blob) used
-                         to isolate the bright disk core from a fainter
-                         attached ring before the shape checks run — see
-                         "Disk-core isolation" below.
-    skip_shape_check:    When True, bypass the aspect-ratio and straight-edge
-                         checks entirely (still applies boundary + diameter).
-                         Use for filters where the disk is *not* the brightest
-                         part of the blob (e.g. Saturn's CH4/methane band,
-                         where atmospheric absorption makes the globe darker
-                         than its icy rings) — there, no brightness-based
-                         core isolation can find a round "disk" to validate.
+                         to isolate the disk core from a fainter attached
+                         ring before the shape checks run — see
+                         "Disk-core isolation" below. If isolation fails to
+                         find a plausible round core, the shape checks are
+                         skipped rather than rejecting the frame.
 
     Returns
     -------
@@ -140,55 +139,78 @@ def analyze_planet(
     ):
         return None
 
-    if not skip_shape_check:
-        # ── Disk-core isolation ─────────────────────────────────────────────
-        # Ringed planets (e.g. Saturn) attach a wide, faint ring to the disk in
-        # the loose triangle-threshold mask, which blows out the blob's
-        # bounding-box aspect ratio (rings span ~2.2x the disk diameter) and
-        # would otherwise fail the circularity check below even for a good
-        # frame. In continuum filters the disk is brighter than the ring, so
-        # re-thresholding at a high percentile of the blob's own pixel values
-        # isolates a compact, round core (the disk) and drops the fainter
-        # ring. Shape-based stripping (e.g. morphological opening) is not
-        # enough on heavily-blurred/noisy single frames, where the ring's
-        # binarised footprint can be nearly as thick as the disk itself —
-        # intensity is the more reliable signal here.
-        # If nothing distinct survives (e.g. a solid Venus crescent has no
-        # separate faint appendage to strip), fall back to the full blob.
-        shape_x, shape_y, shape_bw, shape_bh = x, y, bw, bh
-        core_mask_roi = None
-        roi_vals = blurred[y : y + bh, x : x + bw]
-        roi_mask = thresh[y : y + bh, x : x + bw] > 0
-        vals = roi_vals[roi_mask]
-        if vals.size > 0:
-            core_thv = np.percentile(vals, core_percentile)
-            core_bin = (((roi_vals >= core_thv) & roi_mask).astype(np.uint8)) * 255
-            core_stats, _ = _largest_component(core_bin)
-            if core_stats is not None:
-                cx0 = int(core_stats[cv2.CC_STAT_LEFT])
-                cy0 = int(core_stats[cv2.CC_STAT_TOP])
-                shape_bw = int(core_stats[cv2.CC_STAT_WIDTH])
-                shape_bh = int(core_stats[cv2.CC_STAT_HEIGHT])
-                shape_x, shape_y = x + cx0, y + cy0
-                core_mask_roi = core_bin[cy0 : cy0 + shape_bh, cx0 : cx0 + shape_bw]
+    # ── Disk-core isolation ─────────────────────────────────────────────────
+    # Ringed planets (e.g. Saturn) attach a wide, faint ring to the disk in
+    # the loose triangle-threshold mask, which blows out the blob's
+    # bounding-box aspect ratio (rings span ~2.2x the disk diameter) and
+    # would otherwise fail the circularity check below even for a good
+    # frame. Re-thresholding at a high percentile of the blob's own pixel
+    # values isolates a compact, round core (the disk) and drops the
+    # fainter ring. Shape-based stripping (e.g. morphological opening) is
+    # not enough on heavily-blurred/noisy single frames, where the ring's
+    # binarised footprint can be nearly as thick as the disk itself —
+    # intensity is the more reliable signal here.
+    #
+    # This assumes the disk is brighter than an attached ring, which is not
+    # universal: Saturn's CH4/methane band inverts it (atmospheric
+    # absorption makes the globe darker than its icy rings). A symmetric
+    # "try the dark percentile too" was tried and does NOT work on real
+    # data: the dark-side re-threshold barely shrinks at all (most of a
+    # ring+disk blob's pixels are on the dim side by area, so excluding a
+    # thin bright ring leaves nearly the whole original footprint), while
+    # the bright side isolates the ring itself, not the disk (confirmed on
+    # real Saturn CH4 frames: bright-core aspect got WORSE, not better, at
+    # higher percentiles). There is no cheap brightness-only geometric fix
+    # for this - a real fix needs an edge/gradient-based limb search
+    # (as pipeline.modules.derotation.find_disk_center now does), which is
+    # too expensive to run per-raw-frame here (this runs during Step 1,
+    # potentially tens of thousands of times per session).
+    #
+    # So: try the bright-core hypothesis only. If it succeeds (finds a
+    # plausibly round core), validate normally. If it does NOT find a
+    # plausible core, that itself is the filter-agnostic signal that
+    # brightness can't validate this frame's shape (whether because of an
+    # inverted-contrast filter or because it's not remotely a valid frame),
+    # so give up on the aspect/edge checks — matching this codebase's prior
+    # per-filter-name CH4 workaround exactly, but decided by an outcome
+    # (isolation didn't produce something round) instead of a filter name.
+    # This can rarely be more permissive for genuinely bad frames of normal
+    # filters too, but boundary + min-diameter (below) still catch those,
+    # and any residual bad frame gets down-weighted or dropped by Step 2's
+    # own quality scoring later.
+    roi_vals = blurred[y : y + bh, x : x + bw]
+    roi_mask = thresh[y : y + bh, x : x + bw] > 0
+    vals = roi_vals[roi_mask]
+    shape_bw, shape_bh, core_mask_roi = bw, bh, None
+    core_isolated = False
+    if vals.size > 0:
+        core_thv = np.percentile(vals, core_percentile)
+        core_bin = (((roi_vals >= core_thv) & roi_mask).astype(np.uint8)) * 255
+        core_stats, _ = _largest_component(core_bin)
+        if core_stats is not None:
+            cx0 = int(core_stats[cv2.CC_STAT_LEFT])
+            cy0 = int(core_stats[cv2.CC_STAT_TOP])
+            shape_bw = int(core_stats[cv2.CC_STAT_WIDTH])
+            shape_bh = int(core_stats[cv2.CC_STAT_HEIGHT])
+            core_mask_roi = core_bin[cy0 : cy0 + shape_bh, cx0 : cx0 + shape_bw]
+            core_isolated = True
 
-        # 2. Aspect-ratio check — disk core (ring excluded) must be roughly circular
-        aspect = shape_bw / shape_bh if shape_bw < shape_bh else shape_bh / shape_bw
-        if aspect < (1.0 - aspect_ratio_limit):
-            return None
-
+    # 2. Aspect-ratio check — disk core (ring excluded) must be roughly circular
+    aspect = shape_bw / shape_bh if shape_bw < shape_bh else shape_bh / shape_bw
+    if core_isolated and aspect >= (1.0 - aspect_ratio_limit):
         # 3. Straight-edge check — disk-core edges must be curved, not flat
-        roi = core_mask_roi if core_mask_roi is not None else (
-            thresh[shape_y : shape_y + shape_bh, shape_x : shape_x + shape_bw]
-        )
         edge_ratios = [
-            np.count_nonzero(roi[0, :]) / shape_bw,    # top edge
-            np.count_nonzero(roi[-1, :]) / shape_bw,   # bottom edge
-            np.count_nonzero(roi[:, 0]) / shape_bh,    # left edge
-            np.count_nonzero(roi[:, -1]) / shape_bh,   # right edge
+            np.count_nonzero(core_mask_roi[0, :]) / shape_bw,   # top edge
+            np.count_nonzero(core_mask_roi[-1, :]) / shape_bw,  # bottom edge
+            np.count_nonzero(core_mask_roi[:, 0]) / shape_bh,   # left edge
+            np.count_nonzero(core_mask_roi[:, -1]) / shape_bh,  # right edge
         ]
         if max(edge_ratios) > straight_edge_limit:
             return None
+    # else: bright-core isolation didn't find a plausible round shape —
+    # can't validate via brightness (inverted-contrast filter, or a
+    # genuinely malformed frame); skip the aspect/edge checks rather than
+    # reject on a signal (ring shape) that isn't the actual disk.
 
     # 4. Minimum diameter
     diameter = max(bw, bh)
