@@ -243,197 +243,6 @@ def normalise_scores(
     return scores
 
 
-# ── Overlapping window selection ───────────────────────────────────────────────
-
-def find_best_windows(
-    scores: Dict[str, List[dict]],
-    required_filters: Optional[List[str]] = None,
-    window_minutes: float = 15.0,
-    cycle_minutes: float = 4.5,
-    n_windows: int = 3,
-    outlier_sigma: float = 1.5,
-    allow_overlap: bool = False,
-) -> List[dict]:
-    """Find time windows suitable for de-rotation stacking.
-
-    Each window spans *window_minutes* and may contain multiple images per
-    filter (one per filter cycle).  Outliers within each filter are removed
-    by sigma-clipping before computing the aggregate quality.
-
-    Window quality components (all bounded [0, 1]):
-      quality_post  — mean norm_score of included images (higher = sharper)
-      snr_factor    — sqrt(n_included / n_expected), capped at 1.0; rewards
-                      more frames (SNR ∝ √n for stacking)
-      stability     — 1/(1+CV) where CV=std/mean; penalises variable seeing
-
-    Per-filter score = quality_post × snr_factor × stability
-    Window quality   = geometric mean across all required filters
-
-    Args:
-        scores:           Output of :func:`normalise_scores`.
-        required_filters: Filters that must all be present (default: all keys).
-        window_minutes:   Duration of the de-rotation time window (minutes).
-        cycle_minutes:    Duration of one complete filter cycle (minutes).
-                          Used to compute expected images per window.
-        n_windows:        Number of windows to return.
-        outlier_sigma:    Sigma threshold below which images are excluded
-                          (threshold = mean − outlier_sigma × std).
-        allow_overlap:    If True windows may share time ranges.  If False
-                          (default) each window center must be at least
-                          *window_minutes* away from every previously
-                          selected window.
-
-    Returns:
-        List of window dicts (best first), each containing:
-        {
-          "center_time":      datetime,
-          "window_start":     datetime,
-          "window_end":       datetime,
-          "window_quality":   float [0, 1],
-          "rotation_degrees": float,   # Jupiter longitude spanned ~0.6°/min
-          "per_filter": {
-            filter: {
-              "n_total":        int,
-              "n_included":     int,
-              "n_excluded":     int,
-              "quality_pre":    float,   # mean score before exclusion
-              "quality_post":   float,   # mean score after exclusion
-              "snr_factor":     float,   # sqrt(n_included / n_expected)
-              "stability":      float,   # 1 / (1 + CV)
-              "filter_quality": float,   # combined per-filter score
-              "included":       [row, ...],
-              "excluded":       [row, ...],
-            }, ...
-          },
-        }
-    """
-    if required_filters is None:
-        required_filters = sorted(scores.keys())
-
-    # Prefer IR as anchor (most relevant channel); fall back to first filter
-    anchor_filter = "IR" if "IR" in required_filters else required_filters[0]
-    anchor_rows = scores.get(anchor_filter, [])
-    if not anchor_rows:
-        return []
-
-    by_filter: Dict[str, List[dict]] = {
-        filt: scores.get(filt, []) for filt in required_filters
-    }
-    half_window = timedelta(minutes=window_minutes / 2)
-    # Expected images per filter per window (float; used to normalise SNR factor)
-    n_expected = window_minutes / cycle_minutes
-
-    candidates: List[dict] = []
-
-    for anchor_row in anchor_rows:
-        t_center = anchor_row["timestamp"]
-        t_start = t_center - half_window
-        t_end   = t_center + half_window
-
-        per_filter: Dict[str, dict] = {}
-        complete = True
-
-        for filt in required_filters:
-            in_window = [
-                r for r in by_filter[filt]
-                if t_start <= r["timestamp"] <= t_end
-            ]
-            if not in_window:
-                complete = False
-                break
-
-            n_total = len(in_window)
-            scores_arr = np.array([r["norm_score"] for r in in_window])
-            mean_pre = float(scores_arr.mean())
-            std_pre  = float(scores_arr.std()) if n_total > 1 else 0.0
-
-            # Sigma-clipping: exclude images below (mean - k*std)
-            threshold = mean_pre - outlier_sigma * std_pre
-            included = [r for r in in_window if r["norm_score"] >= threshold]
-            excluded = [r for r in in_window if r["norm_score"] < threshold]
-            if not included:          # safety: keep best even if all clipped
-                included = [max(in_window, key=lambda r: r["norm_score"])]
-                excluded = []
-
-            n_included  = len(included)
-            incl_scores = np.array([r["norm_score"] for r in included])
-            mean_post   = float(incl_scores.mean())
-            std_post    = float(incl_scores.std()) if n_included > 1 else 0.0
-
-            # SNR factor: relative stacking gain, capped at 1.0
-            snr_factor = float(min(1.0, np.sqrt(n_included / n_expected)))
-
-            # Seeing stability: penalise high intra-window variance
-            cv        = std_post / mean_post if mean_post > 1e-9 else 1.0
-            stability = 1.0 / (1.0 + cv)
-
-            filter_quality = mean_post * snr_factor * stability
-
-            per_filter[filt] = {
-                "n_total":        n_total,
-                "n_included":     n_included,
-                "n_excluded":     len(excluded),
-                "quality_pre":    round(mean_pre, 4),
-                "quality_post":   round(mean_post, 4),
-                "snr_factor":     round(snr_factor, 4),
-                "stability":      round(stability, 4),
-                "filter_quality": round(filter_quality, 4),
-                "included":       included,
-                "excluded":       excluded,
-            }
-
-        if not complete:
-            continue
-
-        # Cross-filter quality: geometric mean of per-filter scores
-        fq_vals = [per_filter[f]["filter_quality"] for f in required_filters]
-        if all(v > 0 for v in fq_vals):
-            window_quality = float(np.prod(fq_vals) ** (1.0 / len(fq_vals)))
-        else:
-            window_quality = 0.0
-
-        # Rotation span: longitude drift across all included images (~0.6°/min)
-        all_times = [
-            r["timestamp"]
-            for filt in required_filters
-            for r in per_filter[filt]["included"]
-        ]
-        t_min_w, t_max_w = min(all_times), max(all_times)
-        rotation_deg = (t_max_w - t_min_w).total_seconds() / 60.0 * 0.6
-
-        candidates.append({
-            "center_time":      t_center,
-            "window_start":     t_start,
-            "window_end":       t_end,
-            "window_quality":   round(window_quality, 4),
-            "rotation_degrees": round(rotation_deg, 2),
-            "per_filter":       per_filter,
-        })
-
-    # Sort best-first, then select top-N windows
-    candidates.sort(key=lambda w: -w["window_quality"])
-
-    if allow_overlap:
-        # Overlapping allowed: just take the best N candidates
-        selected = candidates[:n_windows]
-    else:
-        # Non-overlapping: each window center must be at least window_minutes
-        # away from every already-selected window center.
-        selected = []
-        for win in candidates:
-            t_c = win["center_time"]
-            gap_ok = all(
-                abs((t_c - s["center_time"]).total_seconds() / 60) >= window_minutes
-                for s in selected
-            )
-            if gap_ok:
-                selected.append(win)
-            if len(selected) >= n_windows:
-                break
-
-    return selected
-
-
 def find_all_windows(
     scores: Dict[str, List[dict]],
     required_filters: Optional[List[str]] = None,
@@ -443,13 +252,14 @@ def find_all_windows(
 ) -> List[dict]:
     """Return all sliding windows, sorted chronologically (overlaps included).
 
-    Unlike :func:`find_best_windows`, this function returns every valid window
-    (one per anchor frame) without any quality rank or overlap filtering, so
-    that Steps 04–06 process the full observation session as a slide.
-    Step 09 (Summary Grid) handles top-N selection and non-overlap filtering.
+    Returns every valid window (one per anchor frame) without any quality
+    rank or overlap filtering, so that Steps 04–06 process the full
+    observation session as a slide. Step 09 (Summary Grid) handles top-N
+    selection and non-overlap filtering.
 
-    Returns the same window dict format as :func:`find_best_windows`, but
-    ordered by ``center_time`` (ascending) instead of quality.
+    Window dict format: {center_time, window_start, window_end,
+    window_quality, rotation_degrees, per_filter: {filt: {included,
+    excluded, ...}}}, ordered by center_time (ascending).
     """
     if required_filters is None:
         required_filters = sorted(scores.keys())

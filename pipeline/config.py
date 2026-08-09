@@ -541,9 +541,11 @@ class LuckyStackConfig:
     # selection. Requires local_gradient scoring to generate per-AP scores.
     # Runs in both sequential and parallel paths (n_workers > 1 supported).
     # try56 confirmed: 45.8% Laplacian. try58 (+QSF): 46.7%.
-    # Routes to _spatial_per_ap_quality_stack: full KR-warped frames with
-    # spatially-varying quality weights computed from per-AP Sobel on the
-    # globally-aligned frame. No patch boundaries → wavelet-safe.
+    # Routes to _per_ap_independent_stack: patch-based per-AP frame selection
+    # with Gaussian-window scatter-accumulation. (Note: this comment
+    # previously named a different function, _spatial_per_ap_quality_stack,
+    # which was never actually wired up anywhere — deleted 2026-08-09 as
+    # dead code; this is the correct target.)
     per_ap_selection: bool = True
     # Exponent applied to per-AP Sobel scores for spatial quality weighting.
     # 3–4 provides sharp local selectivity without hard frame-subset cutoffs.
