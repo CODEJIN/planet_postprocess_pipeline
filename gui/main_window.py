@@ -1242,7 +1242,8 @@ class MainWindow(QMainWindow):
         quality = QualityConfig(
             window_frames         = window_frames,
             cycle_minutes         = cycle_sec  / 60.0,
-            min_quality_threshold = float(d.get("min_quality_threshold_03", 0.0)),
+            min_quality_threshold = float(d.get("quality_min_quality_threshold",
+                                               d.get("min_quality_threshold_03", 0.0))),
         )
 
         derotation = DerotationConfig(

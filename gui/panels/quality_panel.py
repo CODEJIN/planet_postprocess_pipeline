@@ -158,8 +158,8 @@ class QualityPanel(BasePanel):
         result: dict[str, Any] = {
             "input_dir":                self._input_lbl.text().strip(),
             "window_frames":            self._window_frames.value(),
-            "cycle_seconds":            self._cycle_seconds.value(),
-            "min_quality_threshold_03": self._min_quality.value(),
+            "cycle_seconds":                  self._cycle_seconds.value(),
+            "quality_min_quality_threshold":  self._min_quality.value(),
         }
         out_text = self._output_lbl.text().strip()
         if out_text:
@@ -185,7 +185,8 @@ class QualityPanel(BasePanel):
                     S("validate.files_insufficient",
                       wf=window_frames, nw=1, req=window_frames, n=n_tif),
                 ))
-        threshold = float(config.get("min_quality_threshold_03", 0.05))
+        threshold = float(config.get("quality_min_quality_threshold",
+                                      config.get("min_quality_threshold_03", 0.05)))
         if threshold > 0.5:
             issues.append(ValidationIssue(
                 "warning",
@@ -226,10 +227,14 @@ class QualityPanel(BasePanel):
             old_cs = int(data.get("cycle_seconds", 270))
             self._window_frames.setValue(max(1, round(old_ws / old_cs)))
         self._cycle_seconds.setValue(int(data.get("cycle_seconds", 225)))
-        # Support both old key (top_fraction) and new key
-        mq = data.get("min_quality_threshold_03",
-                      data.get("min_quality_threshold_04",
-                               data.get("top_fraction", 0.05)))
+        # Support old keys (min_quality_threshold_03/_04, top_fraction) for
+        # sessions saved before the quality_min_quality_threshold rename
+        # (2026-08-09) — disambiguates from DerotationConfig's own,
+        # unrelated min_quality_threshold session key.
+        mq = data.get("quality_min_quality_threshold",
+                      data.get("min_quality_threshold_03",
+                               data.get("min_quality_threshold_04",
+                                        data.get("top_fraction", 0.05))))
         self._min_quality.setValue(float(mq))
 
     # ── Slots ─────────────────────────────────────────────────────────────────
