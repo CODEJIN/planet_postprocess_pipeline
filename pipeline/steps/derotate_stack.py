@@ -1647,6 +1647,7 @@ def run(
             color_mode=(config.camera_mode == "color"),
             flip_ns=derot_flip,
             out_dir=win_out_dir,
+            weight_power=config.derotation.stack_weight_power,
         )
 
         # ── Satellite compositing (exp9 method) ───────────────────────────────

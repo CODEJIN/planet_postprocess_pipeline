@@ -835,12 +835,24 @@ def subpixel_align(
         target:    2-D float [0, 1] image to align to reference.
 
     Returns:
-        (dx, dy) — shift to apply to target to align with reference.
+        (dx, dy) — shift to apply to target (via apply_shift(target, dx, dy))
+        to align it with reference.
     """
+    # cv2.phaseCorrelate(reference, target) returns the forward content shift
+    # of target relative to reference (i.e. target ≈ reference shifted by
+    # (raw_dx, raw_dy)) — NOT the correction needed to undo that shift.
+    # apply_shift()/cv2.warpAffine with M=[[1,0,dx],[0,1,dy]] moves image
+    # content by (+dx,+dy), so passing the raw phaseCorrelate output straight
+    # into apply_shift(target, ...) pushes target further from reference
+    # instead of correcting it. Verified with a synthetic known-shift
+    # round-trip test (tests/test_subpixel_align.py): un-negated MSE was
+    # worse than doing no alignment at all; negated MSE recovered the
+    # reference closely. Negate here so every caller's
+    # apply_shift(target, dx, dy) pattern is correct.
     ref_f32 = reference.astype(np.float32)
     tgt_f32 = target.astype(np.float32)
-    (dx, dy), _ = cv2.phaseCorrelate(ref_f32, tgt_f32)
-    return float(dx), float(dy)
+    (raw_dx, raw_dy), _ = cv2.phaseCorrelate(ref_f32, tgt_f32)
+    return -float(raw_dx), -float(raw_dy)
 
 
 def limb_center_align(
@@ -1027,6 +1039,7 @@ def normalize_brightness_to_reference(
 def quality_weighted_stack(
     images: List[np.ndarray],
     weights: List[float],
+    weight_power: float = 1.0,
 ) -> np.ndarray:
     """Stack images with quality weights (weighted mean).
 
@@ -1034,6 +1047,17 @@ def quality_weighted_stack(
         images:  List of 2-D float [0, 1] arrays (all same shape).
         weights: Quality score per image (norm_score from Step 4).
                  Does not need to sum to 1 — normalised internally.
+        weight_power: Exponent applied to weights before normalising
+                 (weights = weights ** weight_power). 1.0 (default) is the
+                 original linear behaviour. Raising it sharpens the blend
+                 toward the best-scoring frame(s) at the cost of some SNR —
+                 useful when per-frame quality varies a lot within one
+                 window (confirmed on real Saturn data: G/B channel
+                 norm_score spread 0.07-0.94 within a single window, whose
+                 linear blend measurably softened fine detail relative to
+                 weight_power=2-4; see session notes 2026-08-09). Default
+                 1.0 preserves the exact original stack for every caller
+                 that doesn't pass this explicitly.
 
     Returns:
         Weighted mean stack, float [0, 1].
@@ -1043,6 +1067,8 @@ def quality_weighted_stack(
 
     w_arr = np.array(weights, dtype=np.float64)
     w_arr = np.clip(w_arr, 1e-9, None)
+    if weight_power != 1.0:
+        w_arr = w_arr ** weight_power
     w_arr /= w_arr.sum()
 
     stack = np.zeros_like(images[0], dtype=np.float64)
@@ -1064,6 +1090,7 @@ def derotate_filter(
     pole_pa_deg: float = 0.0,
     color_mode: bool = False,
     flip_direction: bool = False,
+    weight_power: float = 1.0,
 ) -> Tuple[np.ndarray, dict]:
     """De-rotate and stack a single filter's images for one time window.
 
@@ -1081,6 +1108,9 @@ def derotate_filter(
                         and alignment are computed on the luminance channel.
         flip_direction: If True, negate the warp drift direction (South-up camera).
                         Must match the flip_ns detected by auto_detect_ns_flip().
+        weight_power:   Exponent applied to norm_score weights before
+                        stacking (see quality_weighted_stack). 1.0 (default)
+                        = unchanged linear blend.
 
     Returns:
         (stacked_image, log_dict)
@@ -1231,7 +1261,50 @@ def derotate_filter(
                 frame_log["align_method"] = method
         warped_images = aligned_images
 
-    stacked = quality_weighted_stack(warped_images, weights)
+        # ── Outlier-shift rejection ──────────────────────────────────────
+        # A frame whose alignment correction is drastically larger than its
+        # window-mates' usually means pre-warp registration failed silently
+        # and the limb_center/phase_correlate fallback landed on an
+        # imprecise large correction (a known CH4 failure mode: brightness
+        # inversion breaks both find_disk_center and limb_center_align).
+        # Blending such a frame in at full weight smears real detail rather
+        # than improving SNR — confirmed 2026-08-09 on window6 CH4, where
+        # one frame needed an ~8px correction vs 0.4-1.1px for its four
+        # window-mates and produced a visible top/bottom color split.
+        # N per window is typically small (3-9), so MAD alone is noisy —
+        # require both a robust relative outlier test AND a hard absolute
+        # floor before excluding a frame.
+        shifts_px = np.array([fl["align_shift_px"] for fl in log_frames], dtype=np.float64)
+        non_ref_mask = np.array([fl["align_method"] != "reference" for fl in log_frames])
+        if non_ref_mask.sum() >= 2:
+            non_ref_shifts = shifts_px[non_ref_mask]
+            median_shift = np.median(non_ref_shifts, axis=0)
+            dist = np.linalg.norm(shifts_px - median_shift, axis=1)
+            mad = np.median(np.abs(dist[non_ref_mask] - np.median(dist[non_ref_mask])))
+            robust_sigma = 1.4826 * mad
+            _OUTLIER_ABS_PX = 5.0
+            outlier = non_ref_mask & (dist > max(1.5, 4.0 * robust_sigma)) & (dist > _OUTLIER_ABS_PX)
+            n_outliers = int(outlier.sum())
+            if 0 < n_outliers < len(warped_images):
+                kept_images: List[np.ndarray] = []
+                kept_weights: List[float] = []
+                for i, (img, wgt) in enumerate(zip(warped_images, weights)):
+                    fl = log_frames[i]
+                    if outlier[i]:
+                        fl["outlier_excluded"] = True
+                        fl["outlier_dist_px"] = round(float(dist[i]), 2)
+                        print(
+                            f"    [outlier] {fl['stem']}: shift={fl['align_shift_px']} is "
+                            f"{dist[i]:.1f}px from window median {median_shift.round(2).tolist()} "
+                            f"(robust_sigma={robust_sigma:.2f}) — excluded from stack"
+                        )
+                        continue
+                    kept_images.append(img)
+                    kept_weights.append(wgt)
+                warped_images = kept_images
+                weights = kept_weights
+
+    stacked = quality_weighted_stack(warped_images, weights, weight_power=weight_power)
 
     log_dict = {
         "n_stacked":             len(warped_images),
@@ -1241,6 +1314,7 @@ def derotate_filter(
         "warp_scale":            warp_scale,
         "pole_pa_deg":           pole_pa_deg,
         "flip_direction":        flip_direction,
+        "weight_power":          weight_power,
         "align_enabled":         align,
         "normalize_brightness":  normalize_brightness,
         "min_quality_threshold": min_quality_threshold,
@@ -1264,6 +1338,7 @@ def derotate_window(
     color_mode: bool = False,
     flip_ns: bool = False,
     out_dir: Optional[Path] = None,
+    weight_power: float = 1.0,
 ) -> Dict[str, Tuple[Optional[Path], dict]]:
     """De-rotate and stack all filters in a single time window.
 
@@ -1276,6 +1351,10 @@ def derotate_window(
         flip_ns:          South-up camera flag from auto_detect_ns_flip(); passed
                           as flip_direction to spherical_derotation_warp().
         out_dir:          If provided, save TIF files here.
+        weight_power:     Exponent applied to norm_score weights in the
+                          per-filter stack (see quality_weighted_stack). 1.0
+                          (default) = original linear blend, unchanged for
+                          every existing caller.
 
     Returns:
         {filter: (output_path_or_None, log_dict)}
@@ -1306,6 +1385,7 @@ def derotate_window(
                 pole_pa_deg=pole_pa_deg,
                 color_mode=color_mode,
                 flip_direction=flip_ns,
+                weight_power=weight_power,
             )
         except Exception as exc:
             print(f" ERROR: {exc}")

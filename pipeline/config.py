@@ -212,6 +212,19 @@ class DerotationConfig:
     # 0.0 = include all frames (disabled). Recommended: 0.05–0.1.
     min_quality_threshold: float = 0.05
 
+    # Exponent applied to norm_score weights before the per-window quality-
+    # weighted stack (weights = norm_score ** stack_weight_power). 1.0
+    # (default) is the original linear blend. Raise this when per-frame
+    # quality varies a lot within a window — confirmed on real Saturn data
+    # (session 2026-08-07): G/B channel norm_score spread 0.07-0.94 within
+    # one window measurably softened fine detail under linear weighting;
+    # weight_power=2.0 recovered ~50-70% of the lost sharpness (Laplacian
+    # variance) by favouring the best-scoring frame(s) more, at some cost to
+    # the SNR gained from the weaker frames. Not auto-detected — set this
+    # explicitly per target/session (e.g. 2.0 for this Saturn session) rather
+    # than changing the default, since it hasn't been validated on Jupiter.
+    stack_weight_power: float = 1.0
+
 
 
 # ── Step 8: RGB / LRGB compositing ────────────────────────────────────────────

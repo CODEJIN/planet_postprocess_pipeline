@@ -298,6 +298,7 @@ def compose(
     else:
         result = make_rgb(r_img, g_img, b_img)
 
+    # ── Post-composite limb desaturation — DISABLED 2026-08-09 (see below) ─────
     # ── Post-composite limb desaturation ───────────────────────────────────────
     # The soft pre-channel mask corrects the outer limb zone (r > r_ref), but the
     # inner limb colour fringe (r ≈ 0.92–1.0 × r_ref) remains where mask≈1.0.
@@ -306,27 +307,81 @@ def compose(
     # Fix: after compositing, apply a Lab-space saturation taper in the limb zone.
     # This only reduces colour (a, b channels), leaving luminance (L) untouched,
     # so the natural limb-darkening gradient is preserved.
-    try:
-        ref_img_d = aligned[reference_key]
-        cx_d, cy_d, r_d, _, _ = find_disk_center(ref_img_d)
-        h_d, w_d = ref_img_d.shape[:2]
-        yy_d, xx_d = np.ogrid[:h_d, :w_d]
-        dist_d = np.sqrt((xx_d - cx_d) ** 2 + (yy_d - cy_d) ** 2).astype(np.float32)
-        # Start desaturation at 0.89×r_ref to catch the inner limb colour fringe.
-        # At r=0.89×r: mask=1 (no effect); at r=0.93×r: mask≈0.72 (28% desat);
-        # at r=0.97×r: mask≈0.30 (70% desat).  Belt features end at ~0.86×r so
-        # the equatorial colour region is barely touched (<7% at r=0.9×r).
-        desat_start = r_d * 0.89
-        desat_width = r_d * 0.15          # fade completes at ~1.04×r_ref
-        t_d = np.clip((dist_d - desat_start) / desat_width, 0.0, 1.0)
-        desat_mask = (0.5 * (1.0 + np.cos(np.pi * t_d))).astype(np.float32)
-        # Convert composite → Lab, suppress a/b, convert back
-        lab_r = cv2.cvtColor(result, cv2.COLOR_RGB2Lab)
-        lab_r[:, :, 1] *= desat_mask   # a channel
-        lab_r[:, :, 2] *= desat_mask   # b channel
-        result = np.clip(cv2.cvtColor(lab_r, cv2.COLOR_Lab2RGB), 0.0, 1.0).astype(np.float32)
-    except Exception:
-        pass  # disk detection failed — skip post-composite desaturation
+    #
+    # -------------------------------------------------------------------------
+    # WHY THIS IS DISABLED (2026-08-09 Saturn investigation):
+    #
+    # The band above was tuned to desat_start=0.89×r_ref, desat_width=0.15×r_ref
+    # — i.e. it forces a/b to ~0 across the OUTER 15% OF THE DISK RADIUS. That
+    # is roughly 10px wide on this session's ~65px-radius Saturn disk, applied
+    # to fix a stated root cause of only ~1.5px. That mismatch (a band ~7x
+    # wider than the physical effect it claims to correct) strongly suggests
+    # it was actually tuned empirically against a much bigger bug that existed
+    # at the time: composite.py's channel-to-channel alignment (align_channels/
+    # subpixel_align) used to run cv2.phaseCorrelate() on the WHOLE frame,
+    # including Saturn's ring — a large, per-filter-brightness-inconsistent
+    # feature that could bias the correlation peak. Measured real misalignment
+    # from that bug was up to 14.6px (Saturn_Data/step06_rgb_composite/
+    # window_04, B channel) — nowhere near the "~1.5px" this desaturation
+    # docstring cites, but roughly consistent with needing a ~10px-wide mask
+    # to hide it after the fact.
+    #
+    # The actual root cause is believed to be composite.py's channel-to-channel
+    # alignment (align_channels/subpixel_align) running cv2.phaseCorrelate() on
+    # the WHOLE frame, including Saturn's ring — a large, per-filter-brightness-
+    # inconsistent feature that can bias the correlation peak. Measured real
+    # misalignment from that bug was up to 14.6px (Saturn_Data/step06_rgb_composite/
+    # window_04, B channel) — far larger than the "~1.5px" effect this
+    # desaturation was designed for, and roughly consistent with needing a
+    # ~10px-wide mask to hide it after the fact.
+    #
+    # A proper fix for that misalignment (disk-ROI-cropped channel alignment,
+    # plus sharing one filter's disk geometry across all filters during
+    # de-rotation so they don't each drift to a slightly different centre) is
+    # still being developed and verified separately — NOT included in this
+    # commit. This desaturation block is disabled now because, even before that
+    # fix lands, it is already doing more harm than good on real Saturn data:
+    # visually it produced a small, vividly-coloured inner sphere sitting
+    # inside a much larger grey sphere, wiping out real colour across the
+    # outer 15% of the disk radius (visually confirmed:
+    # Saturn_Data/step06_compare/desat_before_after.png).
+    #
+    # RISK / WHY THIS IS COMMENTED OUT RATHER THAN DELETED:
+    # This function is shared by every composite spec and every target
+    # (Jupiter/Mars/Venus too), not just Saturn. The ~1.5px wavelength-
+    # dependent limb-darkening effect this was originally meant to catch is a
+    # real physical phenomenon independent of the alignment bug above, and it
+    # has NOT been re-verified against real Jupiter/Mars data. If a thin
+    # (~1-2px) colour fringe reappears at the limb on non-Saturn data:
+    #   - Do NOT just re-enable this block as-is — first confirm with a
+    #     chroma-vs-radius measurement whether a real registration bug is at
+    #     play, since that should be fixed at the source, not masked.
+    #   - If a genuine small residual fringe is confirmed, re-enable with a
+    #     MUCH narrower band matching the originally-stated ~1.5px effect
+    #     (e.g. desat_start≈0.97×r_ref, desat_width≈0.05×r_ref) rather than
+    #     the current 0.89/0.15 values, which were sized for the old bug.
+    #
+    # try:
+    #     ref_img_d = aligned[reference_key]
+    #     cx_d, cy_d, r_d, _, _ = find_disk_center(ref_img_d)
+    #     h_d, w_d = ref_img_d.shape[:2]
+    #     yy_d, xx_d = np.ogrid[:h_d, :w_d]
+    #     dist_d = np.sqrt((xx_d - cx_d) ** 2 + (yy_d - cy_d) ** 2).astype(np.float32)
+    #     # Start desaturation at 0.89×r_ref to catch the inner limb colour fringe.
+    #     # At r=0.89×r: mask=1 (no effect); at r=0.93×r: mask≈0.72 (28% desat);
+    #     # at r=0.97×r: mask≈0.30 (70% desat).  Belt features end at ~0.86×r so
+    #     # the equatorial colour region is barely touched (<7% at r=0.9×r).
+    #     desat_start = r_d * 0.89
+    #     desat_width = r_d * 0.15          # fade completes at ~1.04×r_ref
+    #     t_d = np.clip((dist_d - desat_start) / desat_width, 0.0, 1.0)
+    #     desat_mask = (0.5 * (1.0 + np.cos(np.pi * t_d))).astype(np.float32)
+    #     # Convert composite → Lab, suppress a/b, convert back
+    #     lab_r = cv2.cvtColor(result, cv2.COLOR_RGB2Lab)
+    #     lab_r[:, :, 1] *= desat_mask   # a channel
+    #     lab_r[:, :, 2] *= desat_mask   # b channel
+    #     result = np.clip(cv2.cvtColor(lab_r, cv2.COLOR_Lab2RGB), 0.0, 1.0).astype(np.float32)
+    # except Exception:
+    #     pass  # disk detection failed — skip post-composite desaturation
 
     # ── Auto saturation boost ──────────────────────────────────────────────────
     sat_gain: Optional[float] = None
