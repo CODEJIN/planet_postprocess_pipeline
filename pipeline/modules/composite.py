@@ -89,15 +89,16 @@ def align_channels(
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Tuple[float, float]]]:
     """Align all channels to *reference_key* via sub-pixel phase correlation.
 
-    Correlation is restricted to a square ROI around the reference channel's
-    detected planet disk (via find_disk_center) when detection succeeds, so
-    that a ring system attached to the disk — whose brightness relative to
-    the disk varies strongly by filter (e.g. far brighter than the disk in a
-    methane band vs. broadband filters) — cannot bias the phase-correlation
-    peak away from the true disk-to-disk registration. Falls back to
-    whole-frame correlation if disk detection fails (matches prior behaviour
-    for planets without a ring, and is the same fallback the disk mask below
-    already uses).
+    Whole-frame phase correlation (no disk-ROI crop — tried once for Saturn
+    ring pollution in commit e958140, reverted: real Jupiter data across all
+    28 windows of this session showed the crop *degraded* limb-region NCC
+    alignment quality for most channels in the common (non-ring-polluted)
+    case, occasionally by 1-2px with sign flips on the G channel, which is
+    a plausible source of the increased chromatic-fringing "ring effect" the
+    user reported after that commit landed. The commit's own validation only
+    checked that shifts stayed under 1px, not that they matched or beat the
+    old full-frame result — an incomplete check for a change with this much
+    quality impact on the untargeted (non-Saturn) case.)
 
     Args:
         channels:      {filter_name: float [0,1] 2D image}
@@ -113,18 +114,6 @@ def align_channels(
     """
     ref = channels[reference_key]
 
-    roi = None
-    try:
-        cx, cy, sr, _, _ = find_disk_center(ref)
-        h, w = ref.shape[:2]
-        if sr >= 10:
-            ys, ye = int(max(0, cy - sr)), int(min(h, cy + sr))
-            xs, xe = int(max(0, cx - sr)), int(min(w, cx + sr))
-            if (ye - ys) > 10 and (xe - xs) > 10:
-                roi = (ys, ye, xs, xe)
-    except Exception:
-        pass
-
     aligned: Dict[str, np.ndarray] = {}
     shifts: Dict[str, Tuple[float, float]] = {}
     for key, img in channels.items():
@@ -132,11 +121,7 @@ def align_channels(
             aligned[key] = img
             shifts[key] = (0.0, 0.0)
             continue
-        if roi is not None:
-            ys, ye, xs, xe = roi
-            dx, dy = subpixel_align(ref[ys:ye, xs:xe], img[ys:ye, xs:xe])
-        else:
-            dx, dy = subpixel_align(ref, img)
+        dx, dy = subpixel_align(ref, img)
         if max_shift_px > 0 and (abs(dx) > max_shift_px or abs(dy) > max_shift_px):
             # Shift is unreasonably large — phase correlation failed; skip
             aligned[key] = img
