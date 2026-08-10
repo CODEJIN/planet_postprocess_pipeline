@@ -883,6 +883,50 @@ def resolve_shared_shape(
     return shape, filt
 
 
+_RADIUS_SHARE_REL_TOL = 0.08  # 8% — see resolve_shared_radius()
+
+
+def resolve_shared_radius(
+    candidate_fits: Dict[str, Tuple[float, float, float, float, float, float, bool]],
+) -> Optional[float]:
+    """Median semi_major_px across confident filter fits in one window.
+
+    Found via a user-reported "ring effect" investigation (2026-08-11):
+    each filter's own semi_major (used as spherical_derotation_warp()'s
+    disk_radius_px) normally differs from its siblings by 1-3px on real
+    Jupiter data — pure Otsu-threshold noise from each filter's own
+    SNR/contrast, not a real size difference. The warp treats anything
+    beyond disk_radius_px*1.05 as having no valid solution and forces it to
+    background — so a 1-3px per-filter radius difference means each
+    filter's de-rotated stack goes to zero at a slightly different radius.
+    Composited, that shows as a colour fringe at the limb; wavelet
+    sharpening (which has no way to know the "edge" it's amplifying is an
+    algorithmic artifact, not the real limb) makes it worse. This is
+    present already in each filter's own step04 output, before composite
+    or wavelet ever run — confirmed directly against real per-window
+    derotation logs (radii spanning 103.0-104.9px in one window).
+
+    derotate_window() calls this once per window; derotate_filter() then
+    only accepts the shared value for a filter whose OWN fit is already
+    close to it (see _RADIUS_SHARE_REL_TOL) — a filter with a genuinely
+    different apparent size (e.g. an absorption band where the visible
+    "surface" sits at a different atmospheric depth) is left on its own
+    measurement rather than forced to match, matching this module's
+    existing filter-agnostic policy of deciding by measured agreement, not
+    by filter name.
+
+    Returns None if fewer than 2 filters have a confident (confidence>0)
+    fit — nothing to reconcile.
+    """
+    semi_majors = [
+        fit[2] for fit in candidate_fits.values()
+        if fit[5] > 0.0 and fit[2] > 0
+    ]
+    if len(semi_majors) < 2:
+        return None
+    return float(np.median(semi_majors))
+
+
 def resolve_filter_pose(
     fit: Tuple[float, float, float, float, float, float, bool],
     lum: Optional[np.ndarray] = None,
@@ -2155,6 +2199,7 @@ def derotate_filter(
     flip_direction: bool = False,
     shared_shape: Optional[PlanetShape] = None,
     filter_pose: Optional[FilterPose] = None,
+    shared_radius_px: Optional[float] = None,
     weight_power: float = 1.0,
     use_true_reprojection: bool = False,
     sub_observer_lat_deg: float = 0.0,
@@ -2180,15 +2225,23 @@ def derotate_filter(
         shared_shape:   Optional oblateness/orientation (aspect_ratio,
                         equator_pa_deg) to use ONLY when this filter's own
                         reference-frame detection couldn't determine shape
-                        reliably (see resolve_shared_shape()). This filter's
-                        own semi_major is always used regardless — apparent
-                        disk size can legitimately differ per filter (e.g.
-                        Saturn's CH4 band is measurably smaller than
-                        broadband filters), so size is never borrowed.
+                        reliably (see resolve_shared_shape()).
         filter_pose:    Optional (cx, cy) to use ONLY when this filter's own
                         reference-frame detection failed outright (see
                         resolve_filter_pose()) — never used to override a
                         successful independent pose measurement.
+        shared_radius_px: Optional window-wide consensus semi_major (see
+                        resolve_shared_radius()), substituted for this
+                        filter's own value ONLY when its own value is
+                        already within _RADIUS_SHARE_REL_TOL of it — i.e.
+                        this reconciles per-filter Otsu-noise (typically
+                        1-3px on real Jupiter data) that would otherwise
+                        each cut off the warp's valid region at a slightly
+                        different radius (see resolve_shared_radius()'s
+                        docstring). A filter with a genuinely different
+                        apparent size (e.g. Saturn's CH4 band) stays on its
+                        own measurement — this is a reconciliation of
+                        near-identical measurements, not a size override.
         weight_power:   Exponent applied to norm_score weights before
                         stacking (see quality_weighted_stack). 1.0 (default)
                         = unchanged linear blend.
@@ -2258,14 +2311,34 @@ def derotate_filter(
     else:
         ref_cx, ref_cy = _rcx, _rcy
         _geometry_source = "pose_independent"
+
+    ref_semi_b = _rsemi_b
+    if (
+        shared_radius_px is not None
+        and ref_semi_a > 0
+        and abs(ref_semi_a - shared_radius_px) <= _RADIUS_SHARE_REL_TOL * shared_radius_px
+    ):
+        # This filter's own radius already agrees with the window-wide
+        # consensus (resolve_shared_radius()) — snap to the exact shared
+        # value so every filter's warp goes invalid beyond the SAME radius,
+        # instead of each filter's own Otsu-threshold noise (typically
+        # 1-3px) cutting the valid region off at a slightly different
+        # radius per filter — confirmed as the direct cause of a colour
+        # fringe at the limb once composited (2026-08-11 investigation).
+        # Rescale semi_b to preserve this filter's own measured aspect
+        # ratio — only the overall size is reconciled, not the oblateness.
+        if _rsemi_b > 0:
+            ref_semi_b = _rsemi_b * (shared_radius_px / ref_semi_a)
+        ref_semi_a = shared_radius_px
+        _geometry_source += "+radius_shared"
+
     if not _rshape_ok and shared_shape is not None:
         # Own detection couldn't determine oblateness (e.g. ring crossing
-        # the disk) — borrow orientation/aspect, but keep this filter's own
-        # semi_major (apparent size legitimately differs per filter).
+        # the disk) — borrow orientation/aspect (this overrides any
+        # radius-share rescaling above, since shape itself is untrustworthy
+        # here regardless of size agreement).
         ref_semi_b = ref_semi_a * shared_shape.aspect_ratio
         _geometry_source += "+shape_shared"
-    else:
-        ref_semi_b = _rsemi_b
     # Measured polar/equatorial ratio from the reference frame ellipse fit.
     # For Jupiter ~0.935; clamped to [0.85, 1.0] to guard against fitting errors.
     _polar_eq_ratio = float(np.clip(ref_semi_b / max(ref_semi_a, 1.0), 0.85, 1.0))
@@ -2554,14 +2627,18 @@ def derotate_window(
     # resolve_shared_shape()/resolve_filter_pose() decide — by confidence, not
     # by filter name — which filter's oblateness/orientation to share with
     # filters that couldn't determine their own, and which filter (if any) to
-    # register a totally-failed filter's pose against. Shape is shared;
-    # apparent SIZE (semi_major) and POSE are always this filter's own
-    # measurement unless its own detection failed outright — see the
-    # PlanetShape/FilterPose module docstring for why size/pose are never
-    # borrowed the way the old single shared_geometry tuple used to.
-    # Ringless targets (Jupiter, Mars, Venus) never trigger any of this: every
-    # filter's own fit already has shape_reliable=True and confidence=1.0, so
-    # shared_shape stays None and filter_pose is never used.
+    # register a totally-failed filter's pose against. Shape/orientation and
+    # POSE are always this filter's own measurement unless its own detection
+    # failed outright — see the PlanetShape/FilterPose module docstring for
+    # why those are never borrowed the way the old single shared_geometry
+    # tuple used to.
+    # shared_shape/filter_pose stay unused for ringless targets (Jupiter,
+    # Mars, Venus): every filter's own fit already has shape_reliable=True
+    # and confidence=1.0. resolve_shared_radius() below is a SEPARATE, much
+    # narrower reconciliation added 2026-08-11 (see its docstring) — it DOES
+    # apply to ringless targets too, since it only nudges each filter's
+    # semi_major toward the group's own consensus when they already roughly
+    # agree, rather than borrowing a value across genuinely different fits.
     _fits: Dict[str, Tuple[float, float, float, float, float, float, bool]] = {}
     _lums: Dict[str, np.ndarray] = {}
     for cfilt in required_filters:
@@ -2598,6 +2675,11 @@ def derotate_window(
             f"    [geometry] sharing disk shape from {_shape_source} "
             f"(aspect_ratio={shared_shape.aspect_ratio:.3f} equator_pa={shared_shape.equator_pa_deg:.1f}°)"
         )
+
+    shared_radius_px = resolve_shared_radius(_fits)
+    if shared_radius_px is not None:
+        print(f"    [geometry] window radius consensus = {shared_radius_px:.2f}px "
+              f"(filters within {_RADIUS_SHARE_REL_TOL*100:.0f}% snap to it)")
 
     filter_poses: Dict[str, FilterPose] = {}
     for cfilt, fit in _fits.items():
@@ -2641,6 +2723,7 @@ def derotate_window(
                 flip_direction=flip_direction,
                 shared_shape=shared_shape,
                 filter_pose=filter_poses.get(filt),
+                shared_radius_px=shared_radius_px,
                 weight_power=weight_power,
                 use_true_reprojection=use_true_reprojection,
                 sub_observer_lat_deg=sub_observer_lat_deg,
