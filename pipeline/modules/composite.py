@@ -117,31 +117,18 @@ def align_channels(
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Tuple[float, float]]]:
     """Align all channels to *reference_key* via sub-pixel phase correlation.
 
-    For each channel, up to 3 candidate shifts are considered — (0,0)
-    (no shift), whole-frame phase correlation, and (when a disk is
-    detected) the same correlation restricted to a disk-only ROI — and
-    whichever gives the best post-hoc disk-region NCC (see
-    _disk_region_quality) is used. This replaced a plain "trust whole-frame
-    phase correlation" approach after two real-data failures on opposite
-    sides of the same trade-off:
-      - A disk-ROI-crop-only approach (commit e958140, motivated by Saturn
-        ring pollution biasing whole-frame correlation) measurably
-        *degraded* alignment for the common non-ring case across 28 real
-        Jupiter windows (reverted in e958140's follow-up).
-      - Trusting whole-frame correlation unconditionally still let it lock
-        onto a confident-looking but WRONG peak for the B channel (weak
-        IR-correlated signal) in ~25% of that same 28-window Jupiter
-        session — e.g. dy=+2.16 reported when every neighbouring window
-        measured dy in -0.4..-0.9 — producing a visible limb colour fringe
-        that max_shift_px's magnitude-only gate does not catch, since the
-        bad shift is often well under the gate.
-    Quality-gating both candidates against "no shift" catches both failure
-    modes: verified on the real data above that "no shift" scores highest
-    for the pathological B-channel windows, while whole-frame correlation
-    still wins (as before) for the normal case. If disk detection fails
-    entirely, falls back to trusting whole-frame correlation (old
-    pre-e958140 behaviour), since there is no ROI or quality metric to
-    gate against.
+    Whole-frame phase correlation ONLY (no disk-ROI crop — the user has
+    explicitly rejected that approach twice; do not reintroduce it in any
+    form, gated or not). The shift is applied only if it improves a
+    post-hoc disk-region NCC (see _disk_region_quality) over leaving the
+    channel unshifted, since phase correlation can report a confident-
+    looking but WRONG peak: real Jupiter data (28 windows, one session)
+    showed this for the B channel (weak IR-correlated signal) in ~25% of
+    windows — e.g. dy=+2.16 reported when every neighbouring window
+    measured dy in -0.4..-0.9 — which max_shift_px's magnitude-only gate
+    does not catch, since the bad shift is often well under the gate. If
+    disk detection fails, falls back to trusting whole-frame correlation
+    unconditionally, since there is no quality metric to gate against.
 
     Args:
         channels:      {filter_name: float [0,1] 2D image}
@@ -165,15 +152,6 @@ def align_channels(
     except Exception:
         pass
 
-    roi = None
-    if disk is not None:
-        cx, cy, sr = disk
-        h, w = ref.shape[:2]
-        ys, ye = int(max(0, cy - sr)), int(min(h, cy + sr))
-        xs, xe = int(max(0, cx - sr)), int(min(w, cx + sr))
-        if (ye - ys) > 10 and (xe - xs) > 10:
-            roi = (ys, ye, xs, xe)
-
     def _within_gate(dx: float, dy: float) -> bool:
         return max_shift_px <= 0 or (abs(dx) <= max_shift_px and abs(dy) <= max_shift_px)
 
@@ -185,38 +163,25 @@ def align_channels(
             shifts[key] = (0.0, 0.0)
             continue
 
-        candidates = [(0.0, 0.0)]
+        dx, dy = subpixel_align(ref, img)
+        candidate_ok = _within_gate(dx, dy)
 
-        dx_full, dy_full = subpixel_align(ref, img)
-        if _within_gate(dx_full, dy_full):
-            candidates.append((dx_full, dy_full))
-
-        if roi is not None:
-            ys, ye, xs, xe = roi
-            dx_roi, dy_roi = subpixel_align(ref[ys:ye, xs:xe], img[ys:ye, xs:xe])
-            if _within_gate(dx_roi, dy_roi):
-                candidates.append((dx_roi, dy_roi))
-
-        if disk is not None and len(candidates) > 1:
+        if candidate_ok and disk is not None:
             cx, cy, sr = disk
-            best_dx, best_dy = max(
-                candidates,
-                key=lambda s: _disk_region_quality(
-                    ref, img if s == (0.0, 0.0) else apply_shift(img, s[0], s[1]), cx, cy, sr
-                ),
-            )
-        elif len(candidates) > 1:
-            # No disk detected — nothing to quality-gate against; trust
-            # whole-frame phase correlation (matches pre-e958140 behaviour).
-            best_dx, best_dy = candidates[-1]
+            q_shifted = _disk_region_quality(ref, apply_shift(img, dx, dy), cx, cy, sr)
+            q_none = _disk_region_quality(ref, img, cx, cy, sr)
+            use_shift = q_shifted > q_none
         else:
-            best_dx, best_dy = 0.0, 0.0
+            # No disk to quality-gate against — trust phase correlation
+            # unconditionally if it's within the gate (old behaviour).
+            use_shift = candidate_ok
 
-        if (best_dx, best_dy) == (0.0, 0.0):
-            aligned[key] = img
+        if use_shift:
+            aligned[key] = apply_shift(img, dx, dy)
+            shifts[key] = (dx, dy)
         else:
-            aligned[key] = apply_shift(img, best_dx, best_dy)
-        shifts[key] = (best_dx, best_dy)
+            aligned[key] = img
+            shifts[key] = (0.0, 0.0)
     return aligned, shifts
 
 
