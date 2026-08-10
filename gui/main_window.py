@@ -590,7 +590,17 @@ class MainWindow(QMainWindow):
             session.save(self._session_data)
             return
         data = profile_manager.load_profile(name)
+        # Profiles store raw processing params with no session_version of
+        # their own (profile_manager excludes it) and are never migrated —
+        # loading one bypasses session._migrate() entirely, so any session
+        # migration (e.g. v14->v15's true_polar_equatorial_ratio backfill)
+        # never reaches profile-sourced data. Route it through the same
+        # migration path session.load() uses; with no session_version key,
+        # _migrate() defaults to ver=1 and replays every migration in order.
+        data = session._migrate(dict(data))
         for k, v in data.items():
+            if k == "session_version":
+                continue  # profiles don't carry this; don't leak it in
             self._session_data[k] = v
         self._session_data["active_profile"] = name
         self._apply_session_data()
