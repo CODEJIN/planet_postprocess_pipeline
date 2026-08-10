@@ -895,16 +895,22 @@ def resolve_shared_radius(
     each filter's own semi_major (used as spherical_derotation_warp()'s
     disk_radius_px) normally differs from its siblings by 1-3px on real
     Jupiter data — pure Otsu-threshold noise from each filter's own
-    SNR/contrast, not a real size difference. The warp treats anything
-    beyond disk_radius_px*1.05 as having no valid solution and forces it to
-    background — so a 1-3px per-filter radius difference means each
-    filter's de-rotated stack goes to zero at a slightly different radius.
-    Composited, that shows as a colour fringe at the limb; wavelet
-    sharpening (which has no way to know the "edge" it's amplifying is an
-    algorithmic artifact, not the real limb) makes it worse. This is
-    present already in each filter's own step04 output, before composite
-    or wavelet ever run — confirmed directly against real per-window
-    derotation logs (radii spanning 103.0-104.9px in one window).
+    SNR/contrast, not a real size difference. disk_radius_px sets the warp's
+    spatial scale (warp_radius = disk_radius_px*1.05) and the CUBIC/LINEAR
+    interpolation feather boundary near the limb, so a 1-3px per-filter
+    difference means each filter's de-rotation gets a slightly different
+    depth/drift profile and feather transition even where both are
+    otherwise "valid" — not just at whatever the current invalid-pixel
+    fallback happens to be (this reasoning holds for both the linear warp's
+    identity fallback and the true-reprojection warp's, see
+    _reprojected_position — do not re-word this as being about an
+    invalid/background cutoff, since neither warp has one as of 2026-08-11).
+    Composited, the per-filter mismatch shows as a colour fringe at the
+    limb; wavelet sharpening (which has no way to know the "edge" it's
+    amplifying is an algorithmic artifact, not the real limb) makes it
+    worse. This is present already in each filter's own step04 output,
+    before composite or wavelet ever run — confirmed directly against real
+    per-window derotation logs (radii spanning 103.0-104.9px in one window).
 
     derotate_window() calls this once per window; derotate_filter() then
     only accepts the shared value for a filter whose OWN fit is already
@@ -917,6 +923,18 @@ def resolve_shared_radius(
 
     Returns None if fewer than 2 filters have a confident (confidence>0)
     fit — nothing to reconcile.
+
+    POLICY NOTE (external review, 2026-08-11, deliberately not changed):
+    any confidence>0.0 fit counts here, including confidence=0.3
+    ("unconfirmed geometric estimate" — see _find_disk_center_impl) as well
+    as 0.5/1.0. On real Jupiter data this never matters (every filter is
+    confidence=1.0), but on a future ring-affected/CH4 session a 0.3 fit
+    could pull the median toward an unconfirmed estimate if broadband fits
+    are few. Not raising the floor to >=0.5 preemptively without real
+    evidence it's a problem — derotate_filter()'s frame log now records
+    own_disk_radius_px/warp_disk_radius_px/radius_shared specifically so
+    this can be checked against real Saturn data when that work resumes,
+    rather than guessed at now.
     """
     semi_majors = [
         fit[2] for fit in candidate_fits.values()
@@ -1441,6 +1459,21 @@ def _reprojected_position(
     # `valid` before using new_x/new_y at all, so this change is invisible
     # to it — it already treats invalid as "(0, 0), no shift", exactly the
     # same philosophy this now extends to the full-image warp.
+    #
+    # IMPORTANT CAVEAT (external review, 2026-08-11): this identity fallback
+    # is a deliberate visual-quality trade-off, NOT a physically accurate
+    # far-side sample. The source body point genuinely isn't observable
+    # there at the source time — geometrically, background/no-data would be
+    # the "correct" answer. Identity fallback instead shows whatever this
+    # frame's real content happened to be at that SCREEN position (limb
+    # brightness tail / seeing PSF / diffraction), which is not the same
+    # body location any more. This is the right call for how this module is
+    # actually used (composite + wavelet sharpening punish a hard cutoff far
+    # more than they punish a few px of slightly-stale limb content), but a
+    # caller that needs true per-pixel source-visibility ground truth (e.g.
+    # a future ring/shadow-geometry consumer) MUST use the returned `valid`
+    # mask itself, not assume new_x/new_y are a real body-surface sample
+    # wherever valid is False.
     new_x = np.where(valid, cx + dx1, x)
     new_y = np.where(valid, cy + dy1, y)
     return new_x, new_y, valid
@@ -1791,7 +1824,8 @@ def auto_detect_ns_flip(
         disk_radius_px:         Disk semi-major radius (pixels).
         period_hours:           Atmospheric rotation period (hours).
         warp_scale:             Empirical spherical warp scale (default 1.00).
-        pole_pa_deg:            Image-space pole PA from auto_detect_equator_pa().
+        pole_pa_deg:            Image-space equatorial/drift-axis angle from
+                                auto_detect_equator_pa() (not a pole-axis PA).
         polar_equatorial_ratio: semi_minor / semi_major from find_disk_center().
 
     Returns:
@@ -2171,19 +2205,17 @@ def quality_weighted_stack(
     Returns:
         Weighted mean stack, float [0, 1].
 
-    NOTE on true-reprojection far-side pixels (external review, 2026-08-10):
-    spherical_derotation_warp_3d() correctly zeroes out pixels that rotate
-    to the far side by the source time (see its own docstring), but THIS
-    function has no per-pixel validity mask — a zeroed far-side pixel in
-    one frame is averaged in as a real 0 alongside valid frames, which
-    could in principle darken the limb slightly. Deliberately not
-    addressed here: measured impact on real Jupiter data (this module's
-    typical ~10° per-frame rotation) is ~0.06% of on-disk pixels, all
-    within ~2px of the limb — swamped by the existing CUBIC/LINEAR feather
-    blend at that same location. Implementing proper validity-weighted
-    stacking would mean threading per-pixel masks through every caller of
-    this function, a real architecture change, for a currently-immeasurable
-    benefit — left as a documented option, not implemented speculatively.
+    NOTE on true-reprojection far-side pixels (updated 2026-08-11, was
+    stale): spherical_derotation_warp_3d() does NOT zero out far-side
+    pixels — as of the 2026-08-11 fix it falls back to identity (keeps
+    each frame's own original content) for source-far-side points, exactly
+    like the validated linear warp already does for its analogous
+    depth_sq<=0 case (see _reprojected_position's docstring for why the
+    earlier zero/sentinel behaviour was reverted — it caused a visible
+    ring). So this function's stacking has nothing extra to account for
+    here: every frame contributes its own real (if slightly stale, right
+    at the tilt-limb) content rather than an artificial 0, and a plain
+    weighted mean is exactly as appropriate for that as for any other pixel.
     """
     if len(images) == 1:
         return images[0].copy()
@@ -2312,6 +2344,12 @@ def derotate_filter(
         _ref_lum = _ref_raw if _ref_raw.ndim == 2 else _ref_raw.mean(axis=2).astype(np.float32)
     _ref_fit = _find_disk_center_impl(_ref_lum)
     _rcx, _rcy, ref_semi_a, _rsemi_b, _rangle, _rconf, _rshape_ok = _ref_fit
+    # This filter's own independent measurement, before any pose_registered/
+    # radius_shared/shape_shared override below — logged per-frame (external
+    # review, 2026-08-11) so a future session can check whether
+    # resolve_shared_radius()'s median was actually pulled toward a
+    # low-confidence outlier fit, rather than guessing.
+    _own_semi_a = ref_semi_a
     if _rconf <= 0.0 and filter_pose is not None:
         # This filter's own detection failed outright — use the pose
         # registered against a sibling filter's frame instead. Its own
@@ -2456,6 +2494,8 @@ def derotate_filter(
             "dt_sec":            round(dt_sec, 2),
             "disk_center_px":    [round(ref_cx, 2), round(ref_cy, 2)],
             "disk_radius_px":    round(ref_semi_a, 2),
+            "own_disk_radius_px": round(_own_semi_a, 2),
+            "radius_shared":     "+radius_shared" in _geometry_source,
             "delta_lambda_deg":  round((dt_sec / (period_hours * 3600.0)) * 360.0, 4),
         })
 
