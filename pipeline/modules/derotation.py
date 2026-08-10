@@ -11,8 +11,8 @@ Algorithm (per filter, per time window):
      earlier revision of this note claimed.
 
      The warp direction is determined by *pole_pa_deg* — an IMAGE-SPACE
-     angle measured directly from pixel data (pole_pa_from_disk_ellipse() /
-     auto_detect_pole_pa(), called from derotate_stack.py's
+     angle measured directly from pixel data (equator_pa_from_disk_ellipse() /
+     auto_detect_equator_pa(), called from derotate_stack.py's
      _scan_session_pole_pa()), NEVER a raw sky-frame quantity fed in
      directly. This is worth stating unambiguously because an earlier
      revision of this exact paragraph claimed pole_pa_deg was "queried from
@@ -29,8 +29,13 @@ Algorithm (per filter, per time window):
        Δy(x,y) = scale × Δλ_rad × depth(x,y) × sin(pole_pa_rad)
        depth(x,y) = sqrt(max(0, R² − (x−cx)² − (y−cy)²))
 
-     pole_pa_deg = 0  →  equatorial view (drift purely horizontal, default for Jupiter)
-     pole_pa_deg ≠ 0  →  tilted pole, e.g. Saturn at non-zero sub-Earth latitude
+     pole_pa_deg = 0  →  the drift axis is horizontal in image pixels
+                         (default for Jupiter's typical camera orientation)
+     pole_pa_deg ≠ 0  →  drift axis rotated in the image (camera roll),
+                         independent of sub_observer_lat_deg (B) — see the
+                         "True oblate-spheroid reprojection" section below
+                         for why these are two genuinely different angles,
+                         not the same "tilt" described two ways.
 
   4. Sub-pixel translate alignment via phase correlation (cv2.phaseCorrelate)
   5. Quality-weighted mean stack using Step 4 norm_scores as weights
@@ -44,9 +49,12 @@ warp_scale = 1.00 (empirically confirmed optimal for Jupiter via NCC sweep):
 
 Saturn notes:
   - Use rotation_period_hours=10.56 (System III)
-  - pole_pa_deg is measured from the image (see note above — not Horizons);
-    for low sub-Earth latitudes (<15°) the horizontal approximation
-    (pole_pa=0) is acceptable.
+  - pole_pa_deg is measured from the image (see note above — not Horizons),
+    independent of sub-observer latitude (B). For low |B| (<15°), skipping
+    the 3D reprojection's B-tilt term and using this linear warp is an
+    acceptable approximation regardless of what pole_pa_deg happens to be —
+    forcing pole_pa_deg to 0 is a separate, unrelated simplification that
+    only makes sense if the drift axis is ACTUALLY horizontal in the image.
   - Ring features do NOT co-rotate with the atmosphere; they will be slightly
     smeared in the stack (atmosphere is the primary target).
   - find_disk_center() isolates the disk from an attached ring before fitting
@@ -153,7 +161,10 @@ def query_horizons_np_ang(
         if d0 in planet_table:
             v0 = planet_table[d0]
             v1 = planet_table.get(d1, v0)
-            frac = (t_utc.hour * 60 + t_utc.minute) / 1440.0
+            frac = (
+                t_utc.hour * 3600.0 + t_utc.minute * 60.0
+                + t_utc.second + t_utc.microsecond / 1_000_000.0
+            ) / 86400.0
             result = _interp_angle_deg(v0, v1, frac)
             print(f"  [NP.ang] {d0} → {result:.3f}° (bundle, id={horizons_id})")
             return result
@@ -282,7 +293,10 @@ def query_horizons_sub_observer_lat(
         if d0 in planet_table:
             v0 = planet_table[d0]
             v1 = planet_table.get(d1, v0)
-            frac = (t_utc.hour * 60 + t_utc.minute) / 1440.0
+            frac = (
+                t_utc.hour * 3600.0 + t_utc.minute * 60.0
+                + t_utc.second + t_utc.microsecond / 1_000_000.0
+            ) / 86400.0
             result = v0 + frac * (v1 - v0)
             print(f"  [ObsSub-LAT] {d0} → {result:.3f}° (bundle, id={horizons_id})")
             return result
@@ -511,11 +525,16 @@ def find_disk_center(
                          _stabilization_planet_threshold=20 for consistent
                          disk detection across frames.
         core_percentile: Intensity percentile (within the loose blob) used to
-                         isolate the disk core from a fainter/brighter attached
-                         ring — see "Disk-core isolation" below. Both bright-
-                         core and dark-core polarities are tried automatically
-                         (e.g. Saturn's CH4 band has a disk darker than its
-                         ring), so this is filter-agnostic.
+                         isolate the disk core from a fainter attached ring.
+                         Only the bright-core hypothesis is tried (a
+                         symmetric dark-core attempt was tested and does NOT
+                         work on real data — see _find_disk_center_impl's
+                         confidence=0.5/0.3 docstring below); when bright-core
+                         isolation fails (e.g. Saturn's CH4 band, whose disk
+                         is darker than its ring), this falls back to a
+                         radial limb search instead of a polarity flip —
+                         still filter-agnostic, just not via "try both
+                         polarities".
 
     Returns:
         (cx, cy, semi_major, semi_minor, angle_deg) — ellipse parameters.
@@ -965,8 +984,8 @@ def spherical_derotation_warp(
 
     The drift direction is perpendicular to the planet's rotation axis as seen
     in the image, parameterised by *pole_pa_deg* — an IMAGE-SPACE angle
-    measured directly from pixel data (pole_pa_from_disk_ellipse() /
-    auto_detect_pole_pa()), NOT a raw sky-frame quantity from Horizons. (JPL
+    measured directly from pixel data (equator_pa_from_disk_ellipse() /
+    auto_detect_equator_pa()), NOT a raw sky-frame quantity from Horizons. (JPL
     Horizons' NP.ang, queried via query_horizons_np_ang(), is a genuinely
     different, celestial-sky-frame angle used elsewhere — the satellite
     tracker's camera-to-sky rotation, θ_cam = pole_pa_deg + NP.ang, in
@@ -978,9 +997,12 @@ def spherical_derotation_warp(
         Δx = drift × cos(pole_pa_rad)   [horizontal component]
         Δy = drift × sin(pole_pa_rad)   [vertical component]
 
-    For equatorial views (Jupiter, pole_pa ≈ 0°) Δy ≈ 0 and the warp is
-    purely horizontal, matching the original implementation.  For Saturn at
-    non-zero sub-Earth latitude the warp is rotated accordingly.
+    When the drift axis happens to be horizontal in the image (pole_pa ≈ 0°,
+    the common case for this project's typical camera/target orientations)
+    Δy ≈ 0 and the warp is purely horizontal, matching the original
+    implementation. A non-zero pole_pa_deg here reflects camera roll in the
+    image, NOT sub-observer latitude (B) — see spherical_derotation_warp_3d
+    for the model that actually incorporates B.
 
     Args:
         image:                  2-D float [0, 1] array.
@@ -998,8 +1020,11 @@ def spherical_derotation_warp(
         flip_direction:         If True, negate the shift direction.
         pole_pa_deg:            Image-space equatorial/drift-axis position
                                 angle in degrees — see note above, this is
-                                NOT Horizons NP.ang fed in raw.
-                                0° = north up (equatorial view, horizontal drift only).
+                                NOT Horizons NP.ang fed in raw, and it is NOT
+                                the same thing as sub-observer latitude (B):
+                                pole_pa_deg=0 only means "the drift axis is
+                                horizontal in this image", independent of
+                                how tilted the planet's pole actually is.
                                 Positive = CCW from north (eastward tilt).
         polar_equatorial_ratio: polar_radius / equatorial_radius.
                                 1.0 = perfect sphere (default).
@@ -1108,8 +1133,8 @@ def spherical_derotation_warp(
 #             SAME rotation convention as spherical_derotation_warp's own
 #             pole_pa decomposition (dx=X*cosP-Y*sinP, dy=X*sinP+Y*cosP) —
 #             pole_pa_deg in this codebase is always an image-space angle,
-#             measured directly from pixel data (pole_pa_from_disk_ellipse/
-#             auto_detect_pole_pa), never a sky-frame Horizons quantity fed
+#             measured directly from pixel data (equator_pa_from_disk_ellipse/
+#             auto_detect_equator_pa), never a sky-frame Horizons quantity fed
 #             in raw — so no separate "convert sky PA to image PA" step or
 #             math-convention/pixel-row-down flip belongs here. An earlier
 #             version of this rotation included such a flip on dy alone,
@@ -1276,17 +1301,21 @@ def _reprojected_position(
     by single-point callers (e.g. satellite/shadow smearing-position
     correction in satellite_composite.py) so this logic exists once.
     """
-    # 5% padding, matching spherical_derotation_warp's warp_radius. An
-    # external review (2026-08-10) suggested dropping this in 3D mode since
-    # it models a body 5% larger than the fitted disk. Tested directly:
-    # removing it makes the INVERSE projection substantially LESS stable
-    # near the limb, not more physically correct — finite-difference
-    # sensitivity of (phi, lam) to a 1px input perturbation at r=0.995x the
-    # visible disk radius is ~0.11 rad/px with req_px=disk_radius_px (no
-    # padding) vs ~0.03 rad/px with the 5% padding kept, a ~3.7x difference.
-    # This matches the earlier-flagged "unprojection Jacobian diverges near
-    # the limb" concern from this feature's original design phase. Keeping
-    # the padding.
+    # 5% padding, matching spherical_derotation_warp's warp_radius. This IS
+    # a deliberate numerical regularization with a real geometric cost, not
+    # a free improvement: it models a body 5% larger than the fitted disk,
+    # a genuine (small) mismatch between the fitted apparent limb and the
+    # projection surface. The tradeoff was tested directly rather than
+    # assumed: removing the padding makes the INVERSE projection's
+    # numerical sensitivity substantially WORSE near the limb — finite-
+    # difference sensitivity of (phi, lam) to a 1px input perturbation at
+    # r=0.995x the visible disk radius is ~0.11 rad/px with
+    # req_px=disk_radius_px (no padding) vs ~0.03 rad/px with the 5%
+    # padding kept, a ~3.7x difference — matching the earlier-flagged
+    # "unprojection Jacobian diverges near the limb" concern from this
+    # feature's original design phase. Given that, the small geometric
+    # mismatch is judged worth paying for the numerical stability gain;
+    # keeping the padding.
     req_px  = disk_radius_px * 1.05
     rpol_px = req_px * polar_equatorial_ratio_true
 
@@ -1326,16 +1355,24 @@ def _reprojected_position(
     # rotation, ~10°: affects ~0.06% of on-disk pixels, all within ~2px of
     # the fitted limb — narrow, but real.)
     valid = np.isfinite(phi) & (source_depth > 0.0)
-    # Invalid points map to a sentinel clearly outside any real image's
-    # coordinate range (never x/y >= 0 for a real pixel), so a caller using
-    # this for cv2.remap's map_x/map_y with BORDER_CONSTANT gets background
-    # there instead of silently re-sampling whatever raw content happens to
-    # sit at that screen position (which is not the same body location any
-    # more). _reprojection_point_shift() (single-point callers) checks
-    # `valid` before ever reading new_x/new_y, so this sentinel never leaks
-    # into its (dx, dy) contract.
-    new_x = np.where(valid, cx + dx1, -1.0)
-    new_y = np.where(valid, cy + dy1, -1.0)
+    # Invalid points map to a sentinel far outside any real image's coordinate
+    # range, so a caller using this for cv2.remap's map_x/map_y with
+    # BORDER_CONSTANT gets background there instead of silently re-sampling
+    # whatever raw content happens to sit at that screen position (which is
+    # not the same body location any more). Empirically, cv2.remap's cubic
+    # kernel already returns a clean 0 at exactly -1.0 (one pixel out), but
+    # values a further pixel or two out (e.g. -1.5) can show small nonzero
+    # ringing from the interpolation kernel's negative side-lobes reaching
+    # across the BORDER_CONSTANT edge — using a sentinel far from any
+    # possible kernel support removes that dependence on interpolation-
+    # kernel-width implementation details entirely. spherical_derotation_warp_3d
+    # also re-masks the final warped output directly with `valid` as a second,
+    # independent safeguard (see there). _reprojection_point_shift()
+    # (single-point callers) checks `valid` before ever reading new_x/new_y,
+    # so this sentinel never leaks into its (dx, dy) contract either way.
+    _INVALID_MAP_COORD = -1.0e4
+    new_x = np.where(valid, cx + dx1, _INVALID_MAP_COORD)
+    new_y = np.where(valid, cy + dy1, _INVALID_MAP_COORD)
     return new_x, new_y, valid
 
 
@@ -1402,6 +1439,27 @@ def spherical_derotation_warp_3d(
 
     Returns: warped float [0, 1] array, same shape as input.
     """
+    if abs(scale - 1.0) > 1e-6:
+        # Unlike the linear warp (a first-order approximation where an
+        # empirical scale legitimately absorbs some of the approximation
+        # error), this function computes the geometrically exact rotation
+        # for the given Δt/period — there is no first-order error left for
+        # `scale` to compensate for. A value other than 1.0 here (e.g.
+        # Saturn's empirically-tuned 0.05-0.15 for the linear warp) is a
+        # signal that something else is off — timestamps, rotation period,
+        # sign/orientation convention, or the target's real atmospheric
+        # motion not matching rigid-body rotation — not a normal calibration
+        # knob for this warp. Surfaced once (Python's default warning filter
+        # dedupes by call site) rather than silently reusing the linear
+        # warp's tuned value here.
+        warnings.warn(
+            f"spherical_derotation_warp_3d called with scale={scale:.3f} "
+            "(!= 1.0). True reprojection has no first-order-approximation "
+            "error for `scale` to absorb — treat a non-1.0 value here as a "
+            "geometry/timing/convention diagnostic signal, not a normal "
+            "calibration parameter carried over from the linear warp.",
+            stacklevel=2,
+        )
     h, w = image.shape[:2]
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
 
@@ -1434,6 +1492,17 @@ def spherical_derotation_warp_3d(
     if warped_cubic.ndim == 3:
         w_cubic = w_cubic[:, :, np.newaxis]
     warped = warped_cubic * w_cubic + warped_linear * (1.0 - w_cubic)
+
+    # Second, independent safeguard against far-side leakage (see the
+    # sentinel note in _reprojected_position): explicitly zero out pixels
+    # _reprojected_position marked invalid, rather than relying solely on
+    # cv2.remap's BORDER_CONSTANT behaviour at the sentinel coordinate.
+    invalid = ~valid
+    if np.any(invalid):
+        if warped.ndim == 3:
+            warped[invalid, :] = 0.0
+        else:
+            warped[invalid] = 0.0
 
     return np.clip(warped, 0.0, 1.0)
 
@@ -1532,7 +1601,7 @@ def auto_detect_pole_axis_flip(
 
 # ── Pole PA auto-detection ────────────────────────────────────────────────────
 
-def auto_detect_pole_pa(
+def auto_detect_equator_pa(
     frames: List[np.ndarray],
     cx: float,
     cy: float,
@@ -1649,7 +1718,7 @@ def auto_detect_ns_flip(
         disk_radius_px:         Disk semi-major radius (pixels).
         period_hours:           Atmospheric rotation period (hours).
         warp_scale:             Empirical spherical warp scale (default 0.80).
-        pole_pa_deg:            Image-space pole PA from auto_detect_pole_pa().
+        pole_pa_deg:            Image-space pole PA from auto_detect_equator_pa().
         polar_equatorial_ratio: semi_minor / semi_major from find_disk_center().
 
     Returns:
@@ -1732,7 +1801,7 @@ def auto_detect_ns_flip(
     return derot_flip, float(scores[False]), float(scores[True])
 
 
-def pole_pa_from_disk_ellipse(image: np.ndarray) -> Optional[float]:
+def equator_pa_from_disk_ellipse(image: np.ndarray) -> Optional[float]:
     """Estimate pole PA from disk ellipse major-axis direction.
 
     For oblate planets the equatorial (major) axis = drift direction = pole_pa
@@ -1935,9 +2004,14 @@ def make_disk_feather_mask(
     """Create a soft disk mask that fades to 0 at the limb edge.
 
     The mask is 1.0 inside (radius - feather_px) and smoothly fades to 0.0
-    at the geometric disk edge (radius).  Applied to each warped frame before
-    stacking to prevent background zeros from bleeding into the limb average,
-    which would create a darkening band that wavelet sharpening amplifies.
+    at the geometric disk edge (radius). Available utility for the intended
+    purpose below — NOT currently called anywhere in the pipeline (confirmed
+    via repo-wide grep, 2026-08-10); an earlier version of this docstring
+    claimed it was already applied, which was inaccurate.
+
+    Intended use: applied to each warped frame before stacking, to prevent
+    background zeros from bleeding into the limb average, which would
+    create a darkening band that wavelet sharpening amplifies.
 
     Args:
         shape:      (H, W) of the image.
@@ -2021,6 +2095,20 @@ def quality_weighted_stack(
 
     Returns:
         Weighted mean stack, float [0, 1].
+
+    NOTE on true-reprojection far-side pixels (external review, 2026-08-10):
+    spherical_derotation_warp_3d() correctly zeroes out pixels that rotate
+    to the far side by the source time (see its own docstring), but THIS
+    function has no per-pixel validity mask — a zeroed far-side pixel in
+    one frame is averaged in as a real 0 alongside valid frames, which
+    could in principle darken the limb slightly. Deliberately not
+    addressed here: measured impact on real Jupiter data (this module's
+    typical ~10° per-frame rotation) is ~0.06% of on-disk pixels, all
+    within ~2px of the limb — swamped by the existing CUBIC/LINEAR feather
+    blend at that same location. Implementing proper validity-weighted
+    stacking would mean threading per-pixel masks through every caller of
+    this function, a real architecture change, for a currently-immeasurable
+    benefit — left as a documented option, not implemented speculatively.
     """
     if len(images) == 1:
         return images[0].copy()

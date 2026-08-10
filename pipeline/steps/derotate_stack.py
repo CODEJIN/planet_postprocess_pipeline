@@ -36,9 +36,9 @@ from pipeline.modules import derotation, image_io
 from pipeline.modules.derotation import (
     auto_detect_ns_flip,
     auto_detect_pole_axis_flip,
-    auto_detect_pole_pa,
+    auto_detect_equator_pa,
     find_disk_center,
-    pole_pa_from_disk_ellipse,
+    equator_pa_from_disk_ellipse,
     query_horizons_np_ang,
     query_horizons_sub_observer_lat,
     spherical_derotation_warp,
@@ -93,14 +93,14 @@ def _scan_session_pole_pa(
         try:
             raw = image_io.read_tif(row["path"])
             lum = raw if raw.ndim == 2 else raw.mean(axis=2).astype(np.float32)
-            pa = auto_detect_pole_pa(frames=[lum], cx=cx, cy=cy, disk_radius_px=semi_a)
+            pa = auto_detect_equator_pa(frames=[lum], cx=cx, cy=cy, disk_radius_px=semi_a)
             print(f"    frame {i+1}/{len(all_rows)}: raw pole_pa = {pa:.1f}° via {filt} [belt_gradient]")
             raw_pas.append(pa)
         except Exception as exc:
             try:
                 raw = image_io.read_tif(row["path"])
                 lum = raw if raw.ndim == 2 else raw.mean(axis=2).astype(np.float32)
-                pa = pole_pa_from_disk_ellipse(lum)
+                pa = equator_pa_from_disk_ellipse(lum)
                 if pa is not None:
                     print(f"    frame {i+1}/{len(all_rows)}: raw pole_pa = {pa:.1f}° via {filt} [disk_ellipse]")
                     raw_pas.append(pa)
@@ -698,7 +698,7 @@ def run(
         else:
             print(f"  [NP.ang = {np_ang_val:.3f}° (celestial)]")
 
-        # pole_pa for the WARP: image-space angle from auto_detect_pole_pa()
+        # pole_pa for the WARP: image-space angle from auto_detect_equator_pa()
         # pole_pa for the TRACKER: pole_pa + NP.ang = camera rotation θ_cam
         pole_pa_for_warp = session_pole_pa
         print(f"  [pole_pa = {pole_pa_for_warp:.1f}° (image-space, for warp)]")
