@@ -12,7 +12,7 @@ from typing import Any
 SESSION_DIR  = Path.home() / ".astropipe"
 SESSION_FILE = SESSION_DIR / "session.json"
 
-SESSION_VERSION = 14  # bump when _DEFAULTS or migration logic changes
+SESSION_VERSION = 15  # bump when _DEFAULTS or migration logic changes
 
 # Default values written on first run
 _DEFAULTS: dict[str, Any] = {
@@ -160,6 +160,26 @@ def _migrate(data: dict[str, Any]) -> dict[str, Any]:
     if ver < 14:
         if data.get("planet") == "Saturn" and float(data.get("warp_scale", 1.00)) in (1.00, 0.80):
             data["warp_scale"] = 0.10
+
+    # v14→v15: true_polar_equatorial_ratio (2026-08-10, true 3D reprojection
+    # warp) is a per-planet physical constant, but _on_planet_changed() only
+    # fills it in when the planet dropdown is actively RE-selected — an
+    # existing session that already has "planet" set (loaded, never
+    # re-selected) keeps the field entirely absent, silently defaulting to
+    # 1.00 (a perfect sphere) wherever it's read. Confirmed as a real bug via
+    # this user's own session.json: planet=Saturn, use_true_reprojection=True,
+    # true_polar_equatorial_ratio=1.0 — Saturn's actual 9.8% oblateness was
+    # never reaching the warp at all. Same style as the v13->v14 warp_scale
+    # fix: only backfill when the field is missing or still at the untuned
+    # 1.00 default, so real user customisation is left alone.
+    _TRUE_POLAR_RATIO_BY_PLANET = {
+        "Jupiter": 0.9351, "Saturn": 0.9021, "Mars": 0.9941,
+        "Uranus": 0.9771, "Neptune": 0.9829, "Mercury": 1.00, "Venus": 1.00,
+    }
+    if ver < 15:
+        planet = data.get("planet")
+        if planet in _TRUE_POLAR_RATIO_BY_PLANET and float(data.get("true_polar_equatorial_ratio", 1.00)) == 1.00:
+            data["true_polar_equatorial_ratio"] = _TRUE_POLAR_RATIO_BY_PLANET[planet]
 
     data["session_version"] = SESSION_VERSION
     return data
