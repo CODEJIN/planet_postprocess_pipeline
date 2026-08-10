@@ -39,7 +39,9 @@ from pipeline.modules.derotation import (
     find_disk_center,
     pole_pa_from_disk_ellipse,
     query_horizons_np_ang,
+    query_horizons_sub_observer_lat,
     spherical_derotation_warp,
+    spherical_derotation_warp_3d,
 )
 from pipeline.steps.satellite_composite import (
     SatelliteTracker,
@@ -240,6 +242,7 @@ def _measure_derot_confidence(
     scale_max: float = 1.20,
     n_steps: int = 13,
     min_rotation_deg: float = 3.0,
+    use_true_reprojection: bool = False,
 ) -> dict:
     """Measure de-rotation confidence via high-pass NCC sweep.
 
@@ -330,6 +333,16 @@ def _measure_derot_confidence(
     polar_eq = float(np.clip(semi_b / max(semi_a, 1.0), 0.85, 1.0))
     dt = (rows[-1]["timestamp"] - rows[0]["timestamp"]).total_seconds()
 
+    sub_observer_lat_deg = 0.0
+    if use_true_reprojection:
+        _t_mid = rows[0]["timestamp"] + (rows[-1]["timestamp"] - rows[0]["timestamp"]) / 2
+        _b = query_horizons_sub_observer_lat(
+            horizons_id=config.derotation.horizons_id,
+            t_utc=_t_mid,
+            observer_code=config.derotation.observer_code,
+        )
+        sub_observer_lat_deg = _b if _b is not None else 0.0
+
     # High-pass filter (σ=30 px) removes limb darkening before NCC.
     # Without it, the smooth radial limb-darkening gradient dominates and NCC
     # decreases monotonically with scale, so scale=0 always wins.
@@ -361,14 +374,26 @@ def _measure_derot_confidence(
     ncc_pairs: List[Tuple[float, float]] = []
 
     for scale in sweep_scales:
-        warped = spherical_derotation_warp(
-            lum_e, dt, cx, cy, semi_a,
-            period_hours=config.derotation.rotation_period_hours,
-            scale=scale,
-            flip_direction=forward_flip,
-            pole_pa_deg=session_pole_pa,
-            polar_equatorial_ratio=polar_eq,
-        )
+        if use_true_reprojection:
+            warped = spherical_derotation_warp_3d(
+                lum_e, dt, cx, cy, semi_a,
+                period_hours=config.derotation.rotation_period_hours,
+                sub_observer_lat_deg=sub_observer_lat_deg,
+                pole_pa_deg=session_pole_pa,
+                polar_equatorial_ratio_true=config.derotation.true_polar_equatorial_ratio,
+                scale=scale,
+                flip_direction=forward_flip,
+                flip_pole_axis=config.derotation.flip_pole_axis,
+            )
+        else:
+            warped = spherical_derotation_warp(
+                lum_e, dt, cx, cy, semi_a,
+                period_hours=config.derotation.rotation_period_hours,
+                scale=scale,
+                flip_direction=forward_flip,
+                pole_pa_deg=session_pole_pa,
+                polar_equatorial_ratio=polar_eq,
+            )
         pred_px = _highpass(warped)[disk_mask].astype(np.float64)
         ncc = float(np.corrcoef(ref_px, pred_px)[0, 1]) if pred_px.std() > 1e-6 else 0.0
         ncc_pairs.append((scale, ncc))
@@ -452,7 +477,10 @@ def run(
     warp_scale = config.derotation.warp_scale
 
     # ── De-rotation confidence (diagnostic, does not change warp_scale) ────────
-    derot_conf = _measure_derot_confidence(windows, config, session_pole_pa, derot_flip)
+    derot_conf = _measure_derot_confidence(
+        windows, config, session_pole_pa, derot_flip,
+        use_true_reprojection=bool(config.derotation.use_true_reprojection),
+    )
 
     # ── SatelliteTracker ───────────────────────────────────────────────────────
     tracker = None
@@ -564,6 +592,23 @@ def run(
         pole_pa_for_warp = session_pole_pa
         print(f"  [pole_pa = {pole_pa_for_warp:.1f}° (image-space, for warp)]")
 
+        # ── Sub-observer latitude B from Horizons (true 3D reprojection only) ──
+        # Skipped unless opted in — avoids the extra lookup/network cost for
+        # every session that still uses the default linear warp.
+        use_true_reprojection = bool(config.derotation.use_true_reprojection)
+        sub_observer_lat_val = 0.0
+        if use_true_reprojection:
+            sub_obs_lat = query_horizons_sub_observer_lat(
+                horizons_id=config.derotation.horizons_id,
+                t_utc=t_center,
+                observer_code=config.derotation.observer_code,
+            )
+            sub_observer_lat_val = sub_obs_lat if sub_obs_lat is not None else 0.0
+            if sub_obs_lat is None:
+                print("    [WARNING] ObsSub-LAT not available → using 0.0°")
+            else:
+                print(f"  [ObsSub-LAT = {sub_observer_lat_val:.3f}° (sub-observer latitude B)]")
+
         # Create per-window output directory
         win_out_dir: Optional[Path] = None
         if out_base is not None:
@@ -598,6 +643,10 @@ def run(
             flip_ns=derot_flip,
             out_dir=win_out_dir,
             weight_power=config.derotation.stack_weight_power,
+            use_true_reprojection=use_true_reprojection,
+            sub_observer_lat_deg=sub_observer_lat_val,
+            true_polar_equatorial_ratio=config.derotation.true_polar_equatorial_ratio,
+            flip_pole_axis=config.derotation.flip_pole_axis,
         )
 
         # ── Satellite compositing (exp9 method) ───────────────────────────────
@@ -611,6 +660,8 @@ def run(
                 pole_pa_deg=pole_pa_for_warp,
                 np_ang_deg=np_ang_val,
                 r_ref=session_r_ref,
+                use_true_reprojection=use_true_reprojection,
+                sub_observer_lat_deg=sub_observer_lat_val,
             )
             if disk_centers and sat_log:
                 sat_log["disk_centers"] = disk_centers

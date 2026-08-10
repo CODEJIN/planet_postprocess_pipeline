@@ -206,6 +206,129 @@ def query_horizons_np_ang(
     return result
 
 
+# ── Bundled sub-observer latitude (B) lookup table ────────────────────────────
+#
+# Same coverage/format as the NP.ang table above (Jupiter 599 / Saturn 699 /
+# Mars 499, 2016-01-01 ~ 2036-12-31, 1-day resolution). Sub-observer latitude
+# does not wrap around like a position angle, so interpolation is plain
+# linear (no 360°-wraparound handling needed).
+
+_SUB_OBS_LAT_TABLE_PATH = Path(__file__).parent.parent / "data" / "sub_observer_lat_table.json"
+
+_SUB_OBS_LAT_BUNDLE: Optional[Dict[str, Dict[str, float]]] = None
+
+
+def _load_sub_obs_lat_bundle() -> Dict[str, Dict[str, float]]:
+    global _SUB_OBS_LAT_BUNDLE
+    if _SUB_OBS_LAT_BUNDLE is None:
+        try:
+            with open(_SUB_OBS_LAT_TABLE_PATH, encoding="utf-8") as f:
+                raw = json.load(f)
+            _SUB_OBS_LAT_BUNDLE = raw.get("planets", {})
+        except Exception as exc:
+            warnings.warn(f"[ObsSub-LAT] Could not load bundled table: {exc}")
+            _SUB_OBS_LAT_BUNDLE = {}
+    return _SUB_OBS_LAT_BUNDLE
+
+
+def query_horizons_sub_observer_lat(
+    horizons_id: str,
+    t_utc: datetime,
+    observer_code: str = "500@399",
+) -> Optional[float]:
+    """Return the planet's sub-observer (planetographic) latitude B at *t_utc*.
+
+    Lookup order mirrors :func:`query_horizons_np_ang` exactly: bundled table
+    → user-local cache → live JPL Horizons query.
+
+    Horizons quantity 14 ("Observer sub-longitude & sub-latitude") returns
+    the apparent planetodetic (=planetographic) longitude/latitude of the
+    disc center as seen by the observer — this is Earth's latitude on the
+    target body, i.e. how far the rotation axis is tilted toward/away from
+    the observer. Used by :func:`spherical_derotation_warp_3d` as
+    ``sub_observer_lat_deg``. Returns None only if all sources fail.
+
+    Two numbers are returned per line by Horizons for this quantity
+    (ObsSub-LON, ObsSub-LAT, in that order) — only the second is latitude.
+    """
+    # ── 1. Bundled table (primary, offline) ───────────────────────────────────
+    bundle = _load_sub_obs_lat_bundle()
+    planet_table = bundle.get(horizons_id)
+    if planet_table:
+        d0 = t_utc.strftime("%Y-%m-%d")
+        d1 = (t_utc + timedelta(days=1)).strftime("%Y-%m-%d")
+        if d0 in planet_table:
+            v0 = planet_table[d0]
+            v1 = planet_table.get(d1, v0)
+            frac = (t_utc.hour * 60 + t_utc.minute) / 1440.0
+            result = v0 + frac * (v1 - v0)
+            print(f"  [ObsSub-LAT] {d0} → {result:.3f}° (bundle, id={horizons_id})")
+            return result
+        # Date out of bundle range → fall through to live query
+
+    # ── 2. User-local cache ────────────────────────────────────────────────────
+    cache_path = Path.home() / ".astropipe" / "horizons_cache.json"
+    cache: dict = {}
+    if cache_path.exists():
+        try:
+            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    date_str  = t_utc.strftime("%Y-%m-%d")
+    cache_key = f"subobslat:{horizons_id}:{date_str}"
+    if cache_key in cache:
+        val = cache[cache_key]
+        print(f"  [ObsSub-LAT] {date_str} → {val:.3f}° (user cache, id={horizons_id})")
+        return val
+
+    # ── 3. Live Horizons query (fallback) ──────────────────────────────────────
+    start = t_utc.strftime("%Y-%m-%d %H:%M")
+    stop  = (t_utc + timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M")
+    params = urllib.parse.urlencode({
+        "format": "text", "COMMAND": f"'{horizons_id}'",
+        "OBJ_DATA": "NO", "MAKE_EPHEM": "YES", "EPHEM_TYPE": "OBSERVER",
+        "CENTER": f"'{observer_code}'",
+        "START_TIME": f"'{start}'", "STOP_TIME": f"'{stop}'",
+        "STEP_SIZE": "1m", "QUANTITIES": "14",
+    })
+    url = f"https://ssd.jpl.nasa.gov/api/horizons.api?{params}"
+    try:
+        with urllib.request.urlopen(url, timeout=15) as resp:
+            text = resp.read().decode("utf-8")
+    except Exception as exc:
+        warnings.warn(f"[ObsSub-LAT] Horizons query failed: {exc} → defaulting to None")
+        return None
+
+    soe, eoe = text.find("$$SOE"), text.find("$$EOE")
+    if soe < 0 or eoe < 0:
+        warnings.warn("[ObsSub-LAT] Horizons response missing $$SOE/$$EOE")
+        return None
+    data_lines = [l for l in text[soe + 5:eoe].split("\n") if l.strip()]
+    if not data_lines:
+        return None
+
+    def _parse_line(dl: str) -> Optional[float]:
+        # Format: "<date> <time>     <ObsSub-LON> <ObsSub-LAT>" — take the
+        # LAST two numbers on the line and use the second one (latitude).
+        nums = re.findall(r"-?\d+\.\d+", dl)
+        return float(nums[-1]) if len(nums) >= 2 else None
+
+    result = _parse_line(data_lines[0])
+    if result is None:
+        warnings.warn("[ObsSub-LAT] Could not parse Horizons response")
+        return None
+
+    # Save to user cache for offline reuse
+    try:
+        cache[cache_key] = result
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    print(f"  [ObsSub-LAT] {date_str} → {result:.3f}° (Horizons live, id={horizons_id})")
+    return result
+
+
 # ── Color helpers ─────────────────────────────────────────────────────────────
 
 def _to_luminance(image: np.ndarray) -> np.ndarray:
@@ -915,6 +1038,301 @@ def spherical_derotation_warp(
     return np.clip(warped, 0.0, 1.0)
 
 
+# ── True oblate-spheroid reprojection (sub-observer latitude B) ──────────────
+#
+# WinJUPOS-style true 3D reprojection, additive alternative to the linear
+# spherical_derotation_warp() above. See project notes ("WinJUPOS-style
+# de-rotation reprojection") for the full derivation and its adversarial
+# verification. Summary:
+#
+#   Body-fixed parametrization (phi is an internal-only "parametric
+#   latitude" — NOT planetographic or planetocentric; never expose/compare
+#   it outside these functions):
+#     x_b = Req*cos(phi)*cos(lam), y_b = Req*cos(phi)*sin(lam), z_b = Rpol*sin(phi)
+#   Line of sight uses the Horizons sub-observer latitude B *directly*, no
+#   planetographic->planetocentric conversion (Horizons' "ObsSub-LAT" is
+#   already defined as the sub-observer point's surface-normal angle, which
+#   by definition equals the line-of-sight angle).
+#   Forward:  X=y_b, Y=-x_b*sinB+z_b*cosB, depth=x_b*cosB+z_b*sinB (visible iff >0),
+#             then rotate (X,Y) by position angle P=pole_pa_deg and flip to
+#             pixel-row-down convention.
+#   Inverse:  solve the resulting quadratic in z_b, picking the depth>0 root;
+#             branches to a direct closed-form solve for |B|<1e-4 deg since
+#             the general form divides by sin(B) (numerically unstable near
+#             B=0 — confirmed empirically; the branch has <1e-6px round-trip
+#             error even at B=1e-8 deg).
+#
+# flip_pole_axis is an escape hatch (mirrors flip_direction's existing role
+# for the atmospheric-rotation sign ambiguity): the sign of the image-plane
+# rotation-axis direction cannot be derived from geometry alone without
+# real data (the linear code's own pole_pa handling has never been
+# exercised at nonzero position angle), so this must be resolved per-target
+# empirically via NCC forward-prediction (see _measure_derot_confidence),
+# not assumed.
+
+_SUB_OBS_LAT_SMALL_DEG = 1e-4  # below this |B|, use the direct (non-quadratic) solve
+
+
+def _oblate_ortho_forward(
+    phi: np.ndarray,
+    lam: np.ndarray,
+    sub_observer_lat_deg: float,
+    pole_pa_deg: float,
+    req_px: float,
+    rpol_px: float,
+    flip_pole_axis: bool = False,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Project body-fixed (phi, lam) to pixel offset (dx, dy) from disk centre.
+
+    Returns (dx, dy, depth); depth>0 means the point is on the near
+    (visible) side of the body. phi/lam/dx/dy may be scalars or arrays of
+    matching shape.
+    """
+    B = math.radians(sub_observer_lat_deg)
+    P = math.radians(pole_pa_deg)
+    phi = np.asarray(phi, dtype=np.float64)
+    lam = np.asarray(lam, dtype=np.float64)
+
+    xb = req_px * np.cos(phi) * np.cos(lam)
+    yb = req_px * np.cos(phi) * np.sin(lam)
+    zb = rpol_px * np.sin(phi)
+
+    sin_b, cos_b = math.sin(B), math.cos(B)
+    X = yb
+    Y = -xb * sin_b + zb * cos_b
+    depth = xb * cos_b + zb * sin_b
+    if flip_pole_axis:
+        Y = -Y
+
+    sin_p, cos_p = math.sin(P), math.cos(P)
+    dx = X * cos_p - Y * sin_p
+    dy = -(X * sin_p + Y * cos_p)
+    return dx, dy, depth
+
+
+def _oblate_ortho_inverse(
+    dx: np.ndarray,
+    dy: np.ndarray,
+    sub_observer_lat_deg: float,
+    pole_pa_deg: float,
+    req_px: float,
+    rpol_px: float,
+    flip_pole_axis: bool = False,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Unproject pixel offset (dx, dy) from disk centre to body-fixed (phi, lam).
+
+    Returns (phi, lam, depth); phi/lam are NaN wherever no near-side
+    (depth>0) solution exists. dx/dy may be scalars or arrays.
+    """
+    B = math.radians(sub_observer_lat_deg)
+    P = math.radians(pole_pa_deg)
+    dx = np.asarray(dx, dtype=np.float64)
+    dy = np.asarray(dy, dtype=np.float64)
+
+    sin_p, cos_p = math.sin(P), math.cos(P)
+    X =  dx * cos_p - dy * sin_p
+    Y = -dx * sin_p - dy * cos_p
+    if flip_pole_axis:
+        Y = -Y
+
+    sin_b, cos_b = math.sin(B), math.cos(B)
+    req2 = req_px * req_px
+
+    if abs(B) < math.radians(_SUB_OBS_LAT_SMALL_DEG):
+        # B ~ 0: Y = z_b*cos_b directly (sin_b ~ 0) -> closed form, avoids
+        # dividing by sin_b (unstable — see module notes above).
+        zb = Y / cos_b
+        xb_sq = req2 * (1.0 - (zb * zb) / (rpol_px * rpol_px)) - X * X
+        xb = np.sqrt(np.clip(xb_sq, 0.0, None))
+        depth = xb * cos_b + zb * sin_b
+        depth = np.where(xb_sq < 0.0, -1.0, depth)  # no real solution -> invalid
+    else:
+        A = cos_b * cos_b + sin_b * sin_b * (req_px / rpol_px) ** 2
+        Bq = -2.0 * Y * cos_b
+        Cq = Y * Y + sin_b * sin_b * (X * X - req2)
+        disc = Bq * Bq - 4.0 * A * Cq
+        sq = np.sqrt(np.clip(disc, 0.0, None))
+        z1 = (-Bq + sq) / (2.0 * A)
+        z2 = (-Bq - sq) / (2.0 * A)
+        x1 = (z1 * cos_b - Y) / sin_b
+        x2 = (z2 * cos_b - Y) / sin_b
+        depth1 = x1 * cos_b + z1 * sin_b
+        depth2 = x2 * cos_b + z2 * sin_b
+        valid1 = (disc >= 0.0) & (depth1 > 0.0)
+        valid2 = (disc >= 0.0) & (depth2 > 0.0)
+        pick1 = np.where(valid1 & valid2, depth1 >= depth2, valid1)
+        zb    = np.where(pick1, z1, z2)
+        xb    = np.where(pick1, x1, x2)
+        depth = np.where(pick1, depth1, depth2)
+        depth = np.where(valid1 | valid2, depth, -1.0)
+
+    phi = np.arcsin(np.clip(zb / rpol_px, -1.0, 1.0))
+    lam = np.arctan2(X, xb)
+    invalid = depth <= 0.0
+    phi = np.where(invalid, np.nan, phi)
+    lam = np.where(invalid, np.nan, lam)
+    return phi, lam, depth
+
+
+def _reprojected_position(
+    x: np.ndarray,
+    y: np.ndarray,
+    dt_sec: float,
+    cx: float,
+    cy: float,
+    disk_radius_px: float,
+    period_hours: float,
+    sub_observer_lat_deg: float,
+    pole_pa_deg: float,
+    polar_equatorial_ratio_true: float,
+    scale: float = 1.0,
+    flip_direction: bool = False,
+    flip_pole_axis: bool = False,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Shared core: unproject (x,y) -> shift body-fixed longitude by the
+    same rotation the atmosphere undergoes over dt_sec -> reproject.
+
+    Returns (new_x, new_y, valid) where valid is False wherever (x,y) had no
+    near-side solution (point was off-disk) — new_x/new_y equal x/y there
+    (no-op, matching the linear code's depth<=0 -> zero-drift fallback).
+    Used both by spherical_derotation_warp_3d (vectorized, whole image) and
+    by single-point callers (e.g. satellite/shadow smearing-position
+    correction in satellite_composite.py) so this logic exists once.
+    """
+    req_px  = disk_radius_px * 1.05  # matches spherical_derotation_warp's padded radius
+    rpol_px = req_px * polar_equatorial_ratio_true
+
+    dx0 = np.asarray(x, dtype=np.float64) - cx
+    dy0 = np.asarray(y, dtype=np.float64) - cy
+    phi, lam, depth = _oblate_ortho_inverse(
+        dx0, dy0, sub_observer_lat_deg, pole_pa_deg, req_px, rpol_px,
+        flip_pole_axis=flip_pole_axis,
+    )
+
+    period_sec = period_hours * 3600.0
+    delta_lambda = (dt_sec / period_sec) * 2.0 * math.pi
+    # NOTE: this sign is the OPPOSITE of spherical_derotation_warp's internal
+    # `sign = -1 if flip_direction else 1` — that one scales depth-based
+    # drift directly (a different parametrization), while this one shifts a
+    # body-fixed longitude recovered by *unprojecting the output position*.
+    # Empirically calibrated (see tests/test_reprojection.py's B=0 ground-
+    # truth check) so that flip_direction=False here reproduces the exact
+    # same raw-pixel -> de-rotated-output shift direction as the validated
+    # linear warp's own flip_direction=False, not assumed from the algebra
+    # alone (this project has a history of exactly this kind of sign error).
+    sign = 1.0 if flip_direction else -1.0
+    lam_src = lam + sign * scale * delta_lambda
+
+    dx1, dy1, _ = _oblate_ortho_forward(
+        phi, lam_src, sub_observer_lat_deg, pole_pa_deg, req_px, rpol_px,
+        flip_pole_axis=flip_pole_axis,
+    )
+
+    valid = np.isfinite(phi)
+    new_x = np.where(valid, cx + dx1, x)
+    new_y = np.where(valid, cy + dy1, y)
+    return new_x, new_y, valid
+
+
+def _reprojection_point_shift(
+    x: float,
+    y: float,
+    dt_sec: float,
+    cx: float,
+    cy: float,
+    disk_radius_px: float,
+    period_hours: float,
+    sub_observer_lat_deg: float,
+    pole_pa_deg: float,
+    polar_equatorial_ratio_true: float,
+    scale: float = 1.0,
+    flip_direction: bool = False,
+    flip_pole_axis: bool = False,
+) -> Tuple[float, float]:
+    """Single-point convenience wrapper around _reprojected_position().
+
+    Returns (dx, dy): the shift a point currently at pixel (x,y) undergoes
+    under the true reprojection over dt_sec. (0.0, 0.0) if (x,y) is off-disk
+    (no warp applies there) — mirrors spherical_derotation_warp's implicit
+    zero-drift behaviour outside disk_radius_px.
+    """
+    new_x, new_y, valid = _reprojected_position(
+        x, y, dt_sec, cx, cy, disk_radius_px, period_hours,
+        sub_observer_lat_deg, pole_pa_deg, polar_equatorial_ratio_true,
+        scale=scale, flip_direction=flip_direction, flip_pole_axis=flip_pole_axis,
+    )
+    if not bool(valid):
+        return 0.0, 0.0
+    return float(new_x) - x, float(new_y) - y
+
+
+def spherical_derotation_warp_3d(
+    image: np.ndarray,
+    dt_sec: float,
+    cx: float,
+    cy: float,
+    disk_radius_px: float,
+    period_hours: float,
+    sub_observer_lat_deg: float,
+    pole_pa_deg: float,
+    polar_equatorial_ratio_true: float,
+    scale: float = 1.0,
+    flip_direction: bool = False,
+    flip_pole_axis: bool = False,
+) -> np.ndarray:
+    """True oblate-spheroid orthographic reprojection de-rotation warp.
+
+    Additive alternative to spherical_derotation_warp() — NOT a drop-in
+    replacement, and not called unless DerotationConfig.use_true_reprojection
+    is enabled. Unlike the linear warp, this correctly incorporates the
+    sub-observer latitude (see module notes above for the full derivation).
+
+    Args mirror spherical_derotation_warp() except sub_observer_lat_deg
+    (Horizons "ObsSub-LAT", quantity 14 — see query_horizons_sub_observer_lat)
+    replaces nothing (pole_pa_deg is still required, same source as before)
+    and polar_equatorial_ratio_true must be the planet's TRUE physical
+    Rpol/Req (a per-target constant, e.g. Saturn=0.9021) — NOT the apparent
+    fitted ellipse aspect ratio used by the linear warp, which is
+    contaminated by B-foreshortening once B is modelled explicitly.
+
+    Returns: warped float [0, 1] array, same shape as input.
+    """
+    h, w = image.shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+
+    new_x, new_y, valid = _reprojected_position(
+        xx, yy, dt_sec, cx, cy, disk_radius_px, period_hours,
+        sub_observer_lat_deg, pole_pa_deg, polar_equatorial_ratio_true,
+        scale=scale, flip_direction=flip_direction, flip_pole_axis=flip_pole_axis,
+    )
+    map_x = new_x.astype(np.float32)
+    map_y = new_y.astype(np.float32)
+
+    # Mixed interpolation: same CUBIC-interior / LINEAR-edge feather blend as
+    # spherical_derotation_warp(), for visual-quality parity near the limb.
+    src_f32 = image.astype(np.float32)
+    warped_cubic = cv2.remap(
+        src_f32, map_x, map_y,
+        interpolation=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0.0,
+    )
+    warped_linear = cv2.remap(
+        src_f32, map_x, map_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0.0,
+    )
+    _interp_feather_px = 12.0
+    dist_from_center = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2).astype(np.float32)
+    w_cubic = np.clip(
+        (disk_radius_px - dist_from_center) / _interp_feather_px, 0.0, 1.0
+    )
+    if warped_cubic.ndim == 3:
+        w_cubic = w_cubic[:, :, np.newaxis]
+    warped = warped_cubic * w_cubic + warped_linear * (1.0 - w_cubic)
+
+    return np.clip(warped, 0.0, 1.0)
+
+
 # ── Pole PA auto-detection ────────────────────────────────────────────────────
 
 def auto_detect_pole_pa(
@@ -1438,6 +1856,10 @@ def derotate_filter(
     shared_shape: Optional[PlanetShape] = None,
     filter_pose: Optional[FilterPose] = None,
     weight_power: float = 1.0,
+    use_true_reprojection: bool = False,
+    sub_observer_lat_deg: float = 0.0,
+    true_polar_equatorial_ratio: float = 1.0,
+    flip_pole_axis: bool = False,
 ) -> Tuple[np.ndarray, dict]:
     """De-rotate and stack a single filter's images for one time window.
 
@@ -1470,6 +1892,17 @@ def derotate_filter(
         weight_power:   Exponent applied to norm_score weights before
                         stacking (see quality_weighted_stack). 1.0 (default)
                         = unchanged linear blend.
+        use_true_reprojection: If True, use spherical_derotation_warp_3d()
+                        instead of the linear spherical_derotation_warp() —
+                        see DerotationConfig.use_true_reprojection. Default
+                        False (linear warp, unchanged behaviour).
+        sub_observer_lat_deg: Horizons "ObsSub-LAT" (quantity 14) — only
+                        used when use_true_reprojection=True.
+        true_polar_equatorial_ratio: Planet's TRUE physical Rpol/Req — only
+                        used when use_true_reprojection=True (replaces the
+                        apparent ellipse-fit ratio the linear warp uses).
+        flip_pole_axis: Sign-ambiguity escape hatch for the reprojection —
+                        only used when use_true_reprojection=True.
 
     Returns:
         (stacked_image, log_dict)
@@ -1606,14 +2039,26 @@ def derotate_filter(
             pass
 
         dt_sec = (row["timestamp"] - t_reference).total_seconds()
-        warped = spherical_derotation_warp(
-            img, dt_sec, ref_cx, ref_cy, ref_semi_a,
-            period_hours=period_hours,
-            scale=warp_scale,
-            flip_direction=flip_direction,
-            pole_pa_deg=pole_pa_deg,
-            polar_equatorial_ratio=_polar_eq_ratio,
-        )
+        if use_true_reprojection:
+            warped = spherical_derotation_warp_3d(
+                img, dt_sec, ref_cx, ref_cy, ref_semi_a,
+                period_hours=period_hours,
+                sub_observer_lat_deg=sub_observer_lat_deg,
+                pole_pa_deg=pole_pa_deg,
+                polar_equatorial_ratio_true=true_polar_equatorial_ratio,
+                scale=warp_scale,
+                flip_direction=flip_direction,
+                flip_pole_axis=flip_pole_axis,
+            )
+        else:
+            warped = spherical_derotation_warp(
+                img, dt_sec, ref_cx, ref_cy, ref_semi_a,
+                period_hours=period_hours,
+                scale=warp_scale,
+                flip_direction=flip_direction,
+                pole_pa_deg=pole_pa_deg,
+                polar_equatorial_ratio=_polar_eq_ratio,
+            )
 
         log_frames.append({
             "stem":              row["stem"],
@@ -1755,6 +2200,10 @@ def derotate_window(
     flip_ns: bool = False,
     out_dir: Optional[Path] = None,
     weight_power: float = 1.0,
+    use_true_reprojection: bool = False,
+    sub_observer_lat_deg: float = 0.0,
+    true_polar_equatorial_ratio: float = 1.0,
+    flip_pole_axis: bool = False,
 ) -> Dict[str, Tuple[Optional[Path], dict]]:
     """De-rotate and stack all filters in a single time window.
 
@@ -1771,6 +2220,11 @@ def derotate_window(
                           per-filter stack (see quality_weighted_stack). 1.0
                           (default) = original linear blend, unchanged for
                           every existing caller.
+        use_true_reprojection, sub_observer_lat_deg,
+        true_polar_equatorial_ratio, flip_pole_axis:
+                          Passed straight through to derotate_filter() — see
+                          its docstring. Default use_true_reprojection=False
+                          leaves every existing caller's behaviour unchanged.
 
     Returns:
         {filter: (output_path_or_None, log_dict)}
@@ -1881,6 +2335,10 @@ def derotate_window(
                 shared_shape=shared_shape,
                 filter_pose=filter_poses.get(filt),
                 weight_power=weight_power,
+                use_true_reprojection=use_true_reprojection,
+                sub_observer_lat_deg=sub_observer_lat_deg,
+                true_polar_equatorial_ratio=true_polar_equatorial_ratio,
+                flip_pole_axis=flip_pole_axis,
             )
         except Exception as exc:
             print(f" ERROR: {exc}")

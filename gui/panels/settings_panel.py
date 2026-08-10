@@ -29,11 +29,18 @@ from PySide6.QtWidgets import (
 from gui.i18n import S
 from gui import profile_manager
 
-# Planet preset data: name → (target, horizons_id, rotation_period_hours, warp_scale)
+# Planet preset data: name → (target, horizons_id, rotation_period_hours,
+#                              warp_scale, true_polar_equatorial_ratio)
 #
 # warp_scale is the empirical de-rotation warp strength (see DerotationConfig /
 # spherical_derotation_warp). Only Jupiter (1.00) and Saturn (0.10) have been
 # validated via an NCC sweep against real session data.
+#
+# true_polar_equatorial_ratio is the planet's TRUE physical Rpol/Req (IAU/NASA
+# fact-sheet constants, not empirically tuned) — used only by
+# spherical_derotation_warp_3d (DerotationConfig.use_true_reprojection=True).
+# Do not confuse with warp_scale's empirical-calibration caveat above; these
+# values are not NCC-swept and don't need re-validation the way warp_scale does.
 #
 # Saturn's 0.10 has been specifically re-verified (2026-08-09) against three
 # progressively stricter masks (baseline 0.70R disk, 0.55R disk, and a
@@ -52,15 +59,15 @@ from gui import profile_manager
 # story remains an open question even though the 0.10 value itself is solid.
 # The remaining planets keep the old default of 1.00 unvalidated — run an NCC
 # sweep before trusting de-rotation quality for those targets.
-_PLANET_PRESETS: dict[str, tuple[str, str, float, float]] = {
-    "Jupiter": ("Jup", "599",   9.9281, 1.00),
-    "Saturn":  ("Sat", "699",  10.56,   0.10),
-    "Mars":    ("Mar", "499",  24.6229, 1.00),
-    "Uranus":  ("Ura", "799",  17.24,   1.00),
-    "Neptune": ("Nep", "899",  16.11,   1.00),
-    "Mercury": ("Mer", "199", 1407.6,   1.00),
-    "Venus":   ("Ven", "299", 5832.5,   1.00),
-    "Custom":  ("",    "",      9.9281, 1.00),
+_PLANET_PRESETS: dict[str, tuple[str, str, float, float, float]] = {
+    "Jupiter": ("Jup", "599",   9.9281, 1.00, 0.9351),
+    "Saturn":  ("Sat", "699",  10.56,   0.10, 0.9021),
+    "Mars":    ("Mar", "499",  24.6229, 1.00, 0.9941),
+    "Uranus":  ("Ura", "799",  17.24,   1.00, 0.9771),
+    "Neptune": ("Nep", "899",  16.11,   1.00, 0.9829),
+    "Mercury": ("Mer", "199", 1407.6,   1.00, 1.00),
+    "Venus":   ("Ven", "299", 5832.5,   1.00, 1.00),
+    "Custom":  ("",    "",      9.9281, 1.00, 1.00),
 }
 
 _PANEL_BG   = "#252526"
@@ -287,6 +294,20 @@ class SettingsPanel(QWidget):
         self._warp_scale.setToolTip(S("settings.warp_scale.tooltip"))
         fl.addRow(_lbl(S("settings.warp_scale"), S("settings.warp_scale.tooltip")), self._warp_scale)
 
+        # True physical polar/equatorial ratio (only used by the opt-in true
+        # 3D reprojection warp — see DerotationConfig.use_true_reprojection)
+        self._true_polar_ratio = QDoubleSpinBox()
+        self._true_polar_ratio.setStyleSheet(_SPINBOX_STYLE)
+        self._true_polar_ratio.setRange(0.5, 1.0)
+        self._true_polar_ratio.setDecimals(4)
+        self._true_polar_ratio.setSingleStep(0.001)
+        self._true_polar_ratio.setValue(1.00)
+        self._true_polar_ratio.setToolTip(S("settings.true_polar_ratio.tooltip"))
+        fl.addRow(
+            _lbl(S("settings.true_polar_ratio"), S("settings.true_polar_ratio.tooltip")),
+            self._true_polar_ratio,
+        )
+
         # Camera mode (above filters so the user sees why filters is disabled)
         mode_widget = QWidget()
         mode_widget.setStyleSheet("background: transparent;")
@@ -474,12 +495,13 @@ class SettingsPanel(QWidget):
         pname = self._planet_combo.itemData(index)
         if pname not in _PLANET_PRESETS:
             return
-        target, horizons_id, period, warp_scale = _PLANET_PRESETS[pname]
+        target, horizons_id, period, warp_scale, true_polar_ratio = _PLANET_PRESETS[pname]
         if pname != "Custom":
             self._target.setText(target)
             self._horizons_id.setText(horizons_id)
             self._rotation_period.setValue(period)
             self._warp_scale.setValue(warp_scale)
+            self._true_polar_ratio.setValue(true_polar_ratio)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -496,6 +518,7 @@ class SettingsPanel(QWidget):
             "horizons_id":        self._horizons_id.text().strip(),
             "rotation_period":    self._rotation_period.value(),
             "warp_scale":         self._warp_scale.value(),
+            "true_polar_equatorial_ratio": self._true_polar_ratio.value(),
             "filters":            self._filters.text().strip(),
             "camera_mode":        camera_mode,
             "language":           language,
@@ -515,6 +538,7 @@ class SettingsPanel(QWidget):
         self._horizons_id.setText(data.get("horizons_id", "599"))
         self._rotation_period.setValue(float(data.get("rotation_period", 9.9281)))
         self._warp_scale.setValue(float(data.get("warp_scale", 1.00)))
+        self._true_polar_ratio.setValue(float(data.get("true_polar_equatorial_ratio", 1.00)))
         self._filters.setText(data.get("filters", "IR,R,G,B,CH4"))
 
         camera_mode = data.get("camera_mode", "mono")

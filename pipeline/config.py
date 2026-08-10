@@ -242,6 +242,40 @@ class DerotationConfig:
     # than changing the default, since it hasn't been validated on Jupiter.
     stack_weight_power: float = 1.0
 
+    # ── True 3D oblate-spheroid reprojection (WinJUPOS-style, opt-in) ─────────
+    # When True, spherical_derotation_warp_3d() replaces the linear
+    # spherical_derotation_warp() for this session — see derotation.py's
+    # "True oblate-spheroid reprojection" section for the derivation. The
+    # linear warp is a valid small-angle approximation for an equatorial
+    # view but has no notion of sub-observer latitude B (how far the
+    # rotation axis tilts toward/away from the observer); this models it
+    # explicitly via a full unproject/shift-longitude/reproject per pixel.
+    # Default False: the linear warp remains the validated default for both
+    # Jupiter and Saturn. Turn this on only after confirming via
+    # _measure_derot_confidence's NCC sweep (use_true_reprojection=True vs
+    # False) that it measurably helps on your actual session data — the
+    # expected benefit is small (~1-2px at the limb) and shouldn't be
+    # assumed without checking.
+    use_true_reprojection: bool = False
+    # Sign-ambiguity escape hatch for the reprojection's image-plane
+    # rotation-axis direction (mirrors flip_direction's existing role for
+    # the atmospheric-rotation sign). Cannot be derived from geometry alone
+    # — must be resolved empirically per target via NCC forward-prediction
+    # (same technique as _detect_session_flip_ns), not assumed. Default
+    # False until measured.
+    flip_pole_axis: bool = False
+    # Planet's TRUE physical polar/equatorial radius ratio (Rpol/Req), a
+    # per-target IAU/NASA fact-sheet constant — e.g. Jupiter=0.9351,
+    # Saturn=0.9021 (see gui/panels/settings_panel.py's _PLANET_PRESETS,
+    # same pattern as warp_scale). Only used by spherical_derotation_warp_3d
+    # when use_true_reprojection=True — do NOT confuse with the *apparent*
+    # fitted-ellipse aspect ratio the linear warp uses, which is
+    # contaminated by B-foreshortening and would double-count oblateness if
+    # reused here. Default 1.0 (sphere) is deliberately wrong for real
+    # targets — always comes from the planet preset, never left at default
+    # for Jupiter/Saturn/etc.
+    true_polar_equatorial_ratio: float = 1.0
+
 
 
 # ── Step 8: RGB / LRGB compositing ────────────────────────────────────────────

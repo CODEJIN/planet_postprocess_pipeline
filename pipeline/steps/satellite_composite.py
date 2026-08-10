@@ -33,6 +33,7 @@ from pipeline.modules.derotation import (
     find_disk_center,
     query_horizons_np_ang,
     quality_weighted_stack,
+    _reprojection_point_shift,
 )
 from pipeline.modules.satellite_tracker import (
     SatelliteTracker,
@@ -291,6 +292,7 @@ def _compute_smearing_map(
 
     # Pre-compute warp displacement parameters for warped-position smearing.
     _warp_active = False
+    _use_3d = False
     if warp_params is not None:
         try:
             _dcx       = float(warp_params["disk_cx"])
@@ -301,6 +303,9 @@ def _compute_smearing_map(
             _pa        = float(warp_params["pole_pa_deg"])
             _per       = float(warp_params.get("polar_eq_ratio", 1.0))
             _tref      = warp_params["t_reference"]
+            _use_3d    = bool(warp_params.get("use_true_reprojection", False))
+            _sub_obs_lat   = float(warp_params.get("sub_observer_lat_deg", 0.0))
+            _flip_pole_ax  = bool(warp_params.get("flip_pole_axis", False))
             _period_sec = _ph * 3600.0
             _cos_pa    = float(np.cos(np.radians(_pa)))
             _sin_pa    = float(np.sin(np.radians(_pa)))
@@ -324,7 +329,37 @@ def _compute_smearing_map(
             continue
         q = float(row["norm_score"]) / total_quality
 
-        if _warp_active:
+        if _warp_active and _use_3d:
+            # True-reprojection-consistent version of the same correction:
+            # where does this frame's raw shadow position land after the
+            # SAME unproject->shift-longitude->reproject warp the atmosphere
+            # underwent for this window/filter (spherical_derotation_warp_3d)?
+            # Must use the same sub_observer_lat_deg/true polar-equatorial
+            # ratio (_per, set by the caller) as the atmosphere — mixing the
+            # linear model's apparent ratio in here would reintroduce the
+            # exact desync this branch exists to prevent.
+            t_frame = row["timestamp"]
+            if hasattr(t_frame, "tzinfo") and t_frame.tzinfo is not None:
+                t_frame = t_frame.replace(tzinfo=None)
+            dt_sec = (t_frame - _tref).total_seconds()
+            # _reprojection_point_shift(y, dt) answers "given y at the
+            # REFERENCE orientation, where is it in the raw frame dt later" —
+            # the inverse of what we need here (given a RAW position at
+            # t_frame, where does it land in the de-rotated/reference
+            # composite). Negating dt_sec inverts the direction: unprojecting
+            # the raw position and shifting its longitude by -Δλ(dt) recovers
+            # the reference-time longitude, which is exactly the de-rotation
+            # this frame's own atmosphere underwent.
+            wdx, wdy = _reprojection_point_shift(
+                pos.x_px, pos.y_px, -dt_sec, _dcx, _dcy, _dr, _ph,
+                _sub_obs_lat, _pa, _per,
+                scale=_ws, flip_pole_axis=_flip_pole_ax,
+            )
+            warped_x = pos.x_px + wdx
+            warped_y = pos.y_px + wdy
+            dx = warped_x - ref_pos.x_px
+            dy = warped_y - ref_pos.y_px
+        elif _warp_active:
             # Compute warped position: where this frame's shadow lands in the
             # planet TIF after de-rotation warp is applied.
             # output_pos = raw_pos + drift * (cos_pa, sin_pa)
@@ -633,6 +668,8 @@ def _apply_satellite_composite(
     pole_pa_deg: float,
     np_ang_deg: float,
     r_ref: float | None = None,
+    use_true_reprojection: bool = False,
+    sub_observer_lat_deg: float = 0.0,
 ) -> Dict[str, dict]:
     """Apply multi-rate satellite compositing for all on-disk moons and shadows.
 
@@ -708,7 +745,18 @@ def _apply_satellite_composite(
         planet_lum = planet.mean(axis=2) if is_color else planet
         disk_cx, disk_cy, disk_sr, disk_sr_b, _ = derotation.find_disk_center(planet_lum)
         disk_centers[filt] = {"cx": float(disk_cx), "cy": float(disk_cy), "r": float(disk_sr)}
-        polar_eq_ratio = float(disk_sr_b) / float(disk_sr) if disk_sr > 0 else 1.0
+        # The atmosphere's actual warp uses the TRUE physical ratio when
+        # use_true_reprojection is on (see DerotationConfig docstring — the
+        # apparent ellipse-fit ratio is contaminated by B-foreshortening
+        # once B is modelled explicitly). This smearing-position correction
+        # must use whichever ratio the atmosphere actually used for this
+        # window/filter, or the two desync exactly the way this function's
+        # docstring warns about.
+        polar_eq_ratio = (
+            float(config.derotation.true_polar_equatorial_ratio)
+            if use_true_reprojection
+            else (float(disk_sr_b) / float(disk_sr) if disk_sr > 0 else 1.0)
+        )
         warp_params = {
             "disk_cx":       disk_cx,
             "disk_cy":       disk_cy,
@@ -718,6 +766,9 @@ def _apply_satellite_composite(
             "pole_pa_deg":   pole_pa_deg,
             "polar_eq_ratio": polar_eq_ratio,
             "t_reference":   t_center_naive,
+            "use_true_reprojection": use_true_reprojection,
+            "sub_observer_lat_deg":  sub_observer_lat_deg,
+            "flip_pole_axis":        bool(config.derotation.flip_pole_axis),
         }
 
         time_sorted = sorted(rows, key=lambda r: r["timestamp"])
