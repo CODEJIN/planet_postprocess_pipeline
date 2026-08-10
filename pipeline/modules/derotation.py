@@ -1715,7 +1715,7 @@ def auto_detect_ns_flip(
       • It determines which flip_direction to pass to spherical_derotation_warp.
         For BOTH N-up AND pure NS-flip (South-up, East-left) cameras the
         atmospheric features drift in the same image-plane direction (leftward),
-        so this function returns flip_ns=False in both cases.
+        so this function returns flip_direction=False in both cases.
         flip_direction=False is the *correct* de-rotation direction for both.
       • It does NOT determine the satellite-tracker orientation (flip_ns for the
         tracker), because the tracker's NS-sign is purely about whether the camera
@@ -1730,7 +1730,7 @@ def auto_detect_ns_flip(
         cx, cy:                 Disk centre (pixels).
         disk_radius_px:         Disk semi-major radius (pixels).
         period_hours:           Atmospheric rotation period (hours).
-        warp_scale:             Empirical spherical warp scale (default 0.80).
+        warp_scale:             Empirical spherical warp scale (default 1.00).
         pole_pa_deg:            Image-space pole PA from auto_detect_equator_pa().
         polar_equatorial_ratio: semi_minor / semi_major from find_disk_center().
 
@@ -2176,7 +2176,7 @@ def derotate_filter(
         color_mode:     If True, preserve RGB channels throughout; disk detection
                         and alignment are computed on the luminance channel.
         flip_direction: If True, negate the warp drift direction (South-up camera).
-                        Must match the flip_ns detected by auto_detect_ns_flip().
+                        Must match the flip_direction detected by auto_detect_ns_flip().
         shared_shape:   Optional oblateness/orientation (aspect_ratio,
                         equator_pa_deg) to use ONLY when this filter's own
                         reference-frame detection couldn't determine shape

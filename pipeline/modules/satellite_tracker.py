@@ -233,6 +233,10 @@ class SatelliteTracker:
                 east_px  = ew_sign * dra_arcsec  / plate_scale_arcsec_per_px
                 north_px = ns_sign * ddec_arcsec / plate_scale_arcsec_per_px
 
+                # OPEN QUESTION re: pole_pa_deg convention here — not
+                # dispositively resolved, see the detailed note at the
+                # equivalent Horizons-fallback formula further down this
+                # file (search "OPEN QUESTION").
                 pa_rad = np.radians(pole_pa_deg + np_ang_deg)
                 dx_px  = east_px * np.cos(pa_rad) + north_px * np.sin(pa_rad)
                 dy_px  = east_px * np.sin(pa_rad) - north_px * np.cos(pa_rad)
@@ -392,6 +396,31 @@ class SatelliteTracker:
                 east_px  = ew_sign * dra_arcsec  / plate_scale_arcsec_per_px
                 north_px = ns_sign * ddec_arcsec / plate_scale_arcsec_per_px
 
+                # OPEN QUESTION, documented not silently assumed (external
+                # review, 2026-08-10): pole_pa_deg here is the SAME
+                # equator/drift-axis value derotation.py uses (confirmed:
+                # this is what derotate_stack.py actually passes in as
+                # pole_pa_for_warp = session_pole_pa). Whether "equator-axis
+                # angle + NP.ang" is the physically correct camera-to-sky
+                # rotation for THIS east/north-to-pixel transform, vs.
+                # needing the POLE-axis angle instead (a genuine, different
+                # 90-degree-shifted quantity — see
+                # save_diagnostic_overlay's own, inconsistent convention a
+                # few hundred lines down, itself dead code with zero
+                # callers), was not directly re-derived or re-tested with
+                # real transit data during that audit. Circumstantial
+                # evidence argues this formula is likely fine as-is: a real
+                # flip_ns bug was found and fixed here in 2026-05-12 via
+                # actual observed shadow positions, and its symptom was a
+                # north-south MIRROR (fixed by one sign flip in ns_sign) —
+                # a 90-degree pole/equator-axis mismatch would instead
+                # produce shadows offset perpendicular to their true
+                # position, a qualitatively different and more dramatic
+                # symptom that was never reported. Not proven either way by
+                # direct test — if satellite/shadow compositing is
+                # reactivated for a session with an actual visible
+                # transit, verify predicted vs. observed position directly
+                # before trusting this at large pole_pa_deg.
                 pa_rad = np.radians(pole_pa_deg + np_ang_deg)
                 dx_px  = east_px * np.cos(pa_rad) + north_px * np.sin(pa_rad)
                 dy_px  = east_px * np.sin(pa_rad) - north_px * np.cos(pa_rad)
@@ -592,9 +621,20 @@ def detect_tracker_flip_ns(
     ], axis=0), axis=0)
     h, w = avg.shape
 
-    # Rotate image so equatorial belts run exactly horizontally
+    # Rotate image so equatorial belts run exactly horizontally.
+    # BUG FOUND 2026-08-10 (external review prompted a deep audit of this
+    # function): this used -pole_pa_deg, which DOUBLES the tilt instead of
+    # removing it. Verified directly on real Jupiter data: a frame measured
+    # at equator_pa=-9.50deg, after "correction" with the old -pole_pa_deg
+    # sign, measured -19.50deg (worse) via auto_detect_equator_pa on the
+    # rotated result; with the sign flipped to +pole_pa_deg, it measured
+    # 0.00deg (correct). cv2.getRotationMatrix2D's angle is positive=CCW as
+    # displayed; auto_detect_equator_pa's positive=CW as displayed (see its
+    # own docstring) — the two conventions are already opposite by
+    # definition, so passing the raw (non-negated) equator_pa value is what
+    # correctly undoes the measured tilt.
     if abs(pole_pa_deg) > 0.5:
-        M = cv2.getRotationMatrix2D((float(cx), float(cy)), -float(pole_pa_deg), 1.0)
+        M = cv2.getRotationMatrix2D((float(cx), float(cy)), float(pole_pa_deg), 1.0)
         rotated = cv2.warpAffine(
             avg, M, (w, h),
             flags=cv2.INTER_LINEAR,
@@ -874,6 +914,20 @@ def save_diagnostic_overlay(
                    markerType=cv2.MARKER_CROSS, markerSize=10, thickness=1)
 
     # ── Jupiter rotation axis ────────────────────────────────────────────────────
+    # NOTE (2026-08-10, external review + audit — save_diagnostic_overlay has
+    # zero callers anywhere in the pipeline, confirmed via repo-wide grep, so
+    # this has no effect on real output, but the convention below is
+    # INCONSISTENT with the rest of the codebase and should not be trusted
+    # if this function is ever wired up): everywhere else, pole_pa_deg is the
+    # image-space EQUATORIAL/drift-axis angle (0deg = axis horizontal/+x,
+    # confirmed via auto_detect_equator_pa/detect_tracker_flip_ns and
+    # derotation.py). The formula below instead draws the axis pointing
+    # straight UP (image -y) at pole_pa_deg=0 and rotates toward +x as PA
+    # increases — i.e. it treats pole_pa_deg as a POLE-axis angle measured
+    # from image-up, a 90-degree-different convention. If this function is
+    # revived, either feed it pole_pa_deg-90 (to convert from the equator-
+    # axis convention) or rewrite the vector formula to match the confirmed
+    # convention directly — do not assume the formula below is correct.
     if pole_pa_deg is not None:
         pa_rad = np.radians(pole_pa_deg)
         # pole_pa_deg: angle of Jupiter's north pole from image-up toward image-right
