@@ -4,10 +4,26 @@ Planetary de-rotation module.
 Algorithm (per filter, per time window):
   1. Find planet disk center via ellipse fitting on each image (sub-pixel accurate)
   2. Compute CML displacement from the configured rotation period
-  3. Apply spherical de-rotation warp using cv2.remap with Lanczos-4 interpolation.
+  3. Apply spherical de-rotation warp using cv2.remap, mixing INTER_CUBIC
+     (disk interior, detail-preserving) with INTER_LINEAR (limb/exterior,
+     ringing-free) via a feathered blend — see spherical_derotation_warp's
+     own docstring for the exact weighting; NOT Lanczos-4 despite what an
+     earlier revision of this note claimed.
 
-     The warp direction is determined by the planet's north pole position angle
-     (pole_pa_deg, queried from JPL Horizons quantity 17 "NP.ang"):
+     The warp direction is determined by *pole_pa_deg* — an IMAGE-SPACE
+     angle measured directly from pixel data (pole_pa_from_disk_ellipse() /
+     auto_detect_pole_pa(), called from derotate_stack.py's
+     _scan_session_pole_pa()), NEVER a raw sky-frame quantity fed in
+     directly. This is worth stating unambiguously because an earlier
+     revision of this exact paragraph claimed pole_pa_deg was "queried from
+     JPL Horizons quantity 17 NP.ang" — that was wrong, and it independently
+     misled two rounds of external code review into flagging a "Horizons
+     sky-PA vs image-PA mismatch" bug that doesn't exist in the actual data
+     flow. NP.ang IS queried (query_horizons_np_ang(), a real, correct,
+     celestial-sky-frame angle) but only for a different purpose entirely:
+     the satellite/shadow tracker's camera-to-sky rotation, computed as
+     θ_cam = pole_pa_deg + NP.ang in pipeline/steps/derotate_stack.py. The
+     two angles live in different frames and are never interchangeable.
 
        Δx(x,y) = scale × Δλ_rad × depth(x,y) × cos(pole_pa_rad)
        Δy(x,y) = scale × Δλ_rad × depth(x,y) × sin(pole_pa_rad)
@@ -28,8 +44,9 @@ warp_scale = 1.00 (empirically confirmed optimal for Jupiter via NCC sweep):
 
 Saturn notes:
   - Use rotation_period_hours=10.56 (System III)
-  - pole_pa_deg is fetched from Horizons NP.ang; for low sub-Earth latitudes
-    (<15°) the horizontal approximation (pole_pa=0) is acceptable.
+  - pole_pa_deg is measured from the image (see note above — not Horizons);
+    for low sub-Earth latitudes (<15°) the horizontal approximation
+    (pole_pa=0) is acceptable.
   - Ring features do NOT co-rotate with the atmosphere; they will be slightly
     smeared in the stack (atmosphere is the primary target).
   - find_disk_center() isolates the disk from an attached ring before fitting
@@ -119,8 +136,13 @@ def query_horizons_np_ang(
       3. Live JPL Horizons query (requires internet).
 
     NP.ang (Horizons quantity 17): angle from celestial North to the body's
-    north pole, measured eastward.  Used by :func:`spherical_derotation_warp`
-    as ``pole_pa_deg``.  Returns None only if all sources fail.
+    north pole, measured eastward, in the celestial-sky frame. NOT used as
+    :func:`spherical_derotation_warp`'s ``pole_pa_deg`` (that is a separate,
+    image-space angle measured directly from pixel data — see that
+    function's docstring). This value is used instead by the satellite/
+    shadow tracker's camera-to-sky rotation, θ_cam = pole_pa_deg + NP.ang,
+    in pipeline/steps/derotate_stack.py. Returns None only if all sources
+    fail.
     """
     # ── 1. Bundled table (primary, offline) ───────────────────────────────────
     bundle = _load_bundle()
@@ -783,6 +805,18 @@ def _find_disk_center_impl(
 class PlanetShape:
     """Oblateness/orientation shared across filters at one instant."""
     aspect_ratio: float       # semi_minor / semi_major
+    # NOTE (flagged by external review, 2026-08-10, confirmed real): this is
+    # computed by resolve_shared_shape() and logged, but never actually
+    # substituted into the warp's own pole_pa_deg anywhere in derotate_filter()
+    # — the warp always uses derotate_stack.py's session_pole_pa (a robust
+    # median over EVERY frame in the session) uniformly across all filters.
+    # This is not obviously a bug to fix by simply wiring it in: equator_pa_deg
+    # here comes from a SINGLE window's SINGLE reference-frame ellipse fit
+    # (noisier), so substituting it for the session-wide median could easily
+    # be a net regression for the common case, not an improvement — it would
+    # need real validation on a ring/CH4-affected Saturn session (where the
+    # aspect_ratio half of this dataclass already gets used) before touching,
+    # not a blind wire-up. Left as a documented, deliberately-open question.
     equator_pa_deg: float
     # Reserved for a future true oblate-spheroid re-projection warp (see
     # project notes on WinJUPOS-style de-rotation) — unused today.
@@ -906,7 +940,7 @@ def spherical_derotation_warp(
     cy: float,
     disk_radius_px: float,
     period_hours: float = 9.9281,
-    scale: float = 0.20,
+    scale: float = 1.00,
     flip_direction: bool = False,
     pole_pa_deg: float = 0.0,
     polar_equatorial_ratio: float = 1.0,
@@ -930,7 +964,16 @@ def spherical_derotation_warp(
     original formula: depth² = R² − rx² − ry².
 
     The drift direction is perpendicular to the planet's rotation axis as seen
-    in the image, parameterised by *pole_pa_deg* (JPL Horizons "NP.ang"):
+    in the image, parameterised by *pole_pa_deg* — an IMAGE-SPACE angle
+    measured directly from pixel data (pole_pa_from_disk_ellipse() /
+    auto_detect_pole_pa()), NOT a raw sky-frame quantity from Horizons. (JPL
+    Horizons' NP.ang, queried via query_horizons_np_ang(), is a genuinely
+    different, celestial-sky-frame angle used elsewhere — the satellite
+    tracker's camera-to-sky rotation, θ_cam = pole_pa_deg + NP.ang, in
+    pipeline/steps/derotate_stack.py. Do not feed NP.ang into this function
+    directly; earlier revisions of this docstring incorrectly implied you
+    should, which independently misled two rounds of external code review —
+    see project notes.):
 
         Δx = drift × cos(pole_pa_rad)   [horizontal component]
         Δy = drift × sin(pole_pa_rad)   [vertical component]
@@ -946,9 +989,16 @@ def spherical_derotation_warp(
         cx, cy:                 Disk center coordinates (pixels).
         disk_radius_px:         Disk semi-major axis (pixels), used as warp radius.
         period_hours:           Atmospheric rotation period in hours.
-        scale:                  Empirical warp scale factor (0.20 from NCC sweep on Jupiter).
+        scale:                  Empirical warp scale factor. 1.00 = full
+                                theoretical spherical projection, confirmed
+                                optimal for Jupiter via NCC sweep (see module
+                                docstring). Saturn needs ~0.05-0.15 for
+                                reasons not fully understood — see
+                                DerotationConfig.warp_scale.
         flip_direction:         If True, negate the shift direction.
-        pole_pa_deg:            North pole position angle in degrees (Horizons NP.ang).
+        pole_pa_deg:            Image-space equatorial/drift-axis position
+                                angle in degrees — see note above, this is
+                                NOT Horizons NP.ang fed in raw.
                                 0° = north up (equatorial view, horizontal drift only).
                                 Positive = CCW from north (eastward tilt).
         polar_equatorial_ratio: polar_radius / equatorial_radius.
@@ -1079,15 +1129,23 @@ def spherical_derotation_warp(
 #             B=0 — confirmed empirically; the branch has <1e-6px round-trip
 #             error even at B=1e-8 deg).
 #
-# flip_pole_axis is an escape hatch (mirrors flip_direction's existing role
-# for the atmospheric-rotation sign ambiguity): whether the *true* B-tilt
-# term's sign matches this codebase's sign convention for "the pole tilts
-# this way vs that way" cannot be derived from geometry alone without real
-# data, so this is resolved per-target empirically via NCC forward-
-# prediction (see auto_detect_pole_axis_flip/_measure_derot_confidence),
-# not assumed. This is now a genuinely separate concern from the pole_pa
-# rotation bug above (which affected B=0 too, where flip_pole_axis has no
-# real physical effect to resolve in the first place).
+# flip_pole_axis is an escape hatch for a handedness/reflection ambiguity in
+# this module's own parametrization (which of the two possible directions
+# u_up=v_los×u_right was chosen, and which sign of the internal "parametric
+# latitude" phi corresponds to the near vs far pole) — NOT the same thing as
+# flipping the sign of B itself. Concretely, negating Y here
+# (Y=-x_b*sinB+z_b*cosB -> -Y) is mathematically DIFFERENT from substituting
+# B -> -B into that same formula (confirmed directly: -Y = x_b*sinB-z_b*cosB,
+# whereas Y(B->-B) = x_b*sinB+z_b*cosB — the z_b term's sign differs). If you
+# want to test "is B's sign wrong", pass -sub_observer_lat_deg, not
+# flip_pole_axis=True; this flag is for testing an unrelated, genuinely
+# free choice made during derivation that has no way to be pinned down from
+# geometry alone. Resolved per-target empirically via NCC forward-prediction
+# (see auto_detect_pole_axis_flip/_measure_derot_confidence), not assumed.
+# This is a genuinely separate concern from the pole_pa rotation bug fixed
+# above (which affected B=0 too, where flip_pole_axis has no B-related
+# effect to resolve in the first place — confirmed via external code review
+# 2026-08-10, which correctly pointed out the Y-negation != B-negation gap).
 
 _SUB_OBS_LAT_SMALL_DEG = 1e-4  # below this |B|, use the direct (non-quadratic) solve
 
@@ -1218,7 +1276,18 @@ def _reprojected_position(
     by single-point callers (e.g. satellite/shadow smearing-position
     correction in satellite_composite.py) so this logic exists once.
     """
-    req_px  = disk_radius_px * 1.05  # matches spherical_derotation_warp's padded radius
+    # 5% padding, matching spherical_derotation_warp's warp_radius. An
+    # external review (2026-08-10) suggested dropping this in 3D mode since
+    # it models a body 5% larger than the fitted disk. Tested directly:
+    # removing it makes the INVERSE projection substantially LESS stable
+    # near the limb, not more physically correct — finite-difference
+    # sensitivity of (phi, lam) to a 1px input perturbation at r=0.995x the
+    # visible disk radius is ~0.11 rad/px with req_px=disk_radius_px (no
+    # padding) vs ~0.03 rad/px with the 5% padding kept, a ~3.7x difference.
+    # This matches the earlier-flagged "unprojection Jacobian diverges near
+    # the limb" concern from this feature's original design phase. Keeping
+    # the padding.
+    req_px  = disk_radius_px * 1.05
     rpol_px = req_px * polar_equatorial_ratio_true
 
     dx0 = np.asarray(x, dtype=np.float64) - cx
@@ -1253,9 +1322,20 @@ def _reprojected_position(
     # source time, which orthographic projection would otherwise silently
     # fold onto the same screen position as a genuine near-side point.
     # Reject that case too (source_depth>0), not just the output-side check.
+    # (Measured on real Jupiter data at this module's typical per-frame
+    # rotation, ~10°: affects ~0.06% of on-disk pixels, all within ~2px of
+    # the fitted limb — narrow, but real.)
     valid = np.isfinite(phi) & (source_depth > 0.0)
-    new_x = np.where(valid, cx + dx1, x)
-    new_y = np.where(valid, cy + dy1, y)
+    # Invalid points map to a sentinel clearly outside any real image's
+    # coordinate range (never x/y >= 0 for a real pixel), so a caller using
+    # this for cv2.remap's map_x/map_y with BORDER_CONSTANT gets background
+    # there instead of silently re-sampling whatever raw content happens to
+    # sit at that screen position (which is not the same body location any
+    # more). _reprojection_point_shift() (single-point callers) checks
+    # `valid` before ever reading new_x/new_y, so this sentinel never leaks
+    # into its (dx, dy) contract.
+    new_x = np.where(valid, cx + dx1, -1.0)
+    new_y = np.where(valid, cy + dy1, -1.0)
     return new_x, new_y, valid
 
 
@@ -1366,7 +1446,7 @@ def auto_detect_pole_axis_flip(
     disk_radius_px: float,
     period_hours: float,
     sub_observer_lat_deg: float,
-    warp_scale: float = 0.80,
+    warp_scale: float = 1.00,
     pole_pa_deg: float = 0.0,
     polar_equatorial_ratio_true: float = 1.0,
     flip_direction: bool = False,
@@ -1540,7 +1620,7 @@ def auto_detect_ns_flip(
     cy: float,
     disk_radius_px: float,
     period_hours: float,
-    warp_scale: float = 0.80,
+    warp_scale: float = 1.00,
     pole_pa_deg: float = 0.0,
     polar_equatorial_ratio: float = 1.0,
 ) -> Tuple[bool, float, float]:
