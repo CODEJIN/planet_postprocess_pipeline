@@ -670,6 +670,7 @@ def _apply_satellite_composite(
     r_ref: float | None = None,
     use_true_reprojection: bool = False,
     sub_observer_lat_deg: float = 0.0,
+    flip_pole_axis: bool = False,
 ) -> Dict[str, dict]:
     """Apply multi-rate satellite compositing for all on-disk moons and shadows.
 
@@ -768,7 +769,7 @@ def _apply_satellite_composite(
             "t_reference":   t_center_naive,
             "use_true_reprojection": use_true_reprojection,
             "sub_observer_lat_deg":  sub_observer_lat_deg,
-            "flip_pole_axis":        bool(config.derotation.flip_pole_axis),
+            "flip_pole_axis":        flip_pole_axis,
         }
 
         time_sorted = sorted(rows, key=lambda r: r["timestamp"])

@@ -257,13 +257,12 @@ class DerotationConfig:
     # expected benefit is small (~1-2px at the limb) and shouldn't be
     # assumed without checking.
     use_true_reprojection: bool = False
-    # Sign-ambiguity escape hatch for the reprojection's image-plane
-    # rotation-axis direction (mirrors flip_direction's existing role for
-    # the atmospheric-rotation sign). Cannot be derived from geometry alone
-    # — must be resolved empirically per target via NCC forward-prediction
-    # (same technique as _detect_session_flip_ns), not assumed. Default
-    # False until measured.
-    flip_pole_axis: bool = False
+    # NOTE: the reprojection's own sign ambiguity (flip_pole_axis) is NOT a
+    # config field — like flip_direction/derot_flip, it's auto-detected once
+    # per session from real atmospheric feature drift (see
+    # auto_detect_pole_axis_flip() and derotate_stack.py's
+    # _detect_session_pole_axis_flip()) and threaded through as a plain
+    # function argument, not a persisted user setting.
     # Planet's TRUE physical polar/equatorial radius ratio (Rpol/Req), a
     # per-target IAU/NASA fact-sheet constant — e.g. Jupiter=0.9351,
     # Saturn=0.9021 (see gui/panels/settings_panel.py's _PLANET_PRESETS,

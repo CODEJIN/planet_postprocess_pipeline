@@ -1256,7 +1256,6 @@ class MainWindow(QMainWindow):
             min_quality_threshold = float(d.get("min_quality_threshold", 0.3)),
             stack_weight_power    = float(d.get("stack_weight_power", 1.0)),
             use_true_reprojection = bool(d.get("use_true_reprojection", False)),
-            flip_pole_axis        = bool(d.get("flip_pole_axis", False)),
             true_polar_equatorial_ratio = float(d.get("true_polar_equatorial_ratio", 1.00)),
         )
 

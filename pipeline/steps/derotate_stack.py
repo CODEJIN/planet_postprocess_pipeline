@@ -35,6 +35,7 @@ from pipeline.config import PipelineConfig
 from pipeline.modules import derotation, image_io
 from pipeline.modules.derotation import (
     auto_detect_ns_flip,
+    auto_detect_pole_axis_flip,
     auto_detect_pole_pa,
     find_disk_center,
     pole_pa_from_disk_ellipse,
@@ -233,6 +234,104 @@ def _detect_session_flip_ns(
     return derot_flip, ncc_f, ncc_t
 
 
+def _detect_session_pole_axis_flip(
+    windows: List[dict],
+    config: PipelineConfig,
+    session_pole_pa: float,
+    derot_flip: bool,
+) -> bool:
+    """Auto-detect flip_pole_axis for the true 3D reprojection warp, from
+    real atmospheric feature drift — same collect-all-frames/majority-vote
+    structure as _detect_session_flip_ns(), extended to the reprojection's
+    own sign ambiguity. Only called when use_true_reprojection is on.
+
+    derot_flip must already be resolved (via _detect_session_flip_ns) — this
+    searches the ORTHOGONAL ambiguity specific to modelling sub-observer
+    latitude B explicitly, which doesn't exist in the linear warp at all.
+    """
+    print("  [flip_pole_axis] Detecting reprojection pole-axis sign via drift test…")
+
+    all_rows: List[dict] = []
+    for preferred in _FILT_PREF_EXT:
+        for win in windows:
+            pf = win.get("per_filter", {})
+            if preferred in pf and pf[preferred].get("included"):
+                all_rows.extend(pf[preferred]["included"])
+        if len(all_rows) >= 2:
+            break
+        all_rows = []
+
+    if len(all_rows) < 2:
+        print("  [flip_pole_axis] No suitable frames — defaulting to False")
+        return False
+    all_rows.sort(key=lambda r: r["timestamp"])
+
+    loaded_frames: List[np.ndarray] = []
+    loaded_ts: List = []
+    for row in all_rows:
+        raw = image_io.read_tif(row["path"])
+        lum = raw if raw.ndim == 2 else raw.mean(axis=2).astype(np.float32)
+        loaded_frames.append(lum)
+        loaded_ts.append(row["timestamp"])
+
+    mid = len(loaded_frames) // 2
+    try:
+        cx, cy, semi_a, semi_b, _ = find_disk_center(loaded_frames[mid])
+    except Exception:
+        print("  [flip_pole_axis] Disk detection failed — defaulting to False")
+        return False
+    if semi_a < 5:
+        print("  [flip_pole_axis] Disk too small — defaulting to False")
+        return False
+
+    t_center = loaded_ts[mid]
+    sub_obs_lat = query_horizons_sub_observer_lat(
+        horizons_id=config.derotation.horizons_id,
+        t_utc=t_center,
+        observer_code=config.derotation.observer_code,
+    )
+    sub_obs_lat = sub_obs_lat if sub_obs_lat is not None else 0.0
+
+    W = config.quality.window_frames - 1
+
+    votes: List[Tuple[bool, float]] = []  # (flip, confidence)
+    for i in range(len(loaded_frames) - W):
+        frames_pair = [loaded_frames[i], loaded_frames[i + W]]
+        dt_pair = [
+            (loaded_ts[i]     - t_center).total_seconds(),
+            (loaded_ts[i + W] - t_center).total_seconds(),
+        ]
+        try:
+            flip, ncc_f, ncc_t = auto_detect_pole_axis_flip(
+                frames=frames_pair,
+                dt_sec_list=dt_pair,
+                cx=cx, cy=cy,
+                disk_radius_px=semi_a,
+                period_hours=config.derotation.rotation_period_hours,
+                sub_observer_lat_deg=sub_obs_lat,
+                warp_scale=config.derotation.warp_scale,
+                pole_pa_deg=session_pole_pa,
+                polar_equatorial_ratio_true=config.derotation.true_polar_equatorial_ratio,
+                flip_direction=derot_flip,
+            )
+            votes.append((flip, abs(ncc_f - ncc_t)))
+        except Exception as exc:
+            warnings.warn(f"  [flip_pole_axis] pair [{i}→{i+W}] failed: {exc}")
+
+    if not votes:
+        print("  [flip_pole_axis] No valid pairs — defaulting to False")
+        return False
+
+    n_true  = sum(1 for v, _ in votes if v)
+    n_false = len(votes) - n_true
+    flip_pole_axis = (n_true > n_false) if n_true != n_false else max(votes, key=lambda x: x[1])[0]
+    print(
+        f"  [flip_pole_axis] → {flip_pole_axis}  "
+        f"[{n_true}×True / {n_false}×False, {len(votes)} pair(s)]"
+    )
+    return flip_pole_axis
+
+
 def _measure_derot_confidence(
     windows: List[dict],
     config: "PipelineConfig",
@@ -243,6 +342,7 @@ def _measure_derot_confidence(
     n_steps: int = 13,
     min_rotation_deg: float = 3.0,
     use_true_reprojection: bool = False,
+    flip_pole_axis: bool = False,
 ) -> dict:
     """Measure de-rotation confidence via high-pass NCC sweep.
 
@@ -383,7 +483,7 @@ def _measure_derot_confidence(
                 polar_equatorial_ratio_true=config.derotation.true_polar_equatorial_ratio,
                 scale=scale,
                 flip_direction=forward_flip,
-                flip_pole_axis=config.derotation.flip_pole_axis,
+                flip_pole_axis=flip_pole_axis,
             )
         else:
             warped = spherical_derotation_warp(
@@ -466,6 +566,16 @@ def run(
     # sat_cfg.flip_ns is NOT used here — it controls satellite tracker only.
     derot_flip, _ncc_f, _ncc_t = _detect_session_flip_ns(windows, config, session_pole_pa)
 
+    # ── Reprojection pole-axis sign (flip_pole_axis) ──────────────────────────
+    # Same auto-detection principle as derot_flip above — never a manual GUI
+    # toggle. Only computed when the true 3D reprojection warp is in use;
+    # the linear warp has no such ambiguity.
+    session_pole_axis_flip = False
+    if config.derotation.use_true_reprojection:
+        session_pole_axis_flip = _detect_session_pole_axis_flip(
+            windows, config, session_pole_pa, derot_flip,
+        )
+
     # ── Satellite tracker orientation (tracker_flip_ns) ───────────────────────
     sat_cfg = config.satellite
     tracker_flip_ns = resolve_tracker_flip_ns(config, windows, session_pole_pa, derot_flip)
@@ -480,6 +590,7 @@ def run(
     derot_conf = _measure_derot_confidence(
         windows, config, session_pole_pa, derot_flip,
         use_true_reprojection=bool(config.derotation.use_true_reprojection),
+        flip_pole_axis=session_pole_axis_flip,
     )
 
     # ── SatelliteTracker ───────────────────────────────────────────────────────
@@ -646,7 +757,7 @@ def run(
             use_true_reprojection=use_true_reprojection,
             sub_observer_lat_deg=sub_observer_lat_val,
             true_polar_equatorial_ratio=config.derotation.true_polar_equatorial_ratio,
-            flip_pole_axis=config.derotation.flip_pole_axis,
+            flip_pole_axis=session_pole_axis_flip,
         )
 
         # ── Satellite compositing (exp9 method) ───────────────────────────────
@@ -662,6 +773,7 @@ def run(
                 r_ref=session_r_ref,
                 use_true_reprojection=use_true_reprojection,
                 sub_observer_lat_deg=sub_observer_lat_val,
+                flip_pole_axis=session_pole_axis_flip,
             )
             if disk_centers and sat_log:
                 sat_log["disk_centers"] = disk_centers

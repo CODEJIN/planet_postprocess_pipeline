@@ -121,7 +121,11 @@ class DerotatePanel(BasePanel):
         from gui.panels.bsp_status import BspStatusRow
         fl.addRow(lbl_sat, BspStatusRow(self._satellite_composite))
 
-        # True 3D oblate-spheroid reprojection warp (experimental, opt-in)
+        # True 3D oblate-spheroid reprojection warp (experimental, opt-in).
+        # Its pole-axis sign ambiguity (flip_pole_axis) is auto-detected per
+        # session from real atmospheric drift (same principle as derot_flip
+        # for the linear warp) — not a manual toggle, so there's no
+        # corresponding checkbox here.
         self._use_true_reprojection = QCheckBox()
         self._use_true_reprojection.setStyleSheet(_CHECK_STYLE)
         self._use_true_reprojection.setChecked(False)
@@ -129,18 +133,6 @@ class DerotatePanel(BasePanel):
         lbl_3d = QLabel(S("step04.use_true_reprojection"))
         lbl_3d.setToolTip(S("step04.use_true_reprojection.tooltip"))
         fl.addRow(lbl_3d, self._use_true_reprojection)
-
-        # Sign-ambiguity escape hatch for the reprojection (see tooltip) —
-        # only meaningful when use_true_reprojection is checked above.
-        self._flip_pole_axis = QCheckBox()
-        self._flip_pole_axis.setStyleSheet(_CHECK_STYLE)
-        self._flip_pole_axis.setChecked(False)
-        self._flip_pole_axis.setToolTip(S("step04.flip_pole_axis.tooltip"))
-        lbl_fpa = QLabel(S("step04.flip_pole_axis"))
-        lbl_fpa.setToolTip(S("step04.flip_pole_axis.tooltip"))
-        fl.addRow(lbl_fpa, self._flip_pole_axis)
-
-
 
         idx = self._form_layout.count() - 1
         self._form_layout.insertWidget(idx, form_widget)
@@ -152,7 +144,6 @@ class DerotatePanel(BasePanel):
             "normalize_brightness":        self._normalize.isChecked(),
             "satellite_composite_enabled": self._satellite_composite.isChecked(),
             "use_true_reprojection":       self._use_true_reprojection.isChecked(),
-            "flip_pole_axis":              self._flip_pole_axis.isChecked(),
         }
         out_text = self._output_lbl.text().strip()
         if out_text:
@@ -193,7 +184,6 @@ class DerotatePanel(BasePanel):
             bool(data.get("satellite_composite_enabled", False))
         )
         self._use_true_reprojection.setChecked(bool(data.get("use_true_reprojection", False)))
-        self._flip_pole_axis.setChecked(bool(data.get("flip_pole_axis", False)))
 
     def output_paths(self) -> list[Path]:
         if self._output_dir is None:

@@ -118,8 +118,9 @@ def test_b_zero_matches_live_linear_warp_direction():
         shift_3d = (x3 - raw_x, y3 - raw_y)
         # At B=0 the x-component (equatorial/Delta-lambda direction) must
         # match closely. The y-component (pole-axis direction) is a
-        # SEPARATE, not-yet-empirically-resolved sign ambiguity at nonzero
-        # pole_pa (see DerotationConfig.flip_pole_axis) — not checked here.
+        # SEPARATE sign ambiguity at nonzero pole_pa, resolved per session by
+        # auto_detect_pole_axis_flip() from real atmospheric drift (not a
+        # fixed convention derivable on paper) — not checked here.
         assert abs(shift_linear[0] - shift_3d[0]) < 1.5, (
             f"pole_pa={pole_pa}: x-shift direction mismatch — "
             f"linear={shift_linear} 3d={shift_3d}"

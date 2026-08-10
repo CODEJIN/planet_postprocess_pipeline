@@ -1333,6 +1333,98 @@ def spherical_derotation_warp_3d(
     return np.clip(warped, 0.0, 1.0)
 
 
+def auto_detect_pole_axis_flip(
+    frames: List[np.ndarray],
+    dt_sec_list: List[float],
+    cx: float,
+    cy: float,
+    disk_radius_px: float,
+    period_hours: float,
+    sub_observer_lat_deg: float,
+    warp_scale: float = 0.80,
+    pole_pa_deg: float = 0.0,
+    polar_equatorial_ratio_true: float = 1.0,
+    flip_direction: bool = False,
+) -> Tuple[bool, float, float]:
+    """Detect flip_pole_axis for the true 3D reprojection warp, from real
+    atmospheric feature drift — same forward-prediction NCC technique as
+    auto_detect_ns_flip(), extended to the reprojection's own sign
+    ambiguity (see spherical_derotation_warp_3d's module notes).
+
+    flip_direction should already be resolved (e.g. via auto_detect_ns_flip)
+    before calling this — this only searches the ORTHOGONAL ambiguity that
+    is specific to modelling sub-observer latitude B explicitly and does
+    not exist in the linear warp at all.
+
+    Returns:
+        (flip_pole_axis, score_false, score_true)
+        Defaults to (False, 0.0, 0.0) when ambiguous (|Δcorr| < 0.001) or
+        too few/degenerate frames — matching auto_detect_ns_flip's
+        fail-safe behaviour.
+    """
+    if len(frames) < 2:
+        print("  [flip_pole_axis] fewer than 2 frames — defaulting to False")
+        return False, 0.0, 0.0
+
+    dts = np.array(dt_sec_list, dtype=np.float64)
+    i_min = int(np.argmin(dts))
+    i_max = int(np.argmax(dts))
+    if i_min == i_max:
+        print("  [flip_pole_axis] all frames at same time — defaulting to False")
+        return False, 0.0, 0.0
+
+    dt_span = float(dts[i_max] - dts[i_min])
+
+    def _lum(f: np.ndarray) -> np.ndarray:
+        if f.ndim == 3:
+            return (0.2126 * f[:, :, 0] + 0.7152 * f[:, :, 1] + 0.0722 * f[:, :, 2]).astype(np.float32)
+        return f.astype(np.float32)
+
+    _DRIFT_SHARPEN = [200, 200, 200, 0, 0, 0]
+
+    f_early = _wavelet_sharpen(_lum(frames[i_min]), amounts=_DRIFT_SHARPEN)
+    f_late  = _wavelet_sharpen(_lum(frames[i_max]), amounts=_DRIFT_SHARPEN)
+    h, w = f_early.shape
+    Y, X = np.ogrid[:h, :w]
+    disk_mask = ((X - cx) ** 2 + (Y - cy) ** 2) < (disk_radius_px * 0.75) ** 2
+
+    ref_pixels = f_late[disk_mask].astype(np.float64)
+    ref_std = float(ref_pixels.std())
+
+    scores: dict = {}
+    for flip_pole_axis in (False, True):
+        predicted = spherical_derotation_warp_3d(
+            f_early, +dt_span,
+            cx, cy, disk_radius_px, period_hours,
+            sub_observer_lat_deg=sub_observer_lat_deg,
+            pole_pa_deg=pole_pa_deg,
+            polar_equatorial_ratio_true=polar_equatorial_ratio_true,
+            scale=warp_scale,
+            flip_direction=flip_direction,
+            flip_pole_axis=flip_pole_axis,
+        )
+        tgt_pixels = predicted[disk_mask].astype(np.float64)
+        tgt_std = float(tgt_pixels.std())
+        if ref_std > 1e-6 and tgt_std > 1e-6:
+            scores[flip_pole_axis] = float(np.corrcoef(ref_pixels, tgt_pixels)[0, 1])
+        else:
+            scores[flip_pole_axis] = 0.0
+
+    delta = scores[True] - scores[False]
+    flip_pole_axis = delta > 0.0
+    confidence = abs(delta)
+    angle_deg = abs(dt_span) / (period_hours * 3600.0) * 360.0
+    print(
+        f"  [flip_pole_axis] Δt={dt_span:.0f}s ({angle_deg:.2f}°)  "
+        f"False_corr={scores[False]:.5f}  True_corr={scores[True]:.5f}  "
+        f"→ flip_pole_axis={flip_pole_axis} (|Δcorr|={confidence:.5f})"
+    )
+    if confidence < 0.001:
+        print("  [flip_pole_axis] low confidence — defaulting to False")
+        return False, float(scores[False]), float(scores[True])
+    return flip_pole_axis, float(scores[False]), float(scores[True])
+
+
 # ── Pole PA auto-detection ────────────────────────────────────────────────────
 
 def auto_detect_pole_pa(
