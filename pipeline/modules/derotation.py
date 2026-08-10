@@ -1407,24 +1407,42 @@ def _reprojected_position(
     # rotation, ~10°: affects ~0.06% of on-disk pixels, all within ~2px of
     # the fitted limb — narrow, but real.)
     valid = np.isfinite(phi) & (source_depth > 0.0)
-    # Invalid points map to a sentinel far outside any real image's coordinate
-    # range, so a caller using this for cv2.remap's map_x/map_y with
-    # BORDER_CONSTANT gets background there instead of silently re-sampling
-    # whatever raw content happens to sit at that screen position (which is
-    # not the same body location any more). Empirically, cv2.remap's cubic
-    # kernel already returns a clean 0 at exactly -1.0 (one pixel out), but
-    # values a further pixel or two out (e.g. -1.5) can show small nonzero
-    # ringing from the interpolation kernel's negative side-lobes reaching
-    # across the BORDER_CONSTANT edge — using a sentinel far from any
-    # possible kernel support removes that dependence on interpolation-
-    # kernel-width implementation details entirely. spherical_derotation_warp_3d
-    # also re-masks the final warped output directly with `valid` as a second,
-    # independent safeguard (see there). _reprojection_point_shift()
-    # (single-point callers) checks `valid` before ever reading new_x/new_y,
-    # so this sentinel never leaks into its (dx, dy) contract either way.
-    _INVALID_MAP_COORD = -1.0e4
-    new_x = np.where(valid, cx + dx1, _INVALID_MAP_COORD)
-    new_y = np.where(valid, cy + dy1, _INVALID_MAP_COORD)
+    # CORRECTED 2026-08-11 (real-data user report): invalid points now fall
+    # back to IDENTITY (new_x=x, new_y=y) — i.e. no shift at all — matching
+    # spherical_derotation_warp()'s own established behaviour for its
+    # analogous "no computable depth" case (there, depth_sq<=0 forces
+    # depth_map=0, so drift=0 and the pixel simply keeps its original raw
+    # content, whatever natural limb-darkening/PSF signal it has, rather
+    # than being replaced with background).
+    #
+    # An earlier version of this function instead mapped invalid points to
+    # a sentinel far outside the image, so cv2.remap's BORDER_CONSTANT would
+    # return background (0.0) there — reasoned as "don't silently re-sample
+    # whatever raw content happens to sit at that screen position, since
+    # it's not the same body location any more". That reasoning wasn't
+    # wrong on its own terms, but it made this warp's edge behaviour
+    # fundamentally different from (and much harder-edged than) the
+    # validated linear warp's: a direct radial-profile comparison on real
+    # Jupiter data showed the linear warp's brightness tapers smoothly for
+    # ~20px past the fitted disk radius (still ~4% of peak at +15px beyond
+    # disk_radius_px, the ordinary limb-darkening/PSF tail), while this
+    # function's sentinel-based version dropped from ~20% to exactly 0.0
+    # within about 10px — a hard, largely unfeathered cutoff that wavelet
+    # sharpening amplified into a visible ring the user correctly flagged
+    # as newly-introduced masking (this whole reprojection feature, and
+    # thus this behaviour, did not exist before this session). Removing a
+    # separate, later-added explicit re-masking pass in
+    # spherical_derotation_warp_3d did NOT fix this on its own (verified:
+    # reintroducing that pass via monkeypatch through the real
+    # derotate_window()/derotate_filter() pipeline produced byte-identical
+    # output to removing it) — the sentinel here was always the real
+    # source, regardless of that other pass's presence.
+    # _reprojection_point_shift() (single-point callers) still checks
+    # `valid` before using new_x/new_y at all, so this change is invisible
+    # to it — it already treats invalid as "(0, 0), no shift", exactly the
+    # same philosophy this now extends to the full-image warp.
+    new_x = np.where(valid, cx + dx1, x)
+    new_y = np.where(valid, cy + dy1, y)
     return new_x, new_y, valid
 
 
@@ -1515,7 +1533,9 @@ def spherical_derotation_warp_3d(
     h, w = image.shape[:2]
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
 
-    new_x, new_y, valid = _reprojected_position(
+    # `valid` (3rd return) is intentionally unused here — see the NOTE below
+    # on why this no longer re-masks the output with it directly.
+    new_x, new_y, _valid = _reprojected_position(
         xx, yy, dt_sec, cx, cy, disk_radius_px, period_hours,
         sub_observer_lat_deg, pole_pa_deg, polar_equatorial_ratio_true,
         scale=scale, flip_direction=flip_direction, flip_pole_axis=flip_pole_axis,
@@ -1545,16 +1565,12 @@ def spherical_derotation_warp_3d(
         w_cubic = w_cubic[:, :, np.newaxis]
     warped = warped_cubic * w_cubic + warped_linear * (1.0 - w_cubic)
 
-    # Second, independent safeguard against far-side leakage (see the
-    # sentinel note in _reprojected_position): explicitly zero out pixels
-    # _reprojected_position marked invalid, rather than relying solely on
-    # cv2.remap's BORDER_CONSTANT behaviour at the sentinel coordinate.
-    invalid = ~valid
-    if np.any(invalid):
-        if warped.ndim == 3:
-            warped[invalid, :] = 0.0
-        else:
-            warped[invalid] = 0.0
+    # No separate masking of `invalid` pixels here — _reprojected_position()
+    # itself now falls back to identity (no shift) for them, so map_x/map_y
+    # already sample this frame's own original content there (see its
+    # docstring, 2026-08-11, for why: the real fix for the ring the user
+    # reported was there, not an extra masking pass in this function, which
+    # was tried first and did not actually change the output).
 
     return np.clip(warped, 0.0, 1.0)
 

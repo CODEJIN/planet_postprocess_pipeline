@@ -306,6 +306,57 @@ def test_auto_detect_equator_pa_matches_warp_sign_convention():
     assert pa_cw15 > 5, f"CW-rotated image should give a clearly positive equator_pa, got {pa_cw15}"
 
 
+def test_no_hard_ring_at_invalid_boundary():
+    """REGRESSION GUARD (real user report, 2026-08-11): spherical_derotation_
+    warp_3d() must NOT introduce a hard, unfeathered ring where
+    _reprojected_position() finds no valid (near-side) solution — these
+    points sit INSIDE the fitted disk radius near the tilt-axis limb, not
+    at the disk's own true edge (a separate, deliberate cutoff this test
+    must avoid measuring). A real Jupiter frame with a realistic ~11
+    degree/frame rotation and sub-observer latitude was found to have such
+    an invalid band starting a few px inside disk_radius_px. An earlier
+    version of this code mapped those points to a sentinel forcing them to
+    background (0.0) regardless of the frame's real content there, which
+    combined with wavelet sharpening to make a visible ring the user
+    correctly flagged as newly-introduced masking. Fixed by falling back to
+    identity (no shift, keep this frame's own original content) instead —
+    matching how spherical_derotation_warp() already handles its analogous
+    "no computable depth" case. Guard this directly: warp a uniform-
+    brightness disk with realistic parameters that produce a real invalid
+    band, and confirm the radial profile strictly INSIDE the disk (well
+    away from its own true edge) stays at full brightness — no dip.
+    """
+    h, w = 300, 300
+    cx, cy, disk_r, period_h = 150.0, 150.0, 120.0, 10.0
+    # Uniform, edge-free source (no real "true edge" anywhere in frame) —
+    # isolates the invalid-band behavior from any confound of the source
+    # image's own boundary/interpolation behavior.
+    img = np.ones((h, w), dtype=np.float32)
+
+    # ~11 deg/frame rotation, B=20 deg — realistic magnitudes (this project's
+    # real Jupiter sessions use ~5-25 deg/frame). Verified directly: this
+    # produces a real far-side-invalid band at r in [0.985, 1.005]*disk_r
+    # (~1800 pixels) for _reprojected_position to find.
+    warped = spherical_derotation_warp_3d(
+        img, dt_sec=period_h * 3600.0 * 0.03, cx=cx, cy=cy, disk_radius_px=disk_r,
+        period_hours=period_h, sub_observer_lat_deg=20.0, pole_pa_deg=15.0,
+        polar_equatorial_ratio_true=0.935, scale=1.0,
+    )
+
+    yy_f, xx_f = np.mgrid[0:h, 0:w].astype(np.float64)
+    r = np.hypot(xx_f - cx, yy_f - cy)
+    band = (r >= 0.985 * disk_r) & (r <= 1.005 * disk_r)
+    assert band.sum() > 100
+    min_val = warped[band].min()
+    assert min_val > 0.9, (
+        f"found a pixel at brightness {min_val:.3f} in the far-side-invalid "
+        f"band (r in [0.985, 1.005]*disk_r) — the source image is uniformly "
+        f"1.0 everywhere with no real edge, so any dip means an invalid "
+        f"pixel got hard-masked to background instead of falling back to "
+        f"its own original (uniform) content"
+    )
+
+
 if __name__ == "__main__":
     test_round_trip_self_consistency()
     print("round-trip self-consistency: OK")
@@ -323,4 +374,6 @@ if __name__ == "__main__":
     print("positive pole_pa is clockwise on screen: OK")
     test_auto_detect_equator_pa_matches_warp_sign_convention()
     print("auto_detect_equator_pa sign matches warp convention: OK")
+    test_no_hard_ring_at_invalid_boundary()
+    print("no hard ring at invalid boundary: OK")
     print("\nAll checks passed.")
