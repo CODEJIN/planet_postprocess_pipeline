@@ -1025,7 +1025,15 @@ def spherical_derotation_warp(
                                 pole_pa_deg=0 only means "the drift axis is
                                 horizontal in this image", independent of
                                 how tilted the planet's pole actually is.
-                                Positive = CCW from north (eastward tilt).
+                                Measured in image pixel coordinates (x right,
+                                y DOWN): 0°=+x (right), +90°=+y (down).
+                                Because y increases downward, a positive
+                                angle sweeps CLOCKWISE as displayed on
+                                screen — confirmed empirically by warping a
+                                test point and reading its screen position
+                                (see tests/test_reprojection.py); an earlier
+                                revision of this line said "CCW", which was
+                                wrong for this pixel-coordinate convention.
         polar_equatorial_ratio: polar_radius / equatorial_radius.
                                 1.0 = perfect sphere (default).
                                 ~0.935 = Jupiter (oblateness ≈ 6.5%).
@@ -1607,18 +1615,23 @@ def auto_detect_equator_pa(
     cy: float,
     disk_radius_px: float,
 ) -> float:
-    """Auto-detect the image-space pole position angle from belt gradient direction.
+    """Estimate the image-space equatorial/drift-axis angle from Jupiter belts.
 
     Builds a gradient-angle histogram over the inner disk (0.75R) using two
-    complementary wavelet-sharpened views of the frames, then returns the angle
-    of the dominant gradient direction converted to pole_pa convention.
+    complementary wavelet-sharpened views of the frames. The dominant
+    belt-edge gradient direction is approximately aligned with the projected
+    polar axis (belts run perpendicular to the rotation axis); this function
+    rotates that gradient direction by 90° to return the equatorial/drift-
+    axis angle used by the de-rotation warp (its pole_pa_deg parameter).
 
-    Jupiter's belts run perpendicular to the rotation axis, so the dominant
-    gradient direction inside the disk directly encodes the pole position angle:
-
-        pole_pa = 0°   → belts horizontal, North straight up
-        pole_pa = +θ   → belts tilted θ CCW from horizontal (camera rotated CW)
-        pole_pa = −θ   → belts tilted θ CW  from horizontal (camera rotated CCW)
+        result = 0°   → belts horizontal, drift axis horizontal
+        result = +θ   → belts tilted θ CW from horizontal, as displayed
+                        (pixel coordinates, y-down — verified empirically
+                        by rotating a synthetic belted image with a known,
+                        independently-defined direction and checking the
+                        sign of the detected angle; see
+                        tests/test_reprojection.py)
+        result = −θ   → belts tilted θ CCW from horizontal, as displayed
 
     No warp, no time information, and no rotation period are required — the
     belt orientation is a static geometric property of each frame.
@@ -1802,10 +1815,12 @@ def auto_detect_ns_flip(
 
 
 def equator_pa_from_disk_ellipse(image: np.ndarray) -> Optional[float]:
-    """Estimate pole PA from disk ellipse major-axis direction.
+    """Estimate the image-space equatorial/drift-axis angle from the disk
+    ellipse major axis.
 
-    For oblate planets the equatorial (major) axis = drift direction = pole_pa
-    in the warp convention (pole_pa=0° → horizontal drift → North straight up).
+    For oblate planets the equatorial (major) axis IS the drift direction —
+    this is used directly as the warp's pole_pa_deg (pole_pa_deg=0° →
+    horizontal drift).
 
     Works for any planet with detectable oblateness (Jupiter f≈6.5%, Saturn
     disk f≈9.8%, Uranus f≈2.3%).  Not reliable for nearly-spherical bodies
@@ -2482,7 +2497,7 @@ def derotate_window(
     min_quality_threshold: float = 0.0,
     pole_pa_deg: float = 0.0,
     color_mode: bool = False,
-    flip_ns: bool = False,
+    flip_direction: bool = False,
     out_dir: Optional[Path] = None,
     weight_power: float = 1.0,
     use_true_reprojection: bool = False,
@@ -2498,8 +2513,15 @@ def derotate_window(
         period_hours:     System II rotation period.
         warp_scale:       Spherical warp scale (passed through to derotate_filter).
         align:            Sub-pixel alignment between frames.
-        flip_ns:          South-up camera flag from auto_detect_ns_flip(); passed
-                          as flip_direction to spherical_derotation_warp().
+        flip_direction:   Atmospheric-rotation sign from auto_detect_ns_flip()
+                          (renamed from flip_ns 2026-08-10 — this is the
+                          de-rotation longitude-drift sign, NOT the same
+                          thing as the satellite tracker's flip_ns, a
+                          different, unrelated camera-orientation flag on
+                          SatelliteConfig/SatelliteTracker that happened to
+                          share the name). Passed straight through as
+                          flip_direction to spherical_derotation_warp() /
+                          spherical_derotation_warp_3d().
         out_dir:          If provided, save TIF files here.
         weight_power:     Exponent applied to norm_score weights in the
                           per-filter stack (see quality_weighted_stack). 1.0
@@ -2616,7 +2638,7 @@ def derotate_window(
                 min_quality_threshold=min_quality_threshold,
                 pole_pa_deg=pole_pa_deg,
                 color_mode=color_mode,
-                flip_direction=flip_ns,
+                flip_direction=flip_direction,
                 shared_shape=shared_shape,
                 filter_pose=filter_poses.get(filt),
                 weight_power=weight_power,

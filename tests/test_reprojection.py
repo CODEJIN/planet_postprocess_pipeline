@@ -44,6 +44,7 @@ from pipeline.modules.derotation import (
     _oblate_ortho_forward,
     _oblate_ortho_inverse,
     _reprojection_point_shift,
+    auto_detect_equator_pa,
     spherical_derotation_warp,
     spherical_derotation_warp_3d,
 )
@@ -236,6 +237,75 @@ def test_discriminant_clamp_near_limb():
         assert not (np.isfinite(phi) and depth <= 0), "finite phi with non-visible depth"
 
 
+def test_positive_pole_pa_is_clockwise_on_screen():
+    """REGRESSION GUARD (external review, 2026-08-10): positive pole_pa_deg
+    must sweep CLOCKWISE as displayed on screen, not counter-clockwise —
+    several docstrings previously claimed "Positive = CCW", which is wrong
+    for this module's plain (x right, y down) pixel-coordinate convention.
+    Verified directly: a point placed to the right of disk centre, warped
+    with increasing pole_pa_deg, must move increasingly DOWNWARD (+y) —
+    3 o'clock toward 6 o'clock is clockwise as displayed.
+    """
+    h, w = 400, 400
+    cx, cy, disk_r, period_h = 200.0, 200.0, 150.0, 10.0
+    dt_sec = 3000.0
+    px, py = 210.0, 200.0
+
+    prev_dy = -1.0  # dy must strictly increase (more positive / more downward)
+    for pole_pa in (0.0, 30.0, 60.0, 90.0):
+        img = np.zeros((h, w), dtype=np.float32)
+        img[int(py), int(px)] = 1.0
+        warped = spherical_derotation_warp(
+            img, dt_sec, cx, cy, disk_r, period_hours=period_h,
+            scale=1.0, pole_pa_deg=pole_pa, polar_equatorial_ratio=1.0,
+        )
+        yy, xx = np.unravel_index(np.argmax(warped), warped.shape)
+        dx, dy = xx - px, yy - py
+        if pole_pa == 0.0:
+            assert dx > 10 and abs(dy) < 2, f"pole_pa=0 should drift rightward: dx={dx} dy={dy}"
+        elif pole_pa == 90.0:
+            assert dy > 10 and abs(dx) < 2, f"pole_pa=90 should drift downward: dx={dx} dy={dy}"
+        else:
+            assert dy > prev_dy, (
+                f"pole_pa={pole_pa}: dy={dy} did not increase from previous "
+                f"pole_pa's dy={prev_dy} — positive pole_pa is not sweeping "
+                f"clockwise (toward +y) as it should"
+            )
+        prev_dy = dy
+
+
+def test_auto_detect_equator_pa_matches_warp_sign_convention():
+    """REGRESSION GUARD: auto_detect_equator_pa's returned angle must use
+    the SAME sign convention as the warp's own pole_pa_deg (positive =
+    clockwise as displayed) — verified by rotating a synthetic belted
+    image with cv2's own independently-defined rotation direction
+    (cv2.getRotationMatrix2D: positive angle = CCW as displayed) and
+    checking the detector reports the opposite sign."""
+    import cv2
+
+    h, w = 300, 300
+    cx, cy, disk_r = 150.0, 150.0, 120.0
+
+    def make_belted_image(tilt_deg):
+        img = np.zeros((h, w), dtype=np.float32)
+        yy_row = np.arange(h)[:, None]
+        img[:, :] = 0.5 + 0.4 * np.sin(yy_row / 15.0)
+        yy, xx = np.mgrid[0:h, 0:w]
+        mask = (xx - cx) ** 2 + (yy - cy) ** 2 < disk_r ** 2
+        img = (img * mask).astype(np.float32)
+        if tilt_deg != 0:
+            M = cv2.getRotationMatrix2D((cx, cy), tilt_deg, 1.0)  # + = CCW on screen
+            img = cv2.warpAffine(img, M, (w, h))
+        return img.astype(np.float32)
+
+    pa_ccw15 = auto_detect_equator_pa(frames=[make_belted_image(15.0)], cx=cx, cy=cy, disk_radius_px=disk_r)
+    pa_cw15 = auto_detect_equator_pa(frames=[make_belted_image(-15.0)], cx=cx, cy=cy, disk_radius_px=disk_r)
+    # Image rotated CCW (cv2 +15) must be detected as NEGATIVE (since positive
+    # here means clockwise); image rotated CW (cv2 -15) must be POSITIVE.
+    assert pa_ccw15 < -5, f"CCW-rotated image should give a clearly negative equator_pa, got {pa_ccw15}"
+    assert pa_cw15 > 5, f"CW-rotated image should give a clearly positive equator_pa, got {pa_cw15}"
+
+
 if __name__ == "__main__":
     test_round_trip_self_consistency()
     print("round-trip self-consistency: OK")
@@ -249,4 +319,8 @@ if __name__ == "__main__":
     print("point-shift vs full-image-warp consistency: OK")
     test_discriminant_clamp_near_limb()
     print("discriminant clamp near limb: OK")
+    test_positive_pole_pa_is_clockwise_on_screen()
+    print("positive pole_pa is clockwise on screen: OK")
+    test_auto_detect_equator_pa_matches_warp_sign_convention()
+    print("auto_detect_equator_pa sign matches warp convention: OK")
     print("\nAll checks passed.")

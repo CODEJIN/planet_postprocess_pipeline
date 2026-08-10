@@ -751,7 +751,7 @@ def run(
             min_quality_threshold=config.derotation.min_quality_threshold,
             pole_pa_deg=pole_pa_for_warp,
             color_mode=(config.camera_mode == "color"),
-            flip_ns=derot_flip,
+            flip_direction=derot_flip,
             out_dir=win_out_dir,
             weight_power=config.derotation.stack_weight_power,
             use_true_reprojection=use_true_reprojection,
