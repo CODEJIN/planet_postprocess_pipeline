@@ -1054,8 +1054,25 @@ def spherical_derotation_warp(
 #   already defined as the sub-observer point's surface-normal angle, which
 #   by definition equals the line-of-sight angle).
 #   Forward:  X=y_b, Y=-x_b*sinB+z_b*cosB, depth=x_b*cosB+z_b*sinB (visible iff >0),
-#             then rotate (X,Y) by position angle P=pole_pa_deg and flip to
-#             pixel-row-down convention.
+#             then rotate (X,Y) by position angle P=pole_pa_deg using the
+#             SAME rotation convention as spherical_derotation_warp's own
+#             pole_pa decomposition (dx=X*cosP-Y*sinP, dy=X*sinP+Y*cosP) —
+#             pole_pa_deg in this codebase is always an image-space angle,
+#             measured directly from pixel data (pole_pa_from_disk_ellipse/
+#             auto_detect_pole_pa), never a sky-frame Horizons quantity fed
+#             in raw — so no separate "convert sky PA to image PA" step or
+#             math-convention/pixel-row-down flip belongs here. An earlier
+#             version of this rotation included such a flip on dy alone,
+#             which silently turned the rotation into an improper one
+#             (determinant -1, i.e. a reflection, not a rotation) — caught
+#             via external code review + a determinant check, and confirmed
+#             against real Jupiter data (the linear and 3D warps disagreed
+#             on the y-direction of drift at nonzero pole_pa, by an amount
+#             that grew with pole_pa and delta_lambda, and flip_pole_axis
+#             had zero effect on it — exactly what an extra reflection
+#             predicts, since flipping Y before a reflection doesn't undo
+#             the reflection). Fixed; tests/test_reprojection.py's B=0
+#             direction-match test now checks nonzero pole_pa too.
 #   Inverse:  solve the resulting quadratic in z_b, picking the depth>0 root;
 #             branches to a direct closed-form solve for |B|<1e-4 deg since
 #             the general form divides by sin(B) (numerically unstable near
@@ -1063,12 +1080,14 @@ def spherical_derotation_warp(
 #             error even at B=1e-8 deg).
 #
 # flip_pole_axis is an escape hatch (mirrors flip_direction's existing role
-# for the atmospheric-rotation sign ambiguity): the sign of the image-plane
-# rotation-axis direction cannot be derived from geometry alone without
-# real data (the linear code's own pole_pa handling has never been
-# exercised at nonzero position angle), so this must be resolved per-target
-# empirically via NCC forward-prediction (see _measure_derot_confidence),
-# not assumed.
+# for the atmospheric-rotation sign ambiguity): whether the *true* B-tilt
+# term's sign matches this codebase's sign convention for "the pole tilts
+# this way vs that way" cannot be derived from geometry alone without real
+# data, so this is resolved per-target empirically via NCC forward-
+# prediction (see auto_detect_pole_axis_flip/_measure_derot_confidence),
+# not assumed. This is now a genuinely separate concern from the pole_pa
+# rotation bug above (which affected B=0 too, where flip_pole_axis has no
+# real physical effect to resolve in the first place).
 
 _SUB_OBS_LAT_SMALL_DEG = 1e-4  # below this |B|, use the direct (non-quadratic) solve
 
@@ -1106,7 +1125,7 @@ def _oblate_ortho_forward(
 
     sin_p, cos_p = math.sin(P), math.cos(P)
     dx = X * cos_p - Y * sin_p
-    dy = -(X * sin_p + Y * cos_p)
+    dy = X * sin_p + Y * cos_p
     return dx, dy, depth
 
 
@@ -1130,8 +1149,8 @@ def _oblate_ortho_inverse(
     dy = np.asarray(dy, dtype=np.float64)
 
     sin_p, cos_p = math.sin(P), math.cos(P)
-    X =  dx * cos_p - dy * sin_p
-    Y = -dx * sin_p - dy * cos_p
+    X = dx * cos_p + dy * sin_p
+    Y = -dx * sin_p + dy * cos_p
     if flip_pole_axis:
         Y = -Y
 
@@ -1223,12 +1242,18 @@ def _reprojected_position(
     sign = 1.0 if flip_direction else -1.0
     lam_src = lam + sign * scale * delta_lambda
 
-    dx1, dy1, _ = _oblate_ortho_forward(
+    dx1, dy1, source_depth = _oblate_ortho_forward(
         phi, lam_src, sub_observer_lat_deg, pole_pa_deg, req_px, rpol_px,
         flip_pole_axis=flip_pole_axis,
     )
 
-    valid = np.isfinite(phi)
+    # A point visible in the OUTPUT orientation is not necessarily visible
+    # in the SOURCE orientation after shifting its longitude by delta_lambda
+    # — for large enough rotation it can end up on the far side at the
+    # source time, which orthographic projection would otherwise silently
+    # fold onto the same screen position as a genuine near-side point.
+    # Reject that case too (source_depth>0), not just the output-side check.
+    valid = np.isfinite(phi) & (source_depth > 0.0)
     new_x = np.where(valid, cx + dx1, x)
     new_y = np.where(valid, cy + dy1, y)
     return new_x, new_y, valid

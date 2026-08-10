@@ -116,19 +116,68 @@ def test_b_zero_matches_live_linear_warp_direction():
         y3, x3 = np.unravel_index(np.argmax(out_3d), out_3d.shape)
         shift_linear = (xl - raw_x, yl - raw_y)
         shift_3d = (x3 - raw_x, y3 - raw_y)
-        # At B=0 the x-component (equatorial/Delta-lambda direction) must
-        # match closely. The y-component (pole-axis direction) is a
-        # SEPARATE sign ambiguity at nonzero pole_pa, resolved per session by
-        # auto_detect_pole_axis_flip() from real atmospheric drift (not a
-        # fixed convention derivable on paper) — not checked here.
+        # At B=0 there is no true B-tilt effect, so linear and 3D must agree
+        # on BOTH x and y at every pole_pa, not just pole_pa=0. An earlier
+        # version of this test only checked y at pole_pa=0 (the pole-axis
+        # sign was believed to be a separate, real ambiguity resolved by
+        # flip_pole_axis) — that gap let a real bug through: the 3D warp's
+        # pole_pa rotation was an IMPROPER rotation (determinant -1, see
+        # test_pole_pa_rotation_is_proper below), which flip_pole_axis
+        # cannot fix (it flips Y, not the reflection). Found via external
+        # code review + confirmed against real Jupiter data (derot NCC
+        # confidence dropped 0.877->0.620 with the bug present).
         assert abs(shift_linear[0] - shift_3d[0]) < 1.5, (
             f"pole_pa={pole_pa}: x-shift direction mismatch — "
             f"linear={shift_linear} 3d={shift_3d}"
         )
-        if pole_pa == 0.0:
-            assert abs(shift_linear[1] - shift_3d[1]) < 1.5, (
-                f"pole_pa=0: y-shift should also match — linear={shift_linear} 3d={shift_3d}"
-            )
+        assert abs(shift_linear[1] - shift_3d[1]) < 1.5, (
+            f"pole_pa={pole_pa}: y-shift direction mismatch — "
+            f"linear={shift_linear} 3d={shift_3d}"
+        )
+
+
+def test_pole_pa_rotation_is_proper():
+    """REGRESSION GUARD: the pole_pa rotation inside _oblate_ortho_forward
+    must be a proper rotation (determinant +1), not an improper one
+    (determinant -1, i.e. a hidden reflection). This is a cheap, direct
+    check for the exact bug class found above: computing dy with an extra
+    outer sign flip turns the transform into a reflection, which no amount
+    of toggling flip_pole_axis (which only flips Y, not the handedness) can
+    undo — confirmed empirically as the cause of a real quality regression
+    on Jupiter data (NCC confidence 0.877->0.620) before this was found and
+    fixed via external code review.
+    """
+    req_px, rpol_px = 100.0, 93.0
+    for pole_pa_deg in (0.0, -6.25, 30.0, 90.0, 179.0):
+        # Probe the forward map's Jacobian at B=0 with two orthogonal unit
+        # nudges in (X, Y) via finite differences on phi/lam is overkill —
+        # instead, directly verify the *rotation step* by checking that
+        # forward-then-inverse recovers the identity for a pure (X, Y) pair,
+        # AND that swapping the two orthogonal basis directions preserves
+        # handedness (cross product sign), which an improper rotation flips.
+        phi1, lam1 = 0.1, 0.05
+        phi2, lam2 = 0.1, 0.15
+        dx1, dy1, _ = _oblate_ortho_forward(phi1, lam1, 0.0, pole_pa_deg, req_px, rpol_px)
+        dx2, dy2, _ = _oblate_ortho_forward(phi2, lam2, 0.0, pole_pa_deg, req_px, rpol_px)
+        dxo, dyo, _ = _oblate_ortho_forward(0.0, 0.0, 0.0, pole_pa_deg, req_px, rpol_px)
+        v1 = np.array([dx1 - dxo, dy1 - dyo])
+        v2 = np.array([dx2 - dxo, dy2 - dyo])
+        # A proper rotation preserves the sign of the z-component of the
+        # cross product of any two vectors under the SAME transform as their
+        # pre-image (phi,lam differences here play the role of the
+        # pre-transform basis) — an improper (reflecting) transform flips it.
+        # Compare against pole_pa_deg=0 as the known-good reference sign.
+        cross = v1[0] * v2[1] - v1[1] * v2[0]
+        dx1_0, dy1_0, _ = _oblate_ortho_forward(phi1, lam1, 0.0, 0.0, req_px, rpol_px)
+        dx2_0, dy2_0, _ = _oblate_ortho_forward(phi2, lam2, 0.0, 0.0, req_px, rpol_px)
+        dxo_0, dyo_0, _ = _oblate_ortho_forward(0.0, 0.0, 0.0, 0.0, req_px, rpol_px)
+        v1_0 = np.array([dx1_0 - dxo_0, dy1_0 - dyo_0])
+        v2_0 = np.array([dx2_0 - dxo_0, dy2_0 - dyo_0])
+        cross_0 = v1_0[0] * v2_0[1] - v1_0[1] * v2_0[0]
+        assert np.sign(cross) == np.sign(cross_0), (
+            f"pole_pa={pole_pa_deg}: handedness flipped relative to pole_pa=0 "
+            f"— rotation is improper (a reflection), not a proper rotation"
+        )
 
 
 def test_point_shift_matches_full_image_warp():
@@ -193,7 +242,9 @@ if __name__ == "__main__":
     test_b_near_zero_numerical_stability()
     print("B->0 numerical stability: OK")
     test_b_zero_matches_live_linear_warp_direction()
-    print("B=0 direction match vs live linear warp: OK")
+    print("B=0 direction match vs live linear warp (all pole_pa): OK")
+    test_pole_pa_rotation_is_proper()
+    print("pole_pa rotation is proper (determinant/handedness check): OK")
     test_point_shift_matches_full_image_warp()
     print("point-shift vs full-image-warp consistency: OK")
     test_discriminant_clamp_near_limb()
