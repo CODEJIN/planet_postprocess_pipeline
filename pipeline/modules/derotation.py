@@ -2569,28 +2569,32 @@ def derotate_filter(
                 img = img.mean(axis=2).astype(np.float32)
 
         # Measure disk center from the raw (pre-warp) frame for later alignment.
-        # When shared_shape is set (ring detected somewhere in this window),
-        # per-frame ellipse-fit disk detection is untrustworthy for at least
-        # one filter in the window — most acutely CH4, whose brightness
-        # inversion (or a ring band crossing the disk) can make
-        # find_disk_center() silently return a plausible-looking but wrong
-        # centre (no exception, so the abs(dx)<=15 sanity gate below can't
-        # catch it). Content-based phase correlation against the reference
-        # frame of the SAME filter doesn't require identifying "the disk" at
-        # all, so it isn't fooled by which feature is brighter — use it
-        # instead whenever this window has any ring involvement.
-        #
-        # MUST be cropped to the disk ROI first: a full-frame phaseCorrelate
-        # here reintroduces the exact ring-pollution bug fixed in
-        # composite.align_channels() (2026-08-09) — confirmed on real data,
-        # this returned -14.19px on a Saturn R-channel frame pair (vs. the
-        # true ~0.5px, measured both via find_disk_center-on-target and via
-        # ROI-cropped correlation). The ring is large, elongated, and its
-        # exact appearance isn't perfectly frame-to-frame stable, so it can
-        # dominate an unmasked correlation regardless of which filter it is.
+        # BUG FIXED 2026-08-11 (real-data investigation, user pushback on
+        # weight_power as a band-aid): this used to gate on `shared_shape is
+        # not None` — a WINDOW-level flag (true whenever ANY filter in this
+        # window needed shape-sharing, e.g. CH4's brightness inversion) —
+        # even though it decides a PER-FILTER question (should THIS filter's
+        # own frames use find_disk_center or the correlation fallback for
+        # pre-warp alignment). Since shared_shape is passed identically to
+        # every filter's derotate_filter() call, ONE filter (CH4) needing the
+        # fallback silently downgraded every OTHER filter in the same window
+        # too — even ones with their own reliable ellipse fit (confidence
+        # ~0.40, shape_reliable=True on real Saturn IR/R/G/B). Measured
+        # impact directly: synthetic known-shift recovery on real Saturn
+        # frames gives find_disk_center() error <0.09px vs subpixel_align()
+        # (phase correlation) error 0.15-0.6+px on the SAME content — this
+        # codebase's own ellipse-fit approach is already far more precise
+        # here than frame-to-frame correlation (the same reason WinJUPOS
+        # fits a model to the whole limb boundary rather than correlating
+        # patches of internal texture). The correlation fallback below is
+        # still exactly right for a filter whose OWN detection is actually
+        # unreliable (CH4) — just no longer forced onto filters that don't
+        # need it. Gate on THIS filter's own _rshape_ok (already resolved
+        # above from this filter's own reference-frame fit), not the
+        # window-wide shared_shape flag.
         _raw_lum = _to_luminance(img)
         try:
-            if shared_shape is not None:
+            if shared_shape is not None and not _rshape_ok:
                 _rh, _rw = _ref_lum.shape[:2]
                 _rys = max(0, int(ref_cy - ref_semi_a)); _rye = min(_rh, int(ref_cy + ref_semi_a))
                 _rxs = max(0, int(ref_cx - ref_semi_a)); _rxe = min(_rw, int(ref_cx + ref_semi_a))
