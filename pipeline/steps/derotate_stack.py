@@ -703,12 +703,22 @@ def run(
         pole_pa_for_warp = session_pole_pa
         print(f"  [pole_pa = {pole_pa_for_warp:.1f}° (image-space, for warp)]")
 
-        # ── Sub-observer latitude B from Horizons (true 3D reprojection only) ──
-        # Skipped unless opted in — avoids the extra lookup/network cost for
-        # every session that still uses the default linear warp.
+        # ── Sub-observer latitude B from Horizons ───────────────────────────────
+        # Needed for two independent reasons: the true 3D reprojection warp
+        # (opt-in, use_true_reprojection), and (2026-08-11) Saturn's ring-
+        # crossing-disk exclusion (has_rings, see compute_ring_crossing_mask
+        # in derotation.py) — the ring visually crosses the globe silhouette
+        # at low tilt, and spherical_derotation_warp() must not apply
+        # atmosphere rotation physics to ring pixels. has_rings is gated on
+        # horizons_id=="699" (Saturn) specifically: the ring-crossing mask
+        # uses Saturn-specific physical ring/Req constants, meaningless (and
+        # silently wrong) for any other target. Query is skipped for every
+        # other session (Jupiter etc.) to avoid the lookup cost where it's
+        # not needed.
         use_true_reprojection = bool(config.derotation.use_true_reprojection)
+        has_rings = config.derotation.horizons_id == "699"  # Saturn
         sub_observer_lat_val = 0.0
-        if use_true_reprojection:
+        if use_true_reprojection or has_rings:
             sub_obs_lat = query_horizons_sub_observer_lat(
                 horizons_id=config.derotation.horizons_id,
                 t_utc=t_center,
@@ -758,6 +768,7 @@ def run(
             sub_observer_lat_deg=sub_observer_lat_val,
             true_polar_equatorial_ratio=config.derotation.true_polar_equatorial_ratio,
             flip_pole_axis=session_pole_axis_flip,
+            has_rings=has_rings,
         )
 
         # ── Satellite compositing (exp9 method) ───────────────────────────────
