@@ -789,6 +789,242 @@ def _find_disk_center_impl(
         return float(x + w / 2), float(y + h / 2), float(max(w, h) / 2), float(min(w, h) / 2), 0.0, 0.0, False
 
 
+# ── Ring geometry (Saturn) ──────────────────────────────────────────────────────
+#
+# Phase A of Saturn ring/globe separation (2026-08-11 plan). Detects the ring's
+# OWN outer-edge ellipse, so it can eventually be excluded from globe-only
+# measurements (quality scoring, NCC warp_scale tuning, disk-median
+# normalization) that currently only avoid being fooled by the ring when
+# fitting the *globe* — nothing anywhere in this module models the ring
+# itself. Deliberately scoped to outer-edge detection + a "does it cross the
+# globe silhouette" flag only: no inner-edge/Cassini-Division detection, no
+# ring-shadow geometry, no foreground/background ring separation — those are
+# real follow-on work, not attempted here. This is additive: nothing existing
+# calls detect_ring_geometry() yet, so it carries zero regression risk until
+# a future change wires it in (only after real-Saturn-data validation of the
+# detection itself — see project plan).
+
+# Saturn's real physical ring-system radii (IAU/NASA fact sheet, km from
+# planet centre): C-ring inner edge ~74,658 km, A-ring outer edge ~136,780 km.
+# Saturn's own equatorial radius is ~60,268 km, so as a fraction of that:
+_SATURN_RING_INNER_REQ = 74_658.0 / 60_268.0   # ~1.239
+_SATURN_RING_OUTER_REQ = 136_780.0 / 60_268.0  # ~2.269
+# Ring inner/outer are coplanar and share one foreshortening (sin B) factor,
+# so their PROJECTED semi-minor/semi-major ratio is identical — only the
+# absolute scale differs, by this fixed physical ratio:
+_SATURN_RING_INNER_OUTER_RATIO = _SATURN_RING_INNER_REQ / _SATURN_RING_OUTER_REQ  # ~0.546
+
+
+@dataclass
+class RingGeometry:
+    """Detected ring OUTER-edge ellipse for one instant/filter.
+
+    angle_deg shares the globe's own equator_pa_deg by construction (ring and
+    globe are coplanar, so this is not an independently free parameter) —
+    kept as an explicit field anyway so a caller can sanity-check the two
+    agree, rather than assuming it silently.
+    """
+    outer_semi_a: float
+    outer_semi_b: float
+    angle_deg: float
+    crosses_disk: bool
+    confidence: float  # fraction of radial rays that found a usable outer edge
+
+
+def detect_ring_geometry(
+    image: np.ndarray,
+    cx: float,
+    cy: float,
+    disk_semi_a: float,
+    disk_semi_b: float,
+    n_rays: int = 72,
+    search_frac: Tuple[float, float] = (1.05, 2.4),
+    n_samples: int = 150,
+    smooth_sigma: float = 1.5,
+    min_confidence: float = 0.35,
+) -> Optional[RingGeometry]:
+    """Detect the ring's outer-edge ellipse, given the globe's already-fitted
+    geometry (cx, cy, disk_semi_a/b — e.g. from find_disk_center()).
+
+    Does not take the globe's angle_deg: the ring ellipse's own orientation
+    is fit independently from the detected edge points, precisely so a
+    caller can sanity-check it against the globe's equator_pa_deg (they
+    should agree, since ring and globe are coplanar) rather than have that
+    agreement silently assumed inside this function.
+
+    Extends _gradient_disk_r()'s radial-ray steepest-edge methodology outward
+    past the globe: for each of n_rays angles, samples the brightness profile
+    from just past the globe edge (search_frac[0]*disk_semi_a) out to
+    search_frac[1]*disk_semi_a (past Saturn's real A-ring outer edge at
+    ~2.27x Req for any realistic tilt/oblateness), and takes the OUTERMOST
+    strong negative-gradient point per ray as that ray's ring-outer-edge
+    candidate (not the single steepest one — a dark gap between the globe
+    limb and the ring, or noise, can otherwise win a naive global argmin).
+    Candidate points are median/MAD outlier-filtered (same pattern as
+    _gradient_disk_r) before an ellipse fit via cv2.fitEllipse.
+
+    Returns None (not a guess) if fewer than min_confidence fraction of rays
+    find a usable edge — mirrors find_disk_center()'s "fail closed" policy.
+    A ring that is too faint, absent (non-Saturn target), or edge-on to the
+    point of being invisible will correctly return None here rather than a
+    plausible-looking wrong ellipse.
+    """
+    h, w = image.shape[:2]
+    angles = np.linspace(0.0, 2.0 * np.pi, n_rays, endpoint=False)
+    r_start = disk_semi_a * search_frac[0]
+    r_end = disk_semi_a * search_frac[1]
+    r_vals = np.linspace(r_start, r_end, n_samples)
+    dr = r_vals[1] - r_vals[0]
+
+    # A per-ray-only noise floor degenerates on a ray that samples pure flat
+    # background (e.g. beyond a foreshortened ring's minor-axis extent, well
+    # short of r_end): with near-zero real gradient everywhere on that ray,
+    # even floating-point noise can exceed a purely-relative threshold,
+    # spuriously "detecting" an edge (empirically: this produced ellipse fits
+    # dominated by phantom edges near r_end on every ray, not the real ring
+    # boundary). Require gradient magnitude to also clear an ABSOLUTE floor.
+    # NOT scaled from this image's own percentile spread — that failed too:
+    # a pure-noise image's own 1st/99th percentile spread reflects nothing
+    # but noise amplitude, so a threshold derived from it just re-measures
+    # the noise and passes it (confirmed empirically: still ~90%+ false
+    # "detection" rate on synthetic pure noise with that approach). Images
+    # in this codebase are always float32 normalized to [0, 1], so a fixed
+    # minimum brightness-change-per-pixel is meaningful across targets/
+    # filters: calibrated empirically against real synthetic ring signal
+    # (~0.13 brightness/px at a genuine ring edge) vs. noise-floor gradient
+    # fluctuations (~0.02 brightness/px for uniform(0, 0.1) noise) — 0.04
+    # sits clearly between the two with margin on both sides.
+    abs_floor = 0.04 / dr
+
+    points: List[Tuple[float, float]] = []
+    for angle in angles:
+        cos_a, sin_a = np.cos(angle), np.sin(angle)
+        xs = cx + r_vals * cos_a
+        ys = cy + r_vals * sin_a
+        if (xs < 0).any() or (xs >= w - 1).any() or \
+           (ys < 0).any() or (ys >= h - 1).any():
+            continue
+        profile = _bilinear_interp(image, ys, xs)
+        smoothed = _gaussian_filter1d_np(profile, sigma=smooth_sigma)
+        grad = np.gradient(smoothed, dr)
+        noise_floor = max(
+            2.0 * float(np.median(np.abs(grad - np.median(grad)))),
+            abs_floor,
+        )
+        # Candidate edges: any local minimum (steep brightness drop, ring/gap
+        # -> background or ring -> gap) whose magnitude clears the noise
+        # floor. Take the OUTERMOST one as the ring's true outer edge.
+        #
+        # Exclude candidates within one Gaussian-kernel radius of either end
+        # of the sampled range: _gaussian_filter1d_np convolves with
+        # mode="same" (implicit zero-padding), which pulls the smoothed
+        # profile down toward 0 right at the boundary — a real artifact, not
+        # signal. Because this function deliberately picks the OUTERMOST
+        # candidate (unlike _gradient_disk_r's global argmin), that boundary
+        # artifact would otherwise win on every ray with no genuine ring
+        # signal there (confirmed: pure-noise input was producing a
+        # near-r_end "detection" on >90% of rays before this exclusion).
+        edge_guard = max(1, int(3.0 * smooth_sigma + 0.5))
+        candidates = [
+            i for i in range(edge_guard, len(grad) - edge_guard)
+            if grad[i] < grad[i - 1] and grad[i] < grad[i + 1] and grad[i] < -noise_floor
+        ]
+        if not candidates:
+            continue
+        idx = candidates[-1]
+        y0, y1, y2 = grad[idx - 1], grad[idx], grad[idx + 1]
+        denom = 2.0 * (y2 - 2.0 * y1 + y0)
+        sub = -(y2 - y0) / denom if abs(denom) > 1e-12 else 0.0
+        r_edge = r_vals[idx] + sub * dr
+        points.append((cx + r_edge * cos_a, cy + r_edge * sin_a))
+
+    confidence = len(points) / n_rays
+    if confidence < min_confidence or len(points) < 5:
+        return None
+
+    pts_arr = np.array(points, dtype=np.float32)
+    center_dist = np.hypot(pts_arr[:, 0] - cx, pts_arr[:, 1] - cy)
+    med, mad = float(np.median(center_dist)), float(np.median(np.abs(center_dist - np.median(center_dist))))
+    keep = np.abs(center_dist - med) < max(4.0 * (mad + 0.5), 0.15 * med)
+    if keep.sum() < 5:
+        return None
+    pts_arr = pts_arr[keep]
+    confidence = float(keep.sum()) / n_rays
+
+    (_, _), (ma, mi), angle = cv2.fitEllipse(pts_arr)
+    # cv2.fitEllipse does not guarantee ma >= mi; when it doesn't, `angle`
+    # describes the axis we're about to relabel as the MINOR one, so the
+    # true major-axis direction is angle+90 (mod 180) — without this
+    # correction, angle_deg silently reports the minor-axis direction in
+    # exactly the cases where cv2 happens to return the axes swapped.
+    if ma >= mi:
+        outer_semi_a, outer_semi_b = ma / 2.0, mi / 2.0
+    else:
+        outer_semi_a, outer_semi_b = mi / 2.0, ma / 2.0
+        angle = (angle + 90.0) % 180.0
+    if outer_semi_a <= 0 or outer_semi_b <= 0:
+        return None
+
+    # crosses_disk: analytic, no new image measurement — estimate the ring's
+    # INNER edge by applying the fixed physical inner/outer ratio to the
+    # fitted outer ellipse (valid since inner/outer are coplanar, same
+    # foreshortening), then check whether that inner edge sits closer to
+    # centre than the globe's own edge at the minor-axis direction (where
+    # the ring, if it crosses the globe silhouette at all, would do so).
+    inner_semi_b_est = outer_semi_b * _SATURN_RING_INNER_OUTER_RATIO
+    crosses_disk = inner_semi_b_est < disk_semi_b
+
+    return RingGeometry(
+        outer_semi_a=outer_semi_a,
+        outer_semi_b=outer_semi_b,
+        angle_deg=float(angle),
+        crosses_disk=crosses_disk,
+        confidence=confidence,
+    )
+
+
+def render_ring_geometry_overlay(
+    image: np.ndarray,
+    cx: float,
+    cy: float,
+    disk_semi_a: float,
+    disk_semi_b: float,
+    disk_angle_deg: float,
+    ring: Optional[RingGeometry],
+) -> np.ndarray:
+    """Overlay the fitted globe ellipse (green) and ring outer ellipse (cyan,
+    if detected) on a percentile-stretched copy of image, for visual
+    real-data validation before detect_ring_geometry() is trusted by any
+    downstream consumer (see project plan — this is the actual Phase A
+    deliverable, not optional polish).
+
+    Returns a uint8 BGR image suitable for cv2.imwrite / display.
+    """
+    lum = image if image.ndim == 2 else image.mean(axis=2)
+    p_lo, p_hi = np.percentile(lum, [0.5, 99.5])
+    stretched = np.clip((lum - p_lo) / max(p_hi - p_lo, 1e-9), 0.0, 1.0)
+    vis = cv2.cvtColor((stretched * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+
+    cv2.ellipse(
+        vis, (int(round(cx)), int(round(cy))),
+        (int(round(disk_semi_a)), int(round(disk_semi_b))),
+        disk_angle_deg, 0, 360, (0, 255, 0), 1, cv2.LINE_AA,
+    )
+    if ring is not None:
+        cv2.ellipse(
+            vis, (int(round(cx)), int(round(cy))),
+            (int(round(ring.outer_semi_a)), int(round(ring.outer_semi_b))),
+            ring.angle_deg, 0, 360, (255, 255, 0), 1, cv2.LINE_AA,
+        )
+        label = f"ring conf={ring.confidence:.2f} crosses_disk={ring.crosses_disk}"
+        cv2.putText(vis, label, (5, vis.shape[0] - 8), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4, (255, 255, 0), 1, cv2.LINE_AA)
+    else:
+        cv2.putText(vis, "no ring detected", (5, vis.shape[0] - 8), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4, (0, 0, 255), 1, cv2.LINE_AA)
+    return vis
+
+
 # ── Shared disk geometry across filters (shape/pose separation) ───────────────
 #
 # A ringed planet's per-filter disk fits disagree slightly (different SNR/
