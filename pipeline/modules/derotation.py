@@ -2701,6 +2701,29 @@ def derotate_filter(
         except Exception:
             pass
 
+        # BUG FIXED 2026-08-11 (real-data investigation, user-reported step05
+        # sharpness regression vs step07): the measured pre-warp shift used to
+        # be applied AFTER warping, as a rigid apply_shift() on the already-
+        # warped image (see the second alignment loop below). spherical_
+        # derotation_warp()/_3d() is a spatially-varying, depth-dependent
+        # deformation defined relative to the ASSUMED centre (ref_cx, ref_cy)
+        # — it has no way to know this raw frame's true disk centre actually
+        # sits (_dx, _dy) away from that assumption, so warping an off-centre
+        # frame and rigidly shifting the RESULT afterward is NOT equivalent to
+        # recentring the frame first and then warping (these do not commute
+        # for a non-rigid transform). Measured on real Saturn data: this left
+        # a median 0.58px (up to 1.38px) residual misalignment on a ~130px
+        # disk after "correction" — enough to measurably blur the stack.
+        # Fix: apply the pre-warp shift to the RAW frame here, before it ever
+        # reaches the warp, so the warp itself always operates on a correctly-
+        # centred frame. The post-warp application below is now a no-op for
+        # any stem with a pre-warp shift (kept only for the limb_center/
+        # phase_correlate fallback chain, which inherently needs the warped
+        # image to measure against).
+        if row["stem"] in _pre_warp_shifts:
+            _pw_dx, _pw_dy = _pre_warp_shifts[row["stem"]]
+            img = apply_shift(img, _pw_dx, _pw_dy)
+
         dt_sec = (row["timestamp"] - t_reference).total_seconds()
         if use_true_reprojection:
             warped = spherical_derotation_warp_3d(
@@ -2750,13 +2773,19 @@ def derotate_filter(
         warped_images = normalize_brightness_to_reference(warped_images, ref_idx)
 
     # ── Sub-pixel translation alignment (pre-warp center based) ─────────────
-    # Use disk centers measured from raw (pre-warp) frames.
-    # Post-warp limb_center_align is biased: the warp redistributes atmospheric
+    # Disk centres measured from raw (pre-warp) frames are now applied BEFORE
+    # warping (see the fix above, in the per-frame warp loop) — so for any
+    # stem in _pre_warp_shifts, warped_images already reflects that
+    # correction and this loop is a no-op passthrough for it (kept only to
+    # populate the log with the same fields as before, for continuity with
+    # the outlier-rejection step right after this and any external log
+    # consumers). Post-warp limb_center_align is still biased the way the
+    # comment below always said: the warp redistributes atmospheric
     # brightness (belts/zones move), causing find_disk_center to shift in the
-    # same direction as the warp. Correcting that shift partially undoes the
-    # de-rotation (empirically: align_shift ∝ warp_scale × dt, cancelling
-    # ~40% of the warp). Pre-warp measurements capture only genuine
-    # seeing-induced disk wobble and are not contaminated by the warp.
+    # same direction as the warp, so correcting that shift AFTER warping
+    # partially undoes the de-rotation — this is why the fallback chain below
+    # is still only used when pre-warp detection failed outright, never as a
+    # general-purpose post-warp correction.
     # Fallback chain: pre_warp_center → limb_center (post-warp, if pre-warp
     # detection failed) → phase_correlate (if limb_center also returns zero).
     if align and ref_img is not None and len(warped_images) > 1:
@@ -2770,16 +2799,20 @@ def derotate_filter(
             else:
                 stem = frame_log["stem"]
                 if stem in _pre_warp_shifts:
+                    # Already applied to the raw frame before warping —
+                    # nothing left to do here except log what was applied.
                     dx, dy = _pre_warp_shifts[stem]
-                    method = "pre_warp_center"
-                else:
-                    # Pre-warp detection failed — fall back to post-warp limb center
-                    img_lum = _to_luminance(img)
-                    dx, dy = limb_center_align(ref_cx, ref_cy, img_lum)
-                    method = "limb_center"
-                    if dx == 0.0 and dy == 0.0:
-                        dx, dy = subpixel_align(ref_lum, img_lum)
-                        method = "phase_correlate"
+                    aligned_images.append(img)
+                    frame_log["align_shift_px"] = [round(dx, 3), round(dy, 3)]
+                    frame_log["align_method"] = "pre_warp_center"
+                    continue
+                # Pre-warp detection failed — fall back to post-warp limb center
+                img_lum = _to_luminance(img)
+                dx, dy = limb_center_align(ref_cx, ref_cy, img_lum)
+                method = "limb_center"
+                if dx == 0.0 and dy == 0.0:
+                    dx, dy = subpixel_align(ref_lum, img_lum)
+                    method = "phase_correlate"
                 aligned = apply_shift(img, dx, dy)
                 aligned_images.append(aligned)
                 frame_log["align_shift_px"] = [round(dx, 3), round(dy, 3)]
