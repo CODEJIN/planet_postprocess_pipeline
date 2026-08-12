@@ -12,7 +12,7 @@ from typing import Any
 SESSION_DIR  = Path.home() / ".astropipe"
 SESSION_FILE = SESSION_DIR / "session.json"
 
-SESSION_VERSION = 15  # bump when _DEFAULTS or migration logic changes
+SESSION_VERSION = 16  # bump when _DEFAULTS or migration logic changes
 
 # Default values written on first run
 _DEFAULTS: dict[str, Any] = {
@@ -180,6 +180,19 @@ def _migrate(data: dict[str, Any]) -> dict[str, Any]:
         planet = data.get("planet")
         if planet in _TRUE_POLAR_RATIO_BY_PLANET and float(data.get("true_polar_equatorial_ratio", 1.00)) == 1.00:
             data["true_polar_equatorial_ratio"] = _TRUE_POLAR_RATIO_BY_PLANET[planet]
+
+    # v15→v16: reverses the v13→v14 warp_scale=0.10 bump (2026-08-11). That
+    # NCC sweep was found to be invalid for picking warp_scale at all — it's
+    # self-referential (injects the current config value as a sweep
+    # candidate, which trivially wins once the true NCC-vs-scale curve is
+    # confirmed noise-dominated with no genuine peak, adversarially
+    # verified) — so 0.10 never had real physical justification. Reverted to
+    # 1.00 (physically-correct full rotation, matching every other planet).
+    # Same style as the v13->v14 fix it undoes: only touch sessions still at
+    # the untuned 0.10 default, so real user customisation is left alone.
+    if ver < 16:
+        if data.get("planet") == "Saturn" and float(data.get("warp_scale", 1.00)) == 0.10:
+            data["warp_scale"] = 1.00
 
     data["session_version"] = SESSION_VERSION
     return data

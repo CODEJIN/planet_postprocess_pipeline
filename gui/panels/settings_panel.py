@@ -33,8 +33,7 @@ from gui import profile_manager
 #                              warp_scale, true_polar_equatorial_ratio)
 #
 # warp_scale is the empirical de-rotation warp strength (see DerotationConfig /
-# spherical_derotation_warp). Only Jupiter (1.00) and Saturn (0.10) have been
-# validated via an NCC sweep against real session data.
+# spherical_derotation_warp).
 #
 # true_polar_equatorial_ratio is the planet's TRUE physical Rpol/Req (IAU/NASA
 # fact-sheet constants, not empirically tuned) — used only by
@@ -42,26 +41,37 @@ from gui import profile_manager
 # Do not confuse with warp_scale's empirical-calibration caveat above; these
 # values are not NCC-swept and don't need re-validation the way warp_scale does.
 #
-# Saturn's 0.10 has been specifically re-verified (2026-08-09) against three
-# progressively stricter masks (baseline 0.70R disk, 0.55R disk, and a
-# 0.35-0.60R inner annulus that excludes the outer 40% of the disk radius
-# entirely — i.e. as far from any possible ring/Cassini-division/limb
-# contamination as practical). All three masks independently converge on the
-# same median best-fit scale (~0.05-0.10) and the same overwhelming NCC
-# preference for low scale over the full-strength warp — so this is NOT an
-# artifact of the measurement window including ring/limb structure. What IS
-# still unconfirmed is *why* Saturn's atmosphere needs such a small warp
-# (candidates: real differential rotation, or a mismatch between System III's
-# reference period and the actual cloud-top motion) — do not describe this as
-# simply "System III period isn't cloud-top calibrated, therefore 10x
-# overcorrection": the ~7% period difference between System II and System III
-# cannot by itself explain a 10x amplitude difference, so that specific causal
-# story remains an open question even though the 0.10 value itself is solid.
-# The remaining planets keep the old default of 1.00 unvalidated — run an NCC
-# sweep before trusting de-rotation quality for those targets.
+# Saturn's warp_scale was 0.10 for a long time, based on an NCC sweep
+# (pipeline/steps/derotate_stack.py::_measure_derot_confidence) and re-verified
+# 2026-08-09 across three disk-region masks. REVERSED 2026-08-11 after a
+# deeper, adversarially-verified investigation found that NCC sweep to be
+# fundamentally invalid for this purpose: (1) ring-crossing pixel contamination
+# was ruled out as the cause (excluding ring pixels from the NCC region left
+# the optimal scale unchanged); (2) the sweep itself is self-referential — its
+# production range is [0.50, 1.20] with the CURRENT config_scale injected as an
+# extra candidate point, and the true NCC-vs-scale curve (measured with a
+# clean, non-injected grid spanning negative scale too) is noise-dominated
+# with no genuine interior peak (near-zero/sign-split peak locations, <0.01 NCC
+# gain over scale=0, sign flips between consecutive frame pairs in the same
+# window) — the physical rotation signal (a few px at these dt/baseline
+# lengths) is smaller than this pipeline's own frame-to-frame registration
+# noise floor (1-5px), so NCC cannot resolve it at all. The "0.10 optimum" was
+# the sweep echoing back its own injected default, not a measurement.
+# Direct real-stack sharpness A/B (stack-vs-single-frame ratio, not NCC) does
+# favor higher warp_scale up to and even past 1.00, but that trend is partly
+# an artifact too: visual inspection at scale=1.0-2.0 shows a bright seam/
+# streak near the ring-crossing-mask boundary that inflates the Laplacian-
+# variance sharpness proxy without being real detail — this artifact was NOT
+# fully characterized (in particular, not confirmed absent at scale=1.00).
+# Reverted to 1.00 (the physically-correct full-rotation value, matching every
+# other planet below) since no principled justification remains for a
+# fractional value — re-run an NCC-independent, artifact-aware validation
+# before trusting Saturn de-rotation quality, and see project_saturn_step05_
+# sharpness_gap / project_derotation_warp_scale_ncc_invalid memory for the
+# full investigation.
 _PLANET_PRESETS: dict[str, tuple[str, str, float, float, float]] = {
     "Jupiter": ("Jup", "599",   9.9281, 1.00, 0.9351),
-    "Saturn":  ("Sat", "699",  10.56,   0.10, 0.9021),
+    "Saturn":  ("Sat", "699",  10.56,   1.00, 0.9021),
     "Mars":    ("Mar", "499",  24.6229, 1.00, 0.9941),
     "Uranus":  ("Ura", "799",  17.24,   1.00, 0.9771),
     "Neptune": ("Nep", "899",  16.11,   1.00, 0.9829),
