@@ -823,8 +823,17 @@ def _find_disk_center_impl(
 _SATURN_RING_INNER_REQ = 74_658.0 / 60_268.0   # ~1.239
 _SATURN_RING_OUTER_REQ = 136_780.0 / 60_268.0  # ~2.269
 
+# Feather width (IMAGE pixels, not depth units — see the 2026-08-11 bugfix
+# note inside compute_ring_occlusion_weight() explaining why depth-space
+# feathering alone produced a non-uniform, sometimes near-hard edge in image
+# space) for the foreground/background occlusion boundary. Same regime as
+# the module's _interp_feather_px=12.0 limb-feather convention (see
+# spherical_derotation_warp) so both discontinuities get comparable
+# treatment scale.
+_RING_DEPTH_FEATHER_PX = 12.0
 
-def compute_ring_crossing_mask(
+
+def compute_ring_occlusion_weight(
     h: int,
     w: int,
     cx: float,
@@ -834,23 +843,43 @@ def compute_ring_crossing_mask(
     pole_pa_deg: float,
     sub_observer_lat_deg: float,
 ) -> np.ndarray:
-    """Boolean mask: pixels where Saturn's ring visually crosses the globe's
-    own silhouette (i.e. atmosphere de-rotation must NOT be applied there —
-    see the module note above for why).
+    """Continuous [0,1] weight: how much a pixel is occluded by FOREGROUND
+    ring material (1.0 = fully ring, atmosphere de-rotation must not be
+    applied there; 0.0 = not foreground ring — either plain atmosphere, or
+    the ring's far side hidden behind the globe's own near surface, in which
+    case what's actually visible is ordinary atmosphere and de-rotation
+    SHOULD apply normally).
 
-    True analytic geometry, no image content examined at all: the ring's
-    inner/outer ellipses share the globe's own pole_pa_deg (coplanar) and
-    are scaled by Saturn's fixed physical ring/Req ratios, with sin(|B|)
-    foreshortening the minor axis (see _oblate_ortho_forward's phi=0 case).
-    A pixel is "crossing" iff it is inside the globe's own fitted ellipse
-    AND inside the ring annulus (between the inner and outer ring ellipses).
+    BUG FIXED 2026-08-11 (external review): the previous version of this
+    function (compute_ring_crossing_mask, returned a bool) only tested
+    whether the ring's projected 2D footprint overlapped the globe's
+    silhouette — it could not distinguish the ring passing IN FRONT of the
+    globe (genuinely occludes the atmosphere, must exclude) from the ring's
+    far side, hidden BEHIND the globe's own near surface (occluded BY the
+    globe — nothing ring-related is actually visible there, it's just
+    atmosphere, and should have gotten normal de-rotation all along). That
+    conflation silently killed atmosphere de-rotation over roughly half of
+    the annulus/globe overlap region, exactly where the reviewer's
+    foreground/background occlusion critique says it should not have.
 
-    Cheap early-exit to an all-False mask (verified correct no-op, not just
-    "probably fine") whenever the ring's inner edge cannot possibly reach
-    inside the globe at this tilt — covers Jupiter/other non-ringed targets
-    (any caller not actually observing Saturn should not pass real ring
-    constants here at all, but this is a defensive backstop) and high-|B|
-    Saturn sessions where the ring genuinely clears the globe.
+    Analytic geometry only, no image content examined (same philosophy as
+    before): the ring's inner/outer ellipses share the globe's own
+    pole_pa_deg (coplanar) and are scaled by Saturn's fixed physical
+    ring/Req ratios, with sin(|B|) foreshortening the minor axis (see
+    _oblate_ortho_forward's phi=0 case). NEW: within that footprint overlap,
+    each pixel's ring-plane point vs. the globe's own near-surface point at
+    that same screen position are compared by line-of-sight depth (same
+    depth convention/units as spherical_derotation_warp's own depth_map) to
+    decide foreground vs. background, feathered smoothly across the
+    boundary using the depth difference itself (not an arbitrary pixel
+    distance) — see module docstring below for the closed-form derivation.
+
+    Cheap early-exit to an all-zero weight (verified correct no-op) whenever
+    the ring's inner edge cannot possibly reach inside the globe at this
+    tilt — covers Jupiter/other non-ringed targets (any caller not actually
+    observing Saturn should not pass real ring constants here at all, but
+    this is a defensive backstop) and high-|B| Saturn sessions where the
+    ring genuinely clears the globe.
     """
     sin_b = abs(math.sin(math.radians(sub_observer_lat_deg)))
     inner_ring_semi_a = disk_semi_a * _SATURN_RING_INNER_REQ
@@ -859,7 +888,7 @@ def compute_ring_crossing_mask(
         # Even the ring's closest (inner-edge, minor-axis) approach to the
         # centre stays outside the globe's own silhouette — no crossing
         # possible at this tilt.
-        return np.zeros((h, w), dtype=bool)
+        return np.zeros((h, w), dtype=np.float32)
 
     outer_ring_semi_a = disk_semi_a * _SATURN_RING_OUTER_REQ
     outer_ring_semi_b = outer_ring_semi_a * sin_b
@@ -875,8 +904,90 @@ def compute_ring_crossing_mask(
     in_ring_outer = (xr / outer_ring_semi_a) ** 2 + (yr / max(outer_ring_semi_b, 1e-6)) ** 2 <= 1.0
     in_ring_inner = (xr / inner_ring_semi_a) ** 2 + (yr / max(inner_ring_semi_b, 1e-6)) ** 2 <= 1.0
     in_ring_annulus = in_ring_outer & ~in_ring_inner
+    overlap = in_globe & in_ring_annulus
 
-    return in_globe & in_ring_annulus
+    if not overlap.any():
+        return np.zeros((h, w), dtype=np.float32)
+
+    weight = np.zeros((h, w), dtype=np.float64)
+
+    B_rad = math.radians(sub_observer_lat_deg)
+    if abs(sub_observer_lat_deg) < _SUB_OBS_LAT_SMALL_DEG:
+        # Near-exact edge-on: the ring plane projects to a degenerate line
+        # (every ring point's yr -> 0 as sin(B) -> 0), so depth_ring = -yr /
+        # tan(B) is numerically unstable right where it matters most. This
+        # tilt is also where the whole occlusion question is most physically
+        # ambiguous. Safe conservative fallback: keep the pre-existing
+        # behaviour (treat the whole footprint overlap as foreground/
+        # excluded) rather than risk a wrong depth comparison here.
+        weight[overlap] = 1.0
+        return weight.astype(np.float32)
+
+    # Ring-plane point depth (closed form derived from _oblate_ortho_forward
+    # at phi=0): for a ring point (r, lam) with body-fixed Y = -r*cos(lam)*
+    # sin(B) [same pole_pa-derotated screen Y this function already computes
+    # as `yr`], its LOS depth is r*cos(lam)*cos(B) = -yr / tan(B) --
+    # independent of the ring radius r, since it only depends on how far
+    # off the ring-crossing line (yr=0) this screen position sits. MUST stay
+    # algebraically consistent with _oblate_ortho_forward — see
+    # tests/test_ring_occlusion_weight.py's cross-check against it directly.
+    depth_ring = -yr / math.tan(B_rad)
+
+    # Globe near-surface depth at the same screen position — MUST match
+    # spherical_derotation_warp()'s own depth_map formula exactly (same
+    # warp_radius padding, same rx_eq/ry_pol decomposition) so the two are
+    # directly comparable in the same units. Duplicated here (rather than
+    # calling into spherical_derotation_warp) to keep that function planet-
+    # agnostic — ring physics stays entirely in this Saturn-specific helper.
+    # polar_equatorial_ratio isn't a parameter of this function (only shape,
+    # not size/oblateness ratio, varies enough between filters to matter
+    # here — see PlanetShape/resolve_shared_shape module note above), so use
+    # this call's own disk_semi_b/disk_semi_a exactly as spherical_
+    # derotation_warp does when given this filter's own fitted ellipse.
+    warp_radius = disk_semi_a * 1.05
+    polar_equatorial_ratio = disk_semi_b / max(disk_semi_a, 1.0)
+    polar_scale_sq = (1.0 / max(polar_equatorial_ratio, 1e-3)) ** 2
+    depth_globe_sq = warp_radius ** 2 - xr ** 2 - polar_scale_sq * yr ** 2
+    depth_globe = np.sqrt(depth_globe_sq.clip(0))
+
+    # BUG FIXED 2026-08-11 (real-data visual inspection, before this ever
+    # shipped): feathering directly by depth_diff (as a first attempt) made
+    # the transition's WIDTH IN IMAGE PIXELS wildly non-uniform, because
+    # depth_ring is constant along a line of fixed yr while depth_globe
+    # falls off quickly near the limb (large |xr|) — the boundary curve
+    # bulges toward more "foreground" near the limb, and in the direction
+    # perpendicular to that bulge the depth gradient can be steep enough
+    # that the depth-space feather (_RING_DEPTH_FEATHER_PX) collapses to a
+    # near-hard edge in actual pixel space. Rendered real Saturn stacks
+    # showed a visible dark seam tracing that curved boundary — confirmed
+    # by comparing directly against the pre-occlusion-fix version, which
+    # did NOT have this specific artifact (it had the coarser, already-
+    # documented "wrong region entirely" problem instead). Fix: decide
+    # foreground/background as a boolean via the depth comparison (this
+    # part of the physics is sound — see the algebra cross-check in
+    # tests/test_ring_occlusion_weight.py), then feather that boolean's
+    # boundary by actual image-pixel distance (same technique as the
+    # earlier, now-superseded seam fix), which guarantees a spatially
+    # uniform transition width regardless of how steep the underlying
+    # depth gradient is at any particular point on the boundary.
+    is_foreground = overlap & (depth_ring > depth_globe)
+    if is_foreground.any() and (overlap & ~is_foreground).any():
+        fg_u8 = is_foreground.astype(np.uint8)
+        dist_from_fg = cv2.distanceTransform(1 - fg_u8, cv2.DIST_L2, 5)
+        dist_into_fg = cv2.distanceTransform(fg_u8, cv2.DIST_L2, 5)
+        # 0 right at the boundary, ramping to 1 over _RING_DEPTH_FEATHER_PX
+        # px on the foreground side; ramping to 0 over the same distance on
+        # the background side (dist_from_fg subtracted so it's negative
+        # there, clipped to 0).
+        signed_dist = np.where(fg_u8 > 0, dist_into_fg, -dist_from_fg)
+        ring_exclude = np.clip(signed_dist / _RING_DEPTH_FEATHER_PX + 0.5, 0.0, 1.0)
+        # (total transition width = _RING_DEPTH_FEATHER_PX px, centered on
+        # the boundary: ring_exclude=0 at signed_dist<=-PX/2, 0.5 at the
+        # boundary, 1 at signed_dist>=+PX/2.)
+    else:
+        ring_exclude = is_foreground.astype(np.float64)
+    weight[overlap] = ring_exclude[overlap]
+    return weight.astype(np.float32)
 
 
 # ── Shared disk geometry across filters (shape/pose separation) ───────────────
@@ -1191,21 +1302,45 @@ def spherical_derotation_warp(
                                 1.0 = perfect sphere (default).
                                 ~0.935 = Jupiter (oblateness ≈ 6.5%).
                                 Pass semi_minor / semi_major from find_disk_center().
-        ring_crossing_mask:     Optional boolean array, same (h, w) as image.
-                                Where True, this function treats the pixel as
-                                NOT atmosphere (zero drift, keep the frame's
-                                own content) regardless of depth_sq — for
-                                Saturn, where the ring visually crosses the
-                                globe's silhouette at low tilt, so applying
-                                the atmosphere's depth-based rotation there
-                                would move ring material (a flat, non-
-                                corotating structure) as if it were a point
-                                on the rotating sphere. See
-                                compute_ring_crossing_mask(). None (default)
-                                preserves prior behaviour exactly for every
-                                existing caller (Jupiter and any caller not
-                                passing this).
-
+        ring_crossing_mask:     Optional continuous [0,1] float array, same
+                                (h, w) as image, from compute_ring_occlusion_
+                                weight(). 1.0 = pixel is occluded by
+                                FOREGROUND ring material, so this function
+                                scales drift toward zero there (keeping the
+                                frame's own content, since ring material is
+                                flat and non-corotating, not a point on the
+                                rotating sphere); 0.0 = ordinary atmosphere,
+                                including the ring's far side hidden behind
+                                the globe's own near surface — full normal
+                                drift applies. Already feathered across the
+                                foreground/background boundary by real image-
+                                pixel distance (see compute_ring_occlusion_
+                                weight()'s docstring) — this function only
+                                needs a plain multiplicative scale, no
+                                separate feathering of its own. None
+                                (default) preserves prior behaviour exactly
+                                for every existing caller (Jupiter and any
+                                caller not passing this). ALSO used
+                                source-side (2026-08-11, external review):
+                                an ordinary-atmosphere OUTPUT pixel's
+                                shifted FETCH coordinate can independently
+                                land on foreground-ring territory even when
+                                the output pixel itself is correctly
+                                classified as atmosphere (confirmed
+                                empirically, ~1% of atmosphere pixels at
+                                this session's real drift magnitudes) —
+                                same category as this module's existing
+                                "no valid same-kind source, fall back to
+                                identity" pattern (off-disk, depth_sq<=0),
+                                just checked at the fetch point instead of
+                                the output point, by re-sampling this same
+                                mask there (see the code just after map_x/
+                                map_y are computed). Purely geometric — no
+                                new image content examined, no fill/inpaint
+                                (three fill-based attempts at this same
+                                leak were tried and reverted first; see
+                                project_derotation_ring_occlusion_fix
+                                memory for why).
     Returns:
         Warped float [0, 1] array, same shape as input.
     """
@@ -1238,13 +1373,15 @@ def spherical_derotation_warp(
     _polar_scale_sq = (1.0 / max(polar_equatorial_ratio, 1e-3)) ** 2
     depth_sq = warp_radius ** 2 - rx_eq ** 2 - _polar_scale_sq * ry_pol ** 2
     is_atmosphere = depth_sq > 0.0
-    if ring_crossing_mask is not None:
-        # Ring-crossing pixels are not atmosphere, however large depth_sq
-        # computes to — same "zero drift, keep real content" fallback this
-        # function already uses beyond warp_radius (see module note above
-        # compute_ring_crossing_mask for why this is not a new behaviour).
-        is_atmosphere = is_atmosphere & ~ring_crossing_mask
     depth_map = np.where(is_atmosphere, np.sqrt(depth_sq.clip(0)), 0.0).astype(np.float32)
+    if ring_crossing_mask is not None:
+        # ring_crossing_mask is a continuous [0,1] occlusion weight from
+        # compute_ring_occlusion_weight() (1.0 = foreground ring, exclude;
+        # 0.0 = normal atmosphere, including the ring's far side hidden
+        # behind the globe's own near surface) -- already feathered across
+        # the boundary by real image-pixel distance, so a plain
+        # multiplicative scale-down is all that's needed here.
+        depth_map = depth_map * (1.0 - ring_crossing_mask)
 
     sign = -1.0 if flip_direction else 1.0
     drift = (sign * scale * delta_lambda_rad * depth_map).astype(np.float32)
@@ -1255,6 +1392,34 @@ def spherical_derotation_warp(
     # (cos_pa / sin_pa already computed above for the depth decomposition)
     map_x = (xx - drift * cos_pa).astype(np.float32)
     map_y = (yy - drift * sin_pa).astype(np.float32)
+
+    if ring_crossing_mask is not None:
+        # BUG FIXED 2026-08-11 (external review, source-side leak): the
+        # ring_crossing_mask multiply above only stops THIS pixel's own
+        # drift when THIS pixel's own (output) position is foreground ring
+        # -- it does nothing about an ordinary-atmosphere pixel whose
+        # computed FETCH point (map_x, map_y) happens to land on
+        # foreground-ring territory anyway (confirmed empirically: ~1% of
+        # atmosphere-classified output pixels at this session's real drift
+        # magnitudes). Same category of problem this module already solves
+        # elsewhere by falling back to identity when there's no valid same-
+        # kind source to sample (off-disk pixels, depth_sq<=0, the 3D
+        # reprojection's far-side check in _reprojected_position) -- a
+        # rotating-atmosphere formula has no business fetching from a
+        # flat, non-corotating ring just because the arithmetic lands
+        # there. Fix: sample ring_crossing_mask itself at the FETCH point
+        # (not the output point) and blend the fetch coordinate back
+        # toward identity (this pixel's own position) proportionally to
+        # how much the fetch point is foreground ring -- purely
+        # geometric (reuses the same already-computed, already-feathered
+        # occlusion weight via interpolation), no image content examined.
+        _src_ring_weight = cv2.remap(
+            ring_crossing_mask, map_x, map_y,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0,
+        )
+        map_x = map_x * (1.0 - _src_ring_weight) + xx * _src_ring_weight
+        map_y = map_y * (1.0 - _src_ring_weight) + yy * _src_ring_weight
 
     # Mixed interpolation: INTER_CUBIC interior, INTER_LINEAR near the limb.
     #
@@ -2412,19 +2577,21 @@ def derotate_filter(
                         False (linear warp, unchanged behaviour).
         sub_observer_lat_deg: Horizons "ObsSub-LAT" (quantity 14) — used
                         when use_true_reprojection=True, AND (2026-08-11)
-                        when has_rings=True, to build the ring-crossing mask
-                        (see compute_ring_crossing_mask). Unused otherwise.
+                        when has_rings=True, to build the ring occlusion
+                        weight (see compute_ring_occlusion_weight). Unused
+                        otherwise.
         true_polar_equatorial_ratio: Planet's TRUE physical Rpol/Req — only
                         used when use_true_reprojection=True (replaces the
                         apparent ellipse-fit ratio the linear warp uses).
         flip_pole_axis: Sign-ambiguity escape hatch for the reprojection —
                         only used when use_true_reprojection=True.
-        has_rings:      If True, compute a ring-crossing mask (see
-                        compute_ring_crossing_mask) from this filter's own
-                        resolved geometry and sub_observer_lat_deg, and
-                        exclude ring-crossing pixels from the linear warp's
-                        atmosphere rotation (passed to spherical_derotation_
-                        warp() as ring_crossing_mask; NOT wired into the
+        has_rings:      If True, compute a ring occlusion weight (see
+                        compute_ring_occlusion_weight) from this filter's own
+                        resolved geometry and sub_observer_lat_deg, and scale
+                        down the linear warp's atmosphere rotation only where
+                        FOREGROUND ring material actually occludes the view
+                        (passed to spherical_derotation_warp() as
+                        ring_crossing_mask; NOT wired into the
                         use_true_reprojection path — out of scope, Saturn
                         uses the linear warp by default). Set by
                         derotate_window()/derotate_stack.py only for Saturn
@@ -2524,9 +2691,9 @@ def derotate_filter(
     # For Jupiter ~0.935; clamped to [0.85, 1.0] to guard against fitting errors.
     _polar_eq_ratio = float(np.clip(ref_semi_b / max(ref_semi_a, 1.0), 0.85, 1.0))
 
-    # Ring-crossing exclusion (2026-08-11, real-Saturn-data + user-identified
-    # architecture gap — see compute_ring_crossing_mask's module note). Only
-    # attempted when the caller explicitly says this target has rings
+    # Ring occlusion weight (2026-08-11, real-Saturn-data + user-identified
+    # architecture gap — see compute_ring_occlusion_weight's module note).
+    # Only attempted when the caller explicitly says this target has rings
     # (has_rings=True, set by derotate_window()/derotate_stack.py only for
     # Saturn) — this uses Saturn-specific physical ring/Req constants, so it
     # would be meaningless (and, worse, silently wrong) applied to Jupiter or
@@ -2534,15 +2701,19 @@ def derotate_filter(
     # filter here (not per frame): it depends only on this filter's own
     # resolved geometry and the window's B, not on any individual frame's
     # content.
+    # See ring_crossing_mask's docstring entry in spherical_derotation_warp()
+    # for the source-side fetch-point check (2026-08-11, external review)
+    # that also applies this mask to prevent the inverse remap from ever
+    # sampling foreground-ring content for an ordinary-atmosphere pixel.
     ring_crossing_mask: Optional[np.ndarray] = None
     ring_crosses_disk = False
     if has_rings:
         _rh, _rw = _ref_lum.shape[:2]
-        ring_crossing_mask = compute_ring_crossing_mask(
+        ring_crossing_mask = compute_ring_occlusion_weight(
             _rh, _rw, ref_cx, ref_cy, ref_semi_a, ref_semi_b,
             pole_pa_deg, sub_observer_lat_deg,
         )
-        ring_crosses_disk = bool(ring_crossing_mask.any())
+        ring_crosses_disk = bool((ring_crossing_mask > 0.5).any())
 
     warped_images: List[np.ndarray] = []
     weights: List[float] = []
