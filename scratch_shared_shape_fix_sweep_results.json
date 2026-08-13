@@ -1,0 +1,398 @@
+[
+  {
+    "window": 1,
+    "filter": "IR",
+    "n_stacked": 3,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 0.000112937756057363,
+    "best_single_sharpness": 0.00012915136176161468,
+    "ratio_vs_best_single": 0.8744604355455542
+  },
+  {
+    "window": 1,
+    "filter": "R",
+    "n_stacked": 3,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.816352859255858e-05,
+    "best_single_sharpness": 4.926154360873625e-05,
+    "ratio_vs_best_single": 1.1807086082102312
+  },
+  {
+    "window": 1,
+    "filter": "G",
+    "n_stacked": 3,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 6.133006536401808e-05,
+    "best_single_sharpness": 6.935674173291773e-05,
+    "ratio_vs_best_single": 0.8842697022906706
+  },
+  {
+    "window": 1,
+    "filter": "CH4",
+    "n_stacked": 1,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 0.00011058861127821729,
+    "best_single_sharpness": 0.0001275127287954092,
+    "ratio_vs_best_single": 0.8672750738136409
+  },
+  {
+    "window": 2,
+    "filter": "IR",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 8.414165495196357e-05,
+    "best_single_sharpness": 0.00012915136176161468,
+    "ratio_vs_best_single": 0.6514964596910001
+  },
+  {
+    "window": 2,
+    "filter": "R",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.3642950661014766e-05,
+    "best_single_sharpness": 4.926154360873625e-05,
+    "ratio_vs_best_single": 1.0889417328672888
+  },
+  {
+    "window": 2,
+    "filter": "G",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.428032818599604e-05,
+    "best_single_sharpness": 6.935674173291773e-05,
+    "ratio_vs_best_single": 0.782625118045789
+  },
+  {
+    "window": 2,
+    "filter": "B",
+    "n_stacked": 2,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 3.0119837902020663e-05,
+    "best_single_sharpness": 3.458145511103794e-05,
+    "ratio_vs_best_single": 0.8709823749552635
+  },
+  {
+    "window": 2,
+    "filter": "CH4",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 7.737983833067119e-05,
+    "best_single_sharpness": 0.0001275127287954092,
+    "ratio_vs_best_single": 0.6068401097024996
+  },
+  {
+    "window": 3,
+    "filter": "IR",
+    "n_stacked": 5,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 8.465269638691097e-05,
+    "best_single_sharpness": 0.00012915136176161468,
+    "ratio_vs_best_single": 0.6554533783636091
+  },
+  {
+    "window": 3,
+    "filter": "R",
+    "n_stacked": 5,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.9681060772854835e-05,
+    "best_single_sharpness": 4.4878590415464714e-05,
+    "ratio_vs_best_single": 1.1070102762348621
+  },
+  {
+    "window": 3,
+    "filter": "G",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.582915764534846e-05,
+    "best_single_sharpness": 6.0001380916219205e-05,
+    "ratio_vs_best_single": 0.9304645458627614
+  },
+  {
+    "window": 3,
+    "filter": "B",
+    "n_stacked": 3,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 3.340749753988348e-05,
+    "best_single_sharpness": 4.2856481741182506e-05,
+    "ratio_vs_best_single": 0.7795203008412349
+  },
+  {
+    "window": 3,
+    "filter": "CH4",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 7.91401689639315e-05,
+    "best_single_sharpness": 0.0001275127287954092,
+    "ratio_vs_best_single": 0.6206452462554527
+  },
+  {
+    "window": 4,
+    "filter": "IR",
+    "n_stacked": 5,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 8.55254620546475e-05,
+    "best_single_sharpness": 0.00011924598220502958,
+    "ratio_vs_best_single": 0.7172188150339224
+  },
+  {
+    "window": 4,
+    "filter": "R",
+    "n_stacked": 5,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.9332847993355244e-05,
+    "best_single_sharpness": 4.675534364650957e-05,
+    "ratio_vs_best_single": 1.055127481605797
+  },
+  {
+    "window": 4,
+    "filter": "G",
+    "n_stacked": 5,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.162005982128903e-05,
+    "best_single_sharpness": 6.0001380916219205e-05,
+    "ratio_vs_best_single": 0.8603145299833493
+  },
+  {
+    "window": 4,
+    "filter": "B",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 3.8963953556958586e-05,
+    "best_single_sharpness": 5.0324662879575044e-05,
+    "ratio_vs_best_single": 0.7742516556980781
+  },
+  {
+    "window": 4,
+    "filter": "CH4",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 7.650159386685118e-05,
+    "best_single_sharpness": 0.0001275127287954092,
+    "ratio_vs_best_single": 0.5999526054343638
+  },
+  {
+    "window": 5,
+    "filter": "IR",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 9.075317939277738e-05,
+    "best_single_sharpness": 0.00011924598220502958,
+    "ratio_vs_best_single": 0.7610585926219121
+  },
+  {
+    "window": 5,
+    "filter": "R",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.320121297496371e-05,
+    "best_single_sharpness": 4.675534364650957e-05,
+    "ratio_vs_best_single": 0.9239845032812375
+  },
+  {
+    "window": 5,
+    "filter": "G",
+    "n_stacked": 5,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.238071389612742e-05,
+    "best_single_sharpness": 6.0001380916219205e-05,
+    "ratio_vs_best_single": 0.872991806126385
+  },
+  {
+    "window": 5,
+    "filter": "B",
+    "n_stacked": 5,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.090344373253174e-05,
+    "best_single_sharpness": 5.0324662879575044e-05,
+    "ratio_vs_best_single": 0.8127912119433783
+  },
+  {
+    "window": 5,
+    "filter": "CH4",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 6.401118298526853e-05,
+    "best_single_sharpness": 0.00010337172716390342,
+    "ratio_vs_best_single": 0.6192329831519031
+  },
+  {
+    "window": 6,
+    "filter": "IR",
+    "n_stacked": 5,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 8.600761066190898e-05,
+    "best_single_sharpness": 0.00011924598220502958,
+    "ratio_vs_best_single": 0.7212621261656339
+  },
+  {
+    "window": 6,
+    "filter": "R",
+    "n_stacked": 5,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.8123325541382656e-05,
+    "best_single_sharpness": 4.675534364650957e-05,
+    "ratio_vs_best_single": 1.0292583005103249
+  },
+  {
+    "window": 6,
+    "filter": "G",
+    "n_stacked": 5,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.2781379054067656e-05,
+    "best_single_sharpness": 6.0001380916219205e-05,
+    "ratio_vs_best_single": 0.8796694050719776
+  },
+  {
+    "window": 6,
+    "filter": "B",
+    "n_stacked": 5,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.343565888120793e-05,
+    "best_single_sharpness": 5.0324662879575044e-05,
+    "ratio_vs_best_single": 0.8631087899217083
+  },
+  {
+    "window": 6,
+    "filter": "CH4",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 7.094413012964651e-05,
+    "best_single_sharpness": 0.00010337172716390342,
+    "ratio_vs_best_single": 0.6863011006593651
+  },
+  {
+    "window": 7,
+    "filter": "IR",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 9.25886633922346e-05,
+    "best_single_sharpness": 0.00011924598220502958,
+    "ratio_vs_best_single": 0.7764510105928699
+  },
+  {
+    "window": 7,
+    "filter": "R",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.5434262574417517e-05,
+    "best_single_sharpness": 4.675534364650957e-05,
+    "ratio_vs_best_single": 0.9717448109871677
+  },
+  {
+    "window": 7,
+    "filter": "G",
+    "n_stacked": 5,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.27315896761138e-05,
+    "best_single_sharpness": 6.0001380916219205e-05,
+    "ratio_vs_best_single": 0.8788396012042403
+  },
+  {
+    "window": 7,
+    "filter": "B",
+    "n_stacked": 5,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.9441761802881956e-05,
+    "best_single_sharpness": 5.0324662879575044e-05,
+    "ratio_vs_best_single": 0.9824558968471218
+  },
+  {
+    "window": 7,
+    "filter": "CH4",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 8.554534724680707e-05,
+    "best_single_sharpness": 0.00013270463387016207,
+    "ratio_vs_best_single": 0.6446296919104155
+  },
+  {
+    "window": 8,
+    "filter": "IR",
+    "n_stacked": 3,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 8.85902700247243e-05,
+    "best_single_sharpness": 7.814032869646326e-05,
+    "ratio_vs_best_single": 1.1337330096070357
+  },
+  {
+    "window": 8,
+    "filter": "R",
+    "n_stacked": 3,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.76987479487434e-05,
+    "best_single_sharpness": 4.675534364650957e-05,
+    "ratio_vs_best_single": 1.0201774648341027
+  },
+  {
+    "window": 8,
+    "filter": "G",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.6626762670930475e-05,
+    "best_single_sharpness": 4.574222839437425e-05,
+    "ratio_vs_best_single": 1.2379537389983146
+  },
+  {
+    "window": 8,
+    "filter": "B",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.703683564206585e-05,
+    "best_single_sharpness": 5.0324662879575044e-05,
+    "ratio_vs_best_single": 1.1333774014254756
+  },
+  {
+    "window": 8,
+    "filter": "CH4",
+    "n_stacked": 4,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 7.030617416603491e-05,
+    "best_single_sharpness": 0.00013270463387016207,
+    "ratio_vs_best_single": 0.5297944172380772
+  },
+  {
+    "window": 9,
+    "filter": "IR",
+    "n_stacked": 3,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 9.257509373128414e-05,
+    "best_single_sharpness": 8.554258965887129e-05,
+    "ratio_vs_best_single": 1.0822105585119322
+  },
+  {
+    "window": 9,
+    "filter": "R",
+    "n_stacked": 3,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.420204979600385e-05,
+    "best_single_sharpness": 6.667099660262465e-05,
+    "ratio_vs_best_single": 0.8129779448035139
+  },
+  {
+    "window": 9,
+    "filter": "G",
+    "n_stacked": 3,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 6.556417065439746e-05,
+    "best_single_sharpness": 8.027246076380834e-05,
+    "ratio_vs_best_single": 0.8167704095594106
+  },
+  {
+    "window": 9,
+    "filter": "B",
+    "n_stacked": 3,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 6.0836959164589643e-05,
+    "best_single_sharpness": 4.82635987282265e-05,
+    "ratio_vs_best_single": 1.2605143579774074
+  },
+  {
+    "window": 9,
+    "filter": "CH4",
+    "n_stacked": 3,
+    "ring_crosses_disk": true,
+    "stack_sharpness": 0.00010422392369946465,
+    "best_single_sharpness": 0.00013270463387016207,
+    "ratio_vs_best_single": 0.7853827003617456
+  }
+]

@@ -1,0 +1,442 @@
+[
+  {
+    "window": 1,
+    "filter": "IR",
+    "n_stacked": 3,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 0.00011303603241685778,
+    "best_single_sharpness": 0.00012915136176161468,
+    "ratio_vs_best_single": 0.8752213749437479
+  },
+  {
+    "window": 1,
+    "filter": "R",
+    "n_stacked": 3,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.8175690355710685e-05,
+    "best_single_sharpness": 4.926154360873625e-05,
+    "ratio_vs_best_single": 1.1809554896975167
+  },
+  {
+    "window": 1,
+    "filter": "G",
+    "n_stacked": 3,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 6.133062561275437e-05,
+    "best_single_sharpness": 6.935674173291773e-05,
+    "ratio_vs_best_single": 0.8842777800740597
+  },
+  {
+    "window": 1,
+    "filter": "CH4",
+    "n_stacked": 3,
+    "geometry_source": "pose_independent+shape_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 3.230931906728074e-05,
+    "best_single_sharpness": 0.0001275127287954092,
+    "ratio_vs_best_single": 0.25338112808424157
+  },
+  {
+    "window": 2,
+    "filter": "IR",
+    "n_stacked": 4,
+    "geometry_source": "pose_independent+radius_shared+shape_disagreement_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 8.390216680709273e-05,
+    "best_single_sharpness": 0.00012915136176161468,
+    "ratio_vs_best_single": 0.6496421382064703
+  },
+  {
+    "window": 2,
+    "filter": "R",
+    "n_stacked": 4,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.3645715524908155e-05,
+    "best_single_sharpness": 4.926154360873625e-05,
+    "ratio_vs_best_single": 1.088997859080372
+  },
+  {
+    "window": 2,
+    "filter": "G",
+    "n_stacked": 4,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.4389212891692296e-05,
+    "best_single_sharpness": 6.935674173291773e-05,
+    "ratio_vs_best_single": 0.7841950404927741
+  },
+  {
+    "window": 2,
+    "filter": "B",
+    "n_stacked": 2,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 3.006187944265548e-05,
+    "best_single_sharpness": 3.458145511103794e-05,
+    "ratio_vs_best_single": 0.8693063766729737
+  },
+  {
+    "window": 2,
+    "filter": "CH4",
+    "n_stacked": 4,
+    "geometry_source": "pose_independent+shape_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 2.9986385925440118e-05,
+    "best_single_sharpness": 0.0001275127287954092,
+    "ratio_vs_best_single": 0.23516386331557912
+  },
+  {
+    "window": 3,
+    "filter": "IR",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+radius_shared+shape_disagreement_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 8.460682875011116e-05,
+    "best_single_sharpness": 0.00012915136176161468,
+    "ratio_vs_best_single": 0.6550982319975609
+  },
+  {
+    "window": 3,
+    "filter": "R",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.967094719177112e-05,
+    "best_single_sharpness": 4.4878590415464714e-05,
+    "ratio_vs_best_single": 1.1067849219848716
+  },
+  {
+    "window": 3,
+    "filter": "G",
+    "n_stacked": 4,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.587231134995818e-05,
+    "best_single_sharpness": 6.0001380916219205e-05,
+    "ratio_vs_best_single": 0.9311837577200681
+  },
+  {
+    "window": 3,
+    "filter": "B",
+    "n_stacked": 3,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 3.344209471833892e-05,
+    "best_single_sharpness": 4.2856481741182506e-05,
+    "ratio_vs_best_single": 0.7803275807916606
+  },
+  {
+    "window": 3,
+    "filter": "CH4",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+shape_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 2.8642483812291175e-05,
+    "best_single_sharpness": 0.0001275127287954092,
+    "ratio_vs_best_single": 0.22462450676784812
+  },
+  {
+    "window": 4,
+    "filter": "IR",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+radius_shared+shape_disagreement_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 8.549087942810729e-05,
+    "best_single_sharpness": 0.00011924598220502958,
+    "ratio_vs_best_single": 0.7169288042016853
+  },
+  {
+    "window": 4,
+    "filter": "R",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.933294258080423e-05,
+    "best_single_sharpness": 4.675534364650957e-05,
+    "ratio_vs_best_single": 1.0551295046355003
+  },
+  {
+    "window": 4,
+    "filter": "G",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.1651230023708194e-05,
+    "best_single_sharpness": 6.0001380916219205e-05,
+    "ratio_vs_best_single": 0.8608340214007667
+  },
+  {
+    "window": 4,
+    "filter": "B",
+    "n_stacked": 4,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 3.9011527405818924e-05,
+    "best_single_sharpness": 5.0324662879575044e-05,
+    "ratio_vs_best_single": 0.7751969943479202
+  },
+  {
+    "window": 4,
+    "filter": "CH4",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+shape_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 2.8002836188534275e-05,
+    "best_single_sharpness": 0.0001275127287954092,
+    "ratio_vs_best_single": 0.219608163460011
+  },
+  {
+    "window": 5,
+    "filter": "IR",
+    "n_stacked": 4,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 9.075252455659211e-05,
+    "best_single_sharpness": 0.00011924598220502958,
+    "ratio_vs_best_single": 0.7610531011481269
+  },
+  {
+    "window": 5,
+    "filter": "R",
+    "n_stacked": 4,
+    "geometry_source": "pose_independent+radius_shared+shape_disagreement_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.3251591705484316e-05,
+    "best_single_sharpness": 4.675534364650957e-05,
+    "ratio_vs_best_single": 0.9250620000247433
+  },
+  {
+    "window": 5,
+    "filter": "G",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+radius_shared+shape_disagreement_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.261853220872581e-05,
+    "best_single_sharpness": 6.0001380916219205e-05,
+    "ratio_vs_best_single": 0.8769553534475786
+  },
+  {
+    "window": 5,
+    "filter": "B",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+radius_shared+shape_disagreement_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.09444110118784e-05,
+    "best_single_sharpness": 5.0324662879575044e-05,
+    "ratio_vs_best_single": 0.8136052716310644
+  },
+  {
+    "window": 5,
+    "filter": "CH4",
+    "n_stacked": 4,
+    "geometry_source": "pose_independent+shape_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 3.3803287806222215e-05,
+    "best_single_sharpness": 0.00010337172716390342,
+    "ratio_vs_best_single": 0.32700709114228727
+  },
+  {
+    "window": 6,
+    "filter": "IR",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 8.599062857683748e-05,
+    "best_single_sharpness": 0.00011924598220502958,
+    "ratio_vs_best_single": 0.7211197139454696
+  },
+  {
+    "window": 6,
+    "filter": "R",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+radius_shared+shape_disagreement_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.8121026338776574e-05,
+    "best_single_sharpness": 4.675534364650957e-05,
+    "ratio_vs_best_single": 1.029209125326768
+  },
+  {
+    "window": 6,
+    "filter": "G",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+radius_shared+shape_disagreement_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.286264422466047e-05,
+    "best_single_sharpness": 6.0001380916219205e-05,
+    "ratio_vs_best_single": 0.8810237934102441
+  },
+  {
+    "window": 6,
+    "filter": "B",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+radius_shared+shape_disagreement_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.34609355579596e-05,
+    "best_single_sharpness": 5.0324662879575044e-05,
+    "ratio_vs_best_single": 0.8636110620742741
+  },
+  {
+    "window": 6,
+    "filter": "CH4",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+shape_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 2.7477060939418152e-05,
+    "best_single_sharpness": 0.00010337172716390342,
+    "ratio_vs_best_single": 0.2658082794326467
+  },
+  {
+    "window": 7,
+    "filter": "IR",
+    "n_stacked": 4,
+    "geometry_source": "pose_independent+radius_shared+shape_disagreement_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 9.270763985114172e-05,
+    "best_single_sharpness": 0.00011924598220502958,
+    "ratio_vs_best_single": 0.7774487503632762
+  },
+  {
+    "window": 7,
+    "filter": "R",
+    "n_stacked": 4,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.543750765151344e-05,
+    "best_single_sharpness": 4.675534364650957e-05,
+    "ratio_vs_best_single": 0.9718142164677575
+  },
+  {
+    "window": 7,
+    "filter": "G",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.265521031105891e-05,
+    "best_single_sharpness": 6.0001380916219205e-05,
+    "ratio_vs_best_single": 0.87756664108418
+  },
+  {
+    "window": 7,
+    "filter": "B",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.929490387439728e-05,
+    "best_single_sharpness": 5.0324662879575044e-05,
+    "ratio_vs_best_single": 0.979537686965893
+  },
+  {
+    "window": 7,
+    "filter": "CH4",
+    "n_stacked": 5,
+    "geometry_source": "pose_independent+shape_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.121518577449024e-05,
+    "best_single_sharpness": 0.00013270463387016207,
+    "ratio_vs_best_single": 0.31057834660706035
+  },
+  {
+    "window": 8,
+    "filter": "IR",
+    "n_stacked": 3,
+    "geometry_source": "pose_independent+radius_shared+shape_disagreement_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 8.854598127072677e-05,
+    "best_single_sharpness": 7.814032869646326e-05,
+    "ratio_vs_best_single": 1.1331662247631995
+  },
+  {
+    "window": 8,
+    "filter": "R",
+    "n_stacked": 3,
+    "geometry_source": "pose_independent+radius_shared+shape_disagreement_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 4.772018291987479e-05,
+    "best_single_sharpness": 4.675534364650957e-05,
+    "ratio_vs_best_single": 1.0206359144884019
+  },
+  {
+    "window": 8,
+    "filter": "G",
+    "n_stacked": 4,
+    "geometry_source": "pose_independent+radius_shared+shape_disagreement_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.661898467224091e-05,
+    "best_single_sharpness": 4.574222839437425e-05,
+    "ratio_vs_best_single": 1.2377836992131406
+  },
+  {
+    "window": 8,
+    "filter": "B",
+    "n_stacked": 4,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.6915858294814825e-05,
+    "best_single_sharpness": 5.0324662879575044e-05,
+    "ratio_vs_best_single": 1.130973463866261
+  },
+  {
+    "window": 8,
+    "filter": "CH4",
+    "n_stacked": 4,
+    "geometry_source": "pose_independent+shape_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 3.139014370390214e-05,
+    "best_single_sharpness": 0.00013270463387016207,
+    "ratio_vs_best_single": 0.23654142879904397
+  },
+  {
+    "window": 9,
+    "filter": "IR",
+    "n_stacked": 3,
+    "geometry_source": "pose_independent+radius_shared+shape_disagreement_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 9.280336234951392e-05,
+    "best_single_sharpness": 8.554258965887129e-05,
+    "ratio_vs_best_single": 1.08487903767699
+  },
+  {
+    "window": 9,
+    "filter": "R",
+    "n_stacked": 3,
+    "geometry_source": "pose_independent+radius_shared+shape_disagreement_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 5.445731585496105e-05,
+    "best_single_sharpness": 6.667099660262465e-05,
+    "ratio_vs_best_single": 0.8168066870147433
+  },
+  {
+    "window": 9,
+    "filter": "G",
+    "n_stacked": 3,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 6.559213215950876e-05,
+    "best_single_sharpness": 8.027246076380834e-05,
+    "ratio_vs_best_single": 0.8171187420366419
+  },
+  {
+    "window": 9,
+    "filter": "B",
+    "n_stacked": 3,
+    "geometry_source": "pose_independent+radius_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 6.0837934142909944e-05,
+    "best_single_sharpness": 4.82635987282265e-05,
+    "ratio_vs_best_single": 1.2605345590885138
+  },
+  {
+    "window": 9,
+    "filter": "CH4",
+    "n_stacked": 3,
+    "geometry_source": "pose_independent+shape_shared",
+    "ring_crosses_disk": true,
+    "stack_sharpness": 8.633067773189396e-05,
+    "best_single_sharpness": 0.00013270463387016207,
+    "ratio_vs_best_single": 0.65054757482214
+  }
+]

@@ -1,0 +1,49 @@
+{
+  "window": 1,
+  "filter": "R",
+  "reference_stem": "2026-08-07-1623_4-U-R-Sat_ser_crop_lucky",
+  "real_weights": [
+    0.8031,
+    0.8183,
+    0.9303
+  ],
+  "pole_pa_deg": -7.0,
+  "semi_a": 67.99175156997896,
+  "ground_truth_n1_transition_width": 1.1548025422908004,
+  "real_n3_production_transition_width": 1.1756451520166493,
+  "ideal_3x_identical_stack_transition_width": 1.1548025422908004,
+  "ideal_stack_max_abs_diff_pre_sharpen": 0.0,
+  "ideal_stack_max_abs_diff_post_sharpen": 0.0,
+  "subpixel_shift_calibration": [
+    {
+      "shift_px": 0.3,
+      "transition_width": 1.154827583378841,
+      "delta_vs_gt": 2.5041088040689274e-05
+    },
+    {
+      "shift_px": 0.5,
+      "transition_width": 1.1549253531032821,
+      "delta_vs_gt": 0.00012281081248177728
+    },
+    {
+      "shift_px": 1.0,
+      "transition_width": 1.1556980186849177,
+      "delta_vs_gt": 0.000895476394117356
+    },
+    {
+      "shift_px": 2.0,
+      "transition_width": 1.158284453191035,
+      "delta_vs_gt": 0.0034819109002346416
+    },
+    {
+      "shift_px": 3.0,
+      "transition_width": 1.162358998409978,
+      "delta_vs_gt": 0.007556456119177657
+    },
+    {
+      "shift_px": 5.0,
+      "transition_width": 1.1742162067568431,
+      "delta_vs_gt": 0.019413664466042757
+    }
+  ]
+}

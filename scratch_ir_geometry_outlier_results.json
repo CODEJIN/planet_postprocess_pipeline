@@ -1,0 +1,1055 @@
+{
+  "window_01": {
+    "IR": {
+      "reference_stem": "2026-08-07-1621_8-U-IR-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 203.481,
+        "cy": 200.271,
+        "semi_a": 65.477,
+        "semi_b": 55.106,
+        "aspect_ratio": 0.8416,
+        "angle_major_deg": 174.3,
+        "confidence": 0.401,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          203.48,
+          200.27
+        ],
+        "disk_radius_px": 67.45,
+        "own_disk_radius_px": 65.48,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "R": {
+      "reference_stem": "2026-08-07-1623_4-U-R-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 202.348,
+        "cy": 197.782,
+        "semi_a": 67.656,
+        "semi_b": 59.449,
+        "aspect_ratio": 0.8787,
+        "angle_major_deg": 175.532,
+        "confidence": 0.403,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          202.35,
+          197.78
+        ],
+        "disk_radius_px": 67.45,
+        "own_disk_radius_px": 67.66,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "G": {
+      "reference_stem": "2026-08-07-1617_2-U-G-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 202.306,
+        "cy": 197.091,
+        "semi_a": 67.454,
+        "semi_b": 60.99,
+        "aspect_ratio": 0.9042,
+        "angle_major_deg": 174.27,
+        "confidence": 0.401,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          202.31,
+          197.09
+        ],
+        "disk_radius_px": 67.45,
+        "own_disk_radius_px": 67.45,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "B": {
+      "reference_stem": "2026-08-07-1634_2-U-B-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 204.961,
+        "cy": 199.178,
+        "semi_a": 67.879,
+        "semi_b": 61.931,
+        "aspect_ratio": 0.9124,
+        "angle_major_deg": 169.474,
+        "confidence": 0.4,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          204.96,
+          199.18
+        ],
+        "disk_radius_px": 67.45,
+        "own_disk_radius_px": 67.88,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "CH4": {
+      "reference_stem": "2026-08-07-1620_3-U-CH4-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 203.681,
+        "cy": 205.792,
+        "semi_a": 56.0,
+        "semi_b": 56.0,
+        "aspect_ratio": 1.0,
+        "angle_major_deg": 0.0,
+        "confidence": 0.3,
+        "shape_reliable": false
+      },
+      "logged": {
+        "disk_center_px": [
+          203.68,
+          205.79
+        ],
+        "disk_radius_px": 56.0,
+        "own_disk_radius_px": 56.0,
+        "radius_shared": false,
+        "geometry_source": "pose_independent+shape_shared"
+      }
+    }
+  },
+  "window_02": {
+    "IR": {
+      "reference_stem": "2026-08-07-1629_5-U-IR-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 201.356,
+        "cy": 199.354,
+        "semi_a": 66.097,
+        "semi_b": 56.131,
+        "aspect_ratio": 0.8492,
+        "angle_major_deg": 176.124,
+        "confidence": 0.405,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          201.36,
+          199.35
+        ],
+        "disk_radius_px": 66.52,
+        "own_disk_radius_px": 66.1,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "R": {
+      "reference_stem": "2026-08-07-1631_1-U-R-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 204.794,
+        "cy": 199.51,
+        "semi_a": 66.518,
+        "semi_b": 60.039,
+        "aspect_ratio": 0.9026,
+        "angle_major_deg": 177.137,
+        "confidence": 0.408,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          204.79,
+          199.51
+        ],
+        "disk_radius_px": 66.52,
+        "own_disk_radius_px": 66.52,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "G": {
+      "reference_stem": "2026-08-07-1632_6-U-G-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 203.72,
+        "cy": 199.997,
+        "semi_a": 66.788,
+        "semi_b": 61.551,
+        "aspect_ratio": 0.9216,
+        "angle_major_deg": 0.496,
+        "confidence": 0.41,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          203.72,
+          200.0
+        ],
+        "disk_radius_px": 66.52,
+        "own_disk_radius_px": 66.79,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "B": {
+      "reference_stem": "2026-08-07-1634_2-U-B-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 204.961,
+        "cy": 199.178,
+        "semi_a": 67.879,
+        "semi_b": 61.931,
+        "aspect_ratio": 0.9124,
+        "angle_major_deg": 169.474,
+        "confidence": 0.4,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          204.96,
+          199.18
+        ],
+        "disk_radius_px": 66.52,
+        "own_disk_radius_px": 67.88,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "CH4": {
+      "reference_stem": "2026-08-07-1628_0-U-CH4-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 203.118,
+        "cy": 201.492,
+        "semi_a": 56.5,
+        "semi_b": 56.5,
+        "aspect_ratio": 1.0,
+        "angle_major_deg": 0.0,
+        "confidence": 0.3,
+        "shape_reliable": false
+      },
+      "logged": {
+        "disk_center_px": [
+          203.12,
+          201.49
+        ],
+        "disk_radius_px": 56.5,
+        "own_disk_radius_px": 56.5,
+        "radius_shared": false,
+        "geometry_source": "pose_independent+shape_shared"
+      }
+    }
+  },
+  "window_03": {
+    "IR": {
+      "reference_stem": "2026-08-07-1637_3-U-IR-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 205.013,
+        "cy": 201.157,
+        "semi_a": 66.298,
+        "semi_b": 55.84,
+        "aspect_ratio": 0.8423,
+        "angle_major_deg": 172.942,
+        "confidence": 0.406,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          205.01,
+          201.16
+        ],
+        "disk_radius_px": 66.3,
+        "own_disk_radius_px": 66.3,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "R": {
+      "reference_stem": "2026-08-07-1638_8-U-R-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 203.925,
+        "cy": 199.75,
+        "semi_a": 66.22,
+        "semi_b": 59.769,
+        "aspect_ratio": 0.9026,
+        "angle_major_deg": 179.732,
+        "confidence": 0.41,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          203.93,
+          199.75
+        ],
+        "disk_radius_px": 66.3,
+        "own_disk_radius_px": 66.22,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "G": {
+      "reference_stem": "2026-08-07-1640_3-U-G-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 200.209,
+        "cy": 200.909,
+        "semi_a": 66.651,
+        "semi_b": 61.527,
+        "aspect_ratio": 0.9231,
+        "angle_major_deg": 0.926,
+        "confidence": 0.406,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          200.21,
+          200.91
+        ],
+        "disk_radius_px": 66.3,
+        "own_disk_radius_px": 66.65,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "B": {
+      "reference_stem": "2026-08-07-1634_2-U-B-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 204.961,
+        "cy": 199.178,
+        "semi_a": 67.879,
+        "semi_b": 61.931,
+        "aspect_ratio": 0.9124,
+        "angle_major_deg": 169.474,
+        "confidence": 0.4,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          204.96,
+          199.18
+        ],
+        "disk_radius_px": 66.3,
+        "own_disk_radius_px": 67.88,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "CH4": {
+      "reference_stem": "2026-08-07-1635_7-U-CH4-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 194.218,
+        "cy": 193.878,
+        "semi_a": 56.0,
+        "semi_b": 56.0,
+        "aspect_ratio": 1.0,
+        "angle_major_deg": 0.0,
+        "confidence": 0.3,
+        "shape_reliable": false
+      },
+      "logged": {
+        "disk_center_px": [
+          194.22,
+          193.88
+        ],
+        "disk_radius_px": 56.0,
+        "own_disk_radius_px": 56.0,
+        "radius_shared": false,
+        "geometry_source": "pose_independent+shape_shared"
+      }
+    }
+  },
+  "window_04": {
+    "IR": {
+      "reference_stem": "2026-08-07-1645_0-U-IR-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 204.909,
+        "cy": 200.249,
+        "semi_a": 66.233,
+        "semi_b": 55.802,
+        "aspect_ratio": 0.8425,
+        "angle_major_deg": 174.798,
+        "confidence": 0.404,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          204.91,
+          200.25
+        ],
+        "disk_radius_px": 66.53,
+        "own_disk_radius_px": 66.23,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "R": {
+      "reference_stem": "2026-08-07-1646_5-U-R-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 203.753,
+        "cy": 203.09,
+        "semi_a": 66.529,
+        "semi_b": 59.7,
+        "aspect_ratio": 0.8974,
+        "angle_major_deg": 178.08,
+        "confidence": 0.405,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          203.75,
+          203.09
+        ],
+        "disk_radius_px": 66.53,
+        "own_disk_radius_px": 66.53,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "G": {
+      "reference_stem": "2026-08-07-1648_1-U-G-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 203.683,
+        "cy": 201.575,
+        "semi_a": 66.819,
+        "semi_b": 61.539,
+        "aspect_ratio": 0.921,
+        "angle_major_deg": 1.189,
+        "confidence": 0.41,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          203.68,
+          201.58
+        ],
+        "disk_radius_px": 66.53,
+        "own_disk_radius_px": 66.82,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "B": {
+      "reference_stem": "2026-08-07-1641_9-U-B-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 210.019,
+        "cy": 198.439,
+        "semi_a": 67.418,
+        "semi_b": 62.29,
+        "aspect_ratio": 0.9239,
+        "angle_major_deg": 170.027,
+        "confidence": 0.405,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          210.02,
+          198.44
+        ],
+        "disk_radius_px": 66.53,
+        "own_disk_radius_px": 67.42,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "CH4": {
+      "reference_stem": "2026-08-07-1643_4-U-CH4-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 199.531,
+        "cy": 192.502,
+        "semi_a": 56.5,
+        "semi_b": 56.5,
+        "aspect_ratio": 1.0,
+        "angle_major_deg": 0.0,
+        "confidence": 0.3,
+        "shape_reliable": false
+      },
+      "logged": {
+        "disk_center_px": [
+          199.53,
+          192.5
+        ],
+        "disk_radius_px": 56.5,
+        "own_disk_radius_px": 56.5,
+        "radius_shared": false,
+        "geometry_source": "pose_independent+shape_shared"
+      }
+    }
+  },
+  "window_05": {
+    "IR": {
+      "reference_stem": "2026-08-07-1652_7-U-IR-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 204.442,
+        "cy": 197.714,
+        "semi_a": 66.367,
+        "semi_b": 56.556,
+        "aspect_ratio": 0.8522,
+        "angle_major_deg": 176.235,
+        "confidence": 0.407,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          204.44,
+          197.71
+        ],
+        "disk_radius_px": 66.37,
+        "own_disk_radius_px": 66.37,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "R": {
+      "reference_stem": "2026-08-07-1654_3-U-R-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 206.469,
+        "cy": 199.836,
+        "semi_a": 64.951,
+        "semi_b": 58.898,
+        "aspect_ratio": 0.9068,
+        "angle_major_deg": 177.245,
+        "confidence": 0.406,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          206.47,
+          199.84
+        ],
+        "disk_radius_px": 66.37,
+        "own_disk_radius_px": 64.95,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "G": {
+      "reference_stem": "2026-08-07-1655_8-U-G-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 203.261,
+        "cy": 200.452,
+        "semi_a": 66.793,
+        "semi_b": 61.4,
+        "aspect_ratio": 0.9193,
+        "angle_major_deg": 177.883,
+        "confidence": 0.402,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          203.26,
+          200.45
+        ],
+        "disk_radius_px": 66.37,
+        "own_disk_radius_px": 66.79,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "B": {
+      "reference_stem": "2026-08-07-1649_6-U-B-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 206.399,
+        "cy": 199.761,
+        "semi_a": 67.424,
+        "semi_b": 62.236,
+        "aspect_ratio": 0.9231,
+        "angle_major_deg": 170.454,
+        "confidence": 0.402,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          206.4,
+          199.76
+        ],
+        "disk_radius_px": 66.37,
+        "own_disk_radius_px": 67.42,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "CH4": {
+      "reference_stem": "2026-08-07-1651_2-U-CH4-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 200.197,
+        "cy": 204.353,
+        "semi_a": 56.5,
+        "semi_b": 56.5,
+        "aspect_ratio": 1.0,
+        "angle_major_deg": 0.0,
+        "confidence": 0.3,
+        "shape_reliable": false
+      },
+      "logged": {
+        "disk_center_px": [
+          200.2,
+          204.35
+        ],
+        "disk_radius_px": 56.5,
+        "own_disk_radius_px": 56.5,
+        "radius_shared": false,
+        "geometry_source": "pose_independent+shape_shared"
+      }
+    }
+  },
+  "window_06": {
+    "IR": {
+      "reference_stem": "2026-08-07-1700_4-U-IR-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 204.586,
+        "cy": 200.815,
+        "semi_a": 66.407,
+        "semi_b": 55.939,
+        "aspect_ratio": 0.8424,
+        "angle_major_deg": 174.651,
+        "confidence": 0.406,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          204.59,
+          200.81
+        ],
+        "disk_radius_px": 66.41,
+        "own_disk_radius_px": 66.41,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "R": {
+      "reference_stem": "2026-08-07-1702_0-U-R-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 204.863,
+        "cy": 200.386,
+        "semi_a": 66.098,
+        "semi_b": 59.485,
+        "aspect_ratio": 0.9,
+        "angle_major_deg": 178.487,
+        "confidence": 0.405,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          204.86,
+          200.39
+        ],
+        "disk_radius_px": 66.41,
+        "own_disk_radius_px": 66.1,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "G": {
+      "reference_stem": "2026-08-07-1703_5-U-G-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 204.109,
+        "cy": 199.758,
+        "semi_a": 66.523,
+        "semi_b": 61.402,
+        "aspect_ratio": 0.923,
+        "angle_major_deg": 1.655,
+        "confidence": 0.404,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          204.11,
+          199.76
+        ],
+        "disk_radius_px": 66.41,
+        "own_disk_radius_px": 66.52,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "B": {
+      "reference_stem": "2026-08-07-1657_3-U-B-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 204.759,
+        "cy": 198.381,
+        "semi_a": 67.549,
+        "semi_b": 63.42,
+        "aspect_ratio": 0.9389,
+        "angle_major_deg": 172.919,
+        "confidence": 0.404,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          204.76,
+          198.38
+        ],
+        "disk_radius_px": 66.41,
+        "own_disk_radius_px": 67.55,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "CH4": {
+      "reference_stem": "2026-08-07-1658_9-U-CH4-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 206.067,
+        "cy": 197.518,
+        "semi_a": 56.5,
+        "semi_b": 56.5,
+        "aspect_ratio": 1.0,
+        "angle_major_deg": 0.0,
+        "confidence": 0.3,
+        "shape_reliable": false
+      },
+      "logged": {
+        "disk_center_px": [
+          206.07,
+          197.52
+        ],
+        "disk_radius_px": 56.5,
+        "own_disk_radius_px": 56.5,
+        "radius_shared": false,
+        "geometry_source": "pose_independent+shape_shared"
+      }
+    }
+  },
+  "window_07": {
+    "IR": {
+      "reference_stem": "2026-08-07-1708_2-U-IR-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 204.742,
+        "cy": 200.578,
+        "semi_a": 66.353,
+        "semi_b": 55.845,
+        "aspect_ratio": 0.8416,
+        "angle_major_deg": 175.017,
+        "confidence": 0.4,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          204.74,
+          200.58
+        ],
+        "disk_radius_px": 66.42,
+        "own_disk_radius_px": 66.35,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "R": {
+      "reference_stem": "2026-08-07-1709_7-U-R-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 203.048,
+        "cy": 200.343,
+        "semi_a": 66.421,
+        "semi_b": 59.645,
+        "aspect_ratio": 0.898,
+        "angle_major_deg": 178.081,
+        "confidence": 0.405,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          203.05,
+          200.34
+        ],
+        "disk_radius_px": 66.42,
+        "own_disk_radius_px": 66.42,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "G": {
+      "reference_stem": "2026-08-07-1711_2-U-G-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 203.203,
+        "cy": 200.388,
+        "semi_a": 66.61,
+        "semi_b": 61.131,
+        "aspect_ratio": 0.9177,
+        "angle_major_deg": 2.176,
+        "confidence": 0.404,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          203.2,
+          200.39
+        ],
+        "disk_radius_px": 66.42,
+        "own_disk_radius_px": 66.61,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "B": {
+      "reference_stem": "2026-08-07-1705_1-U-B-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 205.917,
+        "cy": 202.483,
+        "semi_a": 67.799,
+        "semi_b": 63.111,
+        "aspect_ratio": 0.9309,
+        "angle_major_deg": 167.732,
+        "confidence": 0.404,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          205.92,
+          202.48
+        ],
+        "disk_radius_px": 66.42,
+        "own_disk_radius_px": 67.8,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "CH4": {
+      "reference_stem": "2026-08-07-1706_6-U-CH4-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 197.254,
+        "cy": 205.931,
+        "semi_a": 56.0,
+        "semi_b": 56.0,
+        "aspect_ratio": 1.0,
+        "angle_major_deg": 0.0,
+        "confidence": 0.3,
+        "shape_reliable": false
+      },
+      "logged": {
+        "disk_center_px": [
+          197.25,
+          205.93
+        ],
+        "disk_radius_px": 56.0,
+        "own_disk_radius_px": 56.0,
+        "radius_shared": false,
+        "geometry_source": "pose_independent+shape_shared"
+      }
+    }
+  },
+  "window_08": {
+    "IR": {
+      "reference_stem": "2026-08-07-1708_2-U-IR-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 204.742,
+        "cy": 200.578,
+        "semi_a": 66.353,
+        "semi_b": 55.845,
+        "aspect_ratio": 0.8416,
+        "angle_major_deg": 175.017,
+        "confidence": 0.4,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          204.74,
+          200.58
+        ],
+        "disk_radius_px": 66.42,
+        "own_disk_radius_px": 66.35,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "R": {
+      "reference_stem": "2026-08-07-1709_7-U-R-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 203.048,
+        "cy": 200.343,
+        "semi_a": 66.421,
+        "semi_b": 59.645,
+        "aspect_ratio": 0.898,
+        "angle_major_deg": 178.081,
+        "confidence": 0.405,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          203.05,
+          200.34
+        ],
+        "disk_radius_px": 66.42,
+        "own_disk_radius_px": 66.42,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "G": {
+      "reference_stem": "2026-08-07-1719_0-U-G-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 203.3,
+        "cy": 197.125,
+        "semi_a": 68.24,
+        "semi_b": 61.753,
+        "aspect_ratio": 0.9049,
+        "angle_major_deg": 172.044,
+        "confidence": 0.409,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          203.3,
+          197.13
+        ],
+        "disk_radius_px": 66.42,
+        "own_disk_radius_px": 68.24,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "B": {
+      "reference_stem": "2026-08-07-1720_5-U-B-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 206.668,
+        "cy": 201.757,
+        "semi_a": 67.156,
+        "semi_b": 63.919,
+        "aspect_ratio": 0.9518,
+        "angle_major_deg": 167.372,
+        "confidence": 0.41,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          206.67,
+          201.76
+        ],
+        "disk_radius_px": 66.42,
+        "own_disk_radius_px": 67.16,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "CH4": {
+      "reference_stem": "2026-08-07-1714_3-U-CH4-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 197.927,
+        "cy": 200.692,
+        "semi_a": 56.5,
+        "semi_b": 56.5,
+        "aspect_ratio": 1.0,
+        "angle_major_deg": 0.0,
+        "confidence": 0.3,
+        "shape_reliable": false
+      },
+      "logged": {
+        "disk_center_px": [
+          197.93,
+          200.69
+        ],
+        "disk_radius_px": 56.5,
+        "own_disk_radius_px": 56.5,
+        "radius_shared": false,
+        "geometry_source": "pose_independent+shape_shared"
+      }
+    }
+  },
+  "window_09": {
+    "IR": {
+      "reference_stem": "2026-08-07-1723_6-U-IR-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 203.84,
+        "cy": 199.191,
+        "semi_a": 66.798,
+        "semi_b": 56.7,
+        "aspect_ratio": 0.8488,
+        "angle_major_deg": 173.884,
+        "confidence": 0.407,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          203.84,
+          199.19
+        ],
+        "disk_radius_px": 67.16,
+        "own_disk_radius_px": 66.8,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "R": {
+      "reference_stem": "2026-08-07-1725_1-U-R-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 203.74,
+        "cy": 199.938,
+        "semi_a": 67.449,
+        "semi_b": 60.693,
+        "aspect_ratio": 0.8998,
+        "angle_major_deg": 177.153,
+        "confidence": 0.403,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          203.74,
+          199.94
+        ],
+        "disk_radius_px": 67.16,
+        "own_disk_radius_px": 67.45,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "G": {
+      "reference_stem": "2026-08-07-1726_7-U-G-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 202.021,
+        "cy": 197.344,
+        "semi_a": 67.475,
+        "semi_b": 62.158,
+        "aspect_ratio": 0.9212,
+        "angle_major_deg": 179.605,
+        "confidence": 0.407,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          202.02,
+          197.34
+        ],
+        "disk_radius_px": 67.16,
+        "own_disk_radius_px": 67.47,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "B": {
+      "reference_stem": "2026-08-07-1720_5-U-B-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 206.668,
+        "cy": 201.757,
+        "semi_a": 67.156,
+        "semi_b": 63.919,
+        "aspect_ratio": 0.9518,
+        "angle_major_deg": 167.372,
+        "confidence": 0.41,
+        "shape_reliable": true
+      },
+      "logged": {
+        "disk_center_px": [
+          206.67,
+          201.76
+        ],
+        "disk_radius_px": 67.16,
+        "own_disk_radius_px": 67.16,
+        "radius_shared": true,
+        "geometry_source": "pose_independent+radius_shared"
+      }
+    },
+    "CH4": {
+      "reference_stem": "2026-08-07-1722_1-U-CH4-Sat_ser_crop_lucky",
+      "own_recomputed": {
+        "cx": 201.447,
+        "cy": 205.102,
+        "semi_a": 56.5,
+        "semi_b": 56.5,
+        "aspect_ratio": 1.0,
+        "angle_major_deg": 0.0,
+        "confidence": 0.3,
+        "shape_reliable": false
+      },
+      "logged": {
+        "disk_center_px": [
+          201.45,
+          205.1
+        ],
+        "disk_radius_px": 56.5,
+        "own_disk_radius_px": 56.5,
+        "radius_shared": false,
+        "geometry_source": "pose_independent+shape_shared"
+      }
+    }
+  }
+}

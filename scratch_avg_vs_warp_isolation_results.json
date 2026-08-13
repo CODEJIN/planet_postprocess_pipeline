@@ -1,0 +1,100 @@
+[
+  {
+    "window": "window_01",
+    "filter": "IR",
+    "n_frames": 3,
+    "best_stem": "2026-08-07-1621_8-U-IR-Sat_ser_crop_lucky",
+    "best_single_sharpness": 8.93643664312549e-06,
+    "translation_only_avg_sharpness": 6.76605759508675e-06,
+    "real_step04_sharpness": 7.423241640935885e-06,
+    "avg_vs_best_ratio": 0.7571314904684808,
+    "step04_vs_avg_ratio": 1.0971295376389283,
+    "per_frame_sharp": {
+      "2026-08-07-1621_8-U-IR-Sat_ser_crop_lucky": 8.93643664312549e-06,
+      "2026-08-07-1629_5-U-IR-Sat_ser_crop_lucky": 7.138615728763398e-06,
+      "2026-08-07-1637_3-U-IR-Sat_ser_crop_lucky": 4.766537585965125e-06
+    }
+  },
+  {
+    "window": "window_01",
+    "filter": "R",
+    "n_frames": 3,
+    "best_stem": "2026-08-07-1638_8-U-R-Sat_ser_crop_lucky",
+    "best_single_sharpness": 3.267503416282125e-06,
+    "translation_only_avg_sharpness": 3.9004730751912575e-06,
+    "real_step04_sharpness": 4.080550752405543e-06,
+    "avg_vs_best_ratio": 1.1937166020255754,
+    "step04_vs_avg_ratio": 1.0461681631286368,
+    "per_frame_sharp": {
+      "2026-08-07-1623_4-U-R-Sat_ser_crop_lucky": 5.465092272061156e-06,
+      "2026-08-07-1631_1-U-R-Sat_ser_crop_lucky": 4.081884526385693e-06,
+      "2026-08-07-1638_8-U-R-Sat_ser_crop_lucky": 3.267503416282125e-06
+    }
+  },
+  {
+    "window": "window_05",
+    "filter": "IR",
+    "n_frames": 4,
+    "best_stem": "2026-08-07-1652_7-U-IR-Sat_ser_crop_lucky",
+    "best_single_sharpness": 8.183814315998461e-06,
+    "translation_only_avg_sharpness": 5.976984994049417e-06,
+    "real_step04_sharpness": 5.638340098812478e-06,
+    "avg_vs_best_ratio": 0.7303422051457186,
+    "step04_vs_avg_ratio": 0.9433418528615869,
+    "per_frame_sharp": {
+      "2026-08-07-1645_0-U-IR-Sat_ser_crop_lucky": 5.607244929706212e-06,
+      "2026-08-07-1652_7-U-IR-Sat_ser_crop_lucky": 8.183814315998461e-06,
+      "2026-08-07-1700_4-U-IR-Sat_ser_crop_lucky": 5.3980056691216305e-06,
+      "2026-08-07-1708_2-U-IR-Sat_ser_crop_lucky": 5.910724667046452e-06
+    }
+  },
+  {
+    "window": "window_05",
+    "filter": "R",
+    "n_frames": 4,
+    "best_stem": "2026-08-07-1702_0-U-R-Sat_ser_crop_lucky",
+    "best_single_sharpness": 3.1189342735160608e-06,
+    "translation_only_avg_sharpness": 2.3125710413296474e-06,
+    "real_step04_sharpness": 2.859823553080787e-06,
+    "avg_vs_best_ratio": 0.7414619349200399,
+    "step04_vs_avg_ratio": 1.2366424650187129,
+    "per_frame_sharp": {
+      "2026-08-07-1638_8-U-R-Sat_ser_crop_lucky": 3.267503416282125e-06,
+      "2026-08-07-1654_3-U-R-Sat_ser_crop_lucky": 2.9583416107925586e-06,
+      "2026-08-07-1702_0-U-R-Sat_ser_crop_lucky": 3.1189342735160608e-06,
+      "2026-08-07-1709_7-U-R-Sat_ser_crop_lucky": 2.8957654194528004e-06
+    }
+  },
+  {
+    "window": "window_09",
+    "filter": "IR",
+    "n_frames": 3,
+    "best_stem": "2026-08-07-1708_2-U-IR-Sat_ser_crop_lucky",
+    "best_single_sharpness": 5.910724667046452e-06,
+    "translation_only_avg_sharpness": 5.961360329820309e-06,
+    "real_step04_sharpness": 5.425645667855861e-06,
+    "avg_vs_best_ratio": 1.008566743610333,
+    "step04_vs_avg_ratio": 0.9101355005694487,
+    "per_frame_sharp": {
+      "2026-08-07-1708_2-U-IR-Sat_ser_crop_lucky": 5.910724667046452e-06,
+      "2026-08-07-1715_9-U-IR-Sat_ser_crop_lucky": 5.337369657354429e-06,
+      "2026-08-07-1723_6-U-IR-Sat_ser_crop_lucky": 7.570112757093739e-06
+    }
+  },
+  {
+    "window": "window_09",
+    "filter": "R",
+    "n_frames": 3,
+    "best_stem": "2026-08-07-1725_1-U-R-Sat_ser_crop_lucky",
+    "best_single_sharpness": 4.4219618757779244e-06,
+    "translation_only_avg_sharpness": 3.4997619877685793e-06,
+    "real_step04_sharpness": 3.43884744324896e-06,
+    "avg_vs_best_ratio": 0.7914500590652177,
+    "step04_vs_avg_ratio": 0.982594660799074,
+    "per_frame_sharp": {
+      "2026-08-07-1709_7-U-R-Sat_ser_crop_lucky": 2.8957654194528004e-06,
+      "2026-08-07-1717_4-U-R-Sat_ser_crop_lucky": 3.9063570511643775e-06,
+      "2026-08-07-1725_1-U-R-Sat_ser_crop_lucky": 4.4219618757779244e-06
+    }
+  }
+]

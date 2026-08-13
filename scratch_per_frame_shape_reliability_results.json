@@ -1,0 +1,1069 @@
+{
+  "per_frame": {
+    "window_01_IR": [
+      {
+        "stem": "2026-08-07-1621_8-U-IR-Sat_ser_crop_lucky",
+        "rank": 1,
+        "cx": 203.48141479492188,
+        "cy": 200.27096557617188,
+        "semi_a": 65.4773874532184,
+        "semi_b": 55.10626208610114,
+        "angle": 174.3001251220703,
+        "confidence": 0.4011139339456713,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8416075263459907
+      },
+      {
+        "stem": "2026-08-07-1629_5-U-IR-Sat_ser_crop_lucky",
+        "rank": 8,
+        "cx": 201.35552978515625,
+        "cy": 199.3538360595703,
+        "semi_a": 66.09710566923708,
+        "semi_b": 56.13119909487598,
+        "angle": 176.1236801147461,
+        "confidence": 0.40503499222395023,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8492232530690155
+      },
+      {
+        "stem": "2026-08-07-1637_3-U-IR-Sat_ser_crop_lucky",
+        "rank": 9,
+        "cx": 205.0126953125,
+        "cy": 201.15728759765625,
+        "semi_a": 66.29770873825034,
+        "semi_b": 55.83993581495596,
+        "angle": 172.94174194335938,
+        "confidence": 0.40601720574806555,
+        "shape_reliable": true,
+        "aspect_ratio": 0.842260417104569
+      }
+    ],
+    "window_01_R": [
+      {
+        "stem": "2026-08-07-1623_4-U-R-Sat_ser_crop_lucky",
+        "rank": 9,
+        "cx": 202.34751892089844,
+        "cy": 197.78201293945312,
+        "semi_a": 67.65614364657561,
+        "semi_b": 59.448790222278554,
+        "angle": 175.5318603515625,
+        "confidence": 0.4025742574257426,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8786901974908458
+      },
+      {
+        "stem": "2026-08-07-1631_1-U-R-Sat_ser_crop_lucky",
+        "rank": 8,
+        "cx": 204.79360961914062,
+        "cy": 199.51043701171875,
+        "semi_a": 66.51753002975249,
+        "semi_b": 60.03924702959104,
+        "angle": 177.13739776611328,
+        "confidence": 0.4075258607765729,
+        "shape_reliable": true,
+        "aspect_ratio": 0.9026078840079631
+      },
+      {
+        "stem": "2026-08-07-1638_8-U-R-Sat_ser_crop_lucky",
+        "rank": 5,
+        "cx": 203.9254608154297,
+        "cy": 199.75009155273438,
+        "semi_a": 66.21953716296166,
+        "semi_b": 59.769041829386005,
+        "angle": 179.73197174072266,
+        "confidence": 0.410219485549707,
+        "shape_reliable": true,
+        "aspect_ratio": 0.902589241635721
+      }
+    ],
+    "window_02_IR": [
+      {
+        "stem": "2026-08-07-1621_8-U-IR-Sat_ser_crop_lucky",
+        "rank": 1,
+        "cx": 203.48141479492188,
+        "cy": 200.27096557617188,
+        "semi_a": 65.4773874532184,
+        "semi_b": 55.10626208610114,
+        "angle": 174.3001251220703,
+        "confidence": 0.4011139339456713,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8416075263459907
+      },
+      {
+        "stem": "2026-08-07-1629_5-U-IR-Sat_ser_crop_lucky",
+        "rank": 8,
+        "cx": 201.35552978515625,
+        "cy": 199.3538360595703,
+        "semi_a": 66.09710566923708,
+        "semi_b": 56.13119909487598,
+        "angle": 176.1236801147461,
+        "confidence": 0.40503499222395023,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8492232530690155
+      },
+      {
+        "stem": "2026-08-07-1637_3-U-IR-Sat_ser_crop_lucky",
+        "rank": 9,
+        "cx": 205.0126953125,
+        "cy": 201.15728759765625,
+        "semi_a": 66.29770873825034,
+        "semi_b": 55.83993581495596,
+        "angle": 172.94174194335938,
+        "confidence": 0.40601720574806555,
+        "shape_reliable": true,
+        "aspect_ratio": 0.842260417104569
+      },
+      {
+        "stem": "2026-08-07-1645_0-U-IR-Sat_ser_crop_lucky",
+        "rank": 6,
+        "cx": 204.9086151123047,
+        "cy": 200.24932861328125,
+        "semi_a": 66.23334552245737,
+        "semi_b": 55.80243329523105,
+        "angle": 174.79808807373047,
+        "confidence": 0.4035392256135783,
+        "shape_reliable": true,
+        "aspect_ratio": 0.842512677791739
+      }
+    ],
+    "window_02_R": [
+      {
+        "stem": "2026-08-07-1623_4-U-R-Sat_ser_crop_lucky",
+        "rank": 9,
+        "cx": 202.34751892089844,
+        "cy": 197.78201293945312,
+        "semi_a": 67.65614364657561,
+        "semi_b": 59.448790222278554,
+        "angle": 175.5318603515625,
+        "confidence": 0.4025742574257426,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8786901974908458
+      },
+      {
+        "stem": "2026-08-07-1631_1-U-R-Sat_ser_crop_lucky",
+        "rank": 8,
+        "cx": 204.79360961914062,
+        "cy": 199.51043701171875,
+        "semi_a": 66.51753002975249,
+        "semi_b": 60.03924702959104,
+        "angle": 177.13739776611328,
+        "confidence": 0.4075258607765729,
+        "shape_reliable": true,
+        "aspect_ratio": 0.9026078840079631
+      },
+      {
+        "stem": "2026-08-07-1638_8-U-R-Sat_ser_crop_lucky",
+        "rank": 5,
+        "cx": 203.9254608154297,
+        "cy": 199.75009155273438,
+        "semi_a": 66.21953716296166,
+        "semi_b": 59.769041829386005,
+        "angle": 179.73197174072266,
+        "confidence": 0.410219485549707,
+        "shape_reliable": true,
+        "aspect_ratio": 0.902589241635721
+      },
+      {
+        "stem": "2026-08-07-1646_5-U-R-Sat_ser_crop_lucky",
+        "rank": 7,
+        "cx": 203.7530059814453,
+        "cy": 203.0896759033203,
+        "semi_a": 66.5288693615086,
+        "semi_b": 59.70046994003898,
+        "angle": 178.08042907714844,
+        "confidence": 0.40511293124844877,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8973618597910472
+      }
+    ],
+    "window_03_IR": [
+      {
+        "stem": "2026-08-07-1621_8-U-IR-Sat_ser_crop_lucky",
+        "rank": 1,
+        "cx": 203.48141479492188,
+        "cy": 200.27096557617188,
+        "semi_a": 65.4773874532184,
+        "semi_b": 55.10626208610114,
+        "angle": 174.3001251220703,
+        "confidence": 0.4011139339456713,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8416075263459907
+      },
+      {
+        "stem": "2026-08-07-1629_5-U-IR-Sat_ser_crop_lucky",
+        "rank": 8,
+        "cx": 201.35552978515625,
+        "cy": 199.3538360595703,
+        "semi_a": 66.09710566923708,
+        "semi_b": 56.13119909487598,
+        "angle": 176.1236801147461,
+        "confidence": 0.40503499222395023,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8492232530690155
+      },
+      {
+        "stem": "2026-08-07-1637_3-U-IR-Sat_ser_crop_lucky",
+        "rank": 9,
+        "cx": 205.0126953125,
+        "cy": 201.15728759765625,
+        "semi_a": 66.29770873825034,
+        "semi_b": 55.83993581495596,
+        "angle": 172.94174194335938,
+        "confidence": 0.40601720574806555,
+        "shape_reliable": true,
+        "aspect_ratio": 0.842260417104569
+      },
+      {
+        "stem": "2026-08-07-1645_0-U-IR-Sat_ser_crop_lucky",
+        "rank": 6,
+        "cx": 204.9086151123047,
+        "cy": 200.24932861328125,
+        "semi_a": 66.23334552245737,
+        "semi_b": 55.80243329523105,
+        "angle": 174.79808807373047,
+        "confidence": 0.4035392256135783,
+        "shape_reliable": true,
+        "aspect_ratio": 0.842512677791739
+      },
+      {
+        "stem": "2026-08-07-1652_7-U-IR-Sat_ser_crop_lucky",
+        "rank": 2,
+        "cx": 204.4423370361328,
+        "cy": 197.71401977539062,
+        "semi_a": 66.36709298003889,
+        "semi_b": 56.55644141091054,
+        "angle": 176.23493194580078,
+        "confidence": 0.4065375302663438,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8521759635896802
+      }
+    ],
+    "window_03_R": [
+      {
+        "stem": "2026-08-07-1623_4-U-R-Sat_ser_crop_lucky",
+        "rank": 9,
+        "cx": 202.34751892089844,
+        "cy": 197.78201293945312,
+        "semi_a": 67.65614364657561,
+        "semi_b": 59.448790222278554,
+        "angle": 175.5318603515625,
+        "confidence": 0.4025742574257426,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8786901974908458
+      },
+      {
+        "stem": "2026-08-07-1631_1-U-R-Sat_ser_crop_lucky",
+        "rank": 8,
+        "cx": 204.79360961914062,
+        "cy": 199.51043701171875,
+        "semi_a": 66.51753002975249,
+        "semi_b": 60.03924702959104,
+        "angle": 177.13739776611328,
+        "confidence": 0.4075258607765729,
+        "shape_reliable": true,
+        "aspect_ratio": 0.9026078840079631
+      },
+      {
+        "stem": "2026-08-07-1638_8-U-R-Sat_ser_crop_lucky",
+        "rank": 5,
+        "cx": 203.9254608154297,
+        "cy": 199.75009155273438,
+        "semi_a": 66.21953716296166,
+        "semi_b": 59.769041829386005,
+        "angle": 179.73197174072266,
+        "confidence": 0.410219485549707,
+        "shape_reliable": true,
+        "aspect_ratio": 0.902589241635721
+      },
+      {
+        "stem": "2026-08-07-1646_5-U-R-Sat_ser_crop_lucky",
+        "rank": 7,
+        "cx": 203.7530059814453,
+        "cy": 203.0896759033203,
+        "semi_a": 66.5288693615086,
+        "semi_b": 59.70046994003898,
+        "angle": 178.08042907714844,
+        "confidence": 0.40511293124844877,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8973618597910472
+      },
+      {
+        "stem": "2026-08-07-1654_3-U-R-Sat_ser_crop_lucky",
+        "rank": 2,
+        "cx": 206.46856689453125,
+        "cy": 199.83575439453125,
+        "semi_a": 64.95055795781693,
+        "semi_b": 58.89820515385294,
+        "angle": 177.24502563476562,
+        "confidence": 0.40620855641239745,
+        "shape_reliable": true,
+        "aspect_ratio": 0.9068159998272105
+      }
+    ],
+    "window_04_IR": [
+      {
+        "stem": "2026-08-07-1629_5-U-IR-Sat_ser_crop_lucky",
+        "rank": 8,
+        "cx": 201.35552978515625,
+        "cy": 199.3538360595703,
+        "semi_a": 66.09710566923708,
+        "semi_b": 56.13119909487598,
+        "angle": 176.1236801147461,
+        "confidence": 0.40503499222395023,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8492232530690155
+      },
+      {
+        "stem": "2026-08-07-1637_3-U-IR-Sat_ser_crop_lucky",
+        "rank": 9,
+        "cx": 205.0126953125,
+        "cy": 201.15728759765625,
+        "semi_a": 66.29770873825034,
+        "semi_b": 55.83993581495596,
+        "angle": 172.94174194335938,
+        "confidence": 0.40601720574806555,
+        "shape_reliable": true,
+        "aspect_ratio": 0.842260417104569
+      },
+      {
+        "stem": "2026-08-07-1645_0-U-IR-Sat_ser_crop_lucky",
+        "rank": 6,
+        "cx": 204.9086151123047,
+        "cy": 200.24932861328125,
+        "semi_a": 66.23334552245737,
+        "semi_b": 55.80243329523105,
+        "angle": 174.79808807373047,
+        "confidence": 0.4035392256135783,
+        "shape_reliable": true,
+        "aspect_ratio": 0.842512677791739
+      },
+      {
+        "stem": "2026-08-07-1652_7-U-IR-Sat_ser_crop_lucky",
+        "rank": 2,
+        "cx": 204.4423370361328,
+        "cy": 197.71401977539062,
+        "semi_a": 66.36709298003889,
+        "semi_b": 56.55644141091054,
+        "angle": 176.23493194580078,
+        "confidence": 0.4065375302663438,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8521759635896802
+      },
+      {
+        "stem": "2026-08-07-1700_4-U-IR-Sat_ser_crop_lucky",
+        "rank": 3,
+        "cx": 204.58639526367188,
+        "cy": 200.81488037109375,
+        "semi_a": 66.40677085480529,
+        "semi_b": 55.93926507578856,
+        "angle": 174.6511001586914,
+        "confidence": 0.4056367833782224,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8423729140225272
+      }
+    ],
+    "window_04_R": [
+      {
+        "stem": "2026-08-07-1631_1-U-R-Sat_ser_crop_lucky",
+        "rank": 8,
+        "cx": 204.79360961914062,
+        "cy": 199.51043701171875,
+        "semi_a": 66.51753002975249,
+        "semi_b": 60.03924702959104,
+        "angle": 177.13739776611328,
+        "confidence": 0.4075258607765729,
+        "shape_reliable": true,
+        "aspect_ratio": 0.9026078840079631
+      },
+      {
+        "stem": "2026-08-07-1638_8-U-R-Sat_ser_crop_lucky",
+        "rank": 5,
+        "cx": 203.9254608154297,
+        "cy": 199.75009155273438,
+        "semi_a": 66.21953716296166,
+        "semi_b": 59.769041829386005,
+        "angle": 179.73197174072266,
+        "confidence": 0.410219485549707,
+        "shape_reliable": true,
+        "aspect_ratio": 0.902589241635721
+      },
+      {
+        "stem": "2026-08-07-1646_5-U-R-Sat_ser_crop_lucky",
+        "rank": 7,
+        "cx": 203.7530059814453,
+        "cy": 203.0896759033203,
+        "semi_a": 66.5288693615086,
+        "semi_b": 59.70046994003898,
+        "angle": 178.08042907714844,
+        "confidence": 0.40511293124844877,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8973618597910472
+      },
+      {
+        "stem": "2026-08-07-1654_3-U-R-Sat_ser_crop_lucky",
+        "rank": 2,
+        "cx": 206.46856689453125,
+        "cy": 199.83575439453125,
+        "semi_a": 64.95055795781693,
+        "semi_b": 58.89820515385294,
+        "angle": 177.24502563476562,
+        "confidence": 0.40620855641239745,
+        "shape_reliable": true,
+        "aspect_ratio": 0.9068159998272105
+      },
+      {
+        "stem": "2026-08-07-1702_0-U-R-Sat_ser_crop_lucky",
+        "rank": 1,
+        "cx": 204.8634490966797,
+        "cy": 200.38626098632812,
+        "semi_a": 66.09803954137602,
+        "semi_b": 59.485069092556,
+        "angle": 178.48734283447266,
+        "confidence": 0.40509648688767935,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8999520939697396
+      }
+    ],
+    "window_05_IR": [
+      {
+        "stem": "2026-08-07-1645_0-U-IR-Sat_ser_crop_lucky",
+        "rank": 6,
+        "cx": 204.9086151123047,
+        "cy": 200.24932861328125,
+        "semi_a": 66.23334552245737,
+        "semi_b": 55.80243329523105,
+        "angle": 174.79808807373047,
+        "confidence": 0.4035392256135783,
+        "shape_reliable": true,
+        "aspect_ratio": 0.842512677791739
+      },
+      {
+        "stem": "2026-08-07-1652_7-U-IR-Sat_ser_crop_lucky",
+        "rank": 2,
+        "cx": 204.4423370361328,
+        "cy": 197.71401977539062,
+        "semi_a": 66.36709298003889,
+        "semi_b": 56.55644141091054,
+        "angle": 176.23493194580078,
+        "confidence": 0.4065375302663438,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8521759635896802
+      },
+      {
+        "stem": "2026-08-07-1700_4-U-IR-Sat_ser_crop_lucky",
+        "rank": 3,
+        "cx": 204.58639526367188,
+        "cy": 200.81488037109375,
+        "semi_a": 66.40677085480529,
+        "semi_b": 55.93926507578856,
+        "angle": 174.6511001586914,
+        "confidence": 0.4056367833782224,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8423729140225272
+      },
+      {
+        "stem": "2026-08-07-1708_2-U-IR-Sat_ser_crop_lucky",
+        "rank": 4,
+        "cx": 204.7420196533203,
+        "cy": 200.57839965820312,
+        "semi_a": 66.35254456932758,
+        "semi_b": 55.844881756410416,
+        "angle": 175.01665496826172,
+        "confidence": 0.4000386417427426,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8416388869316328
+      }
+    ],
+    "window_05_R": [
+      {
+        "stem": "2026-08-07-1638_8-U-R-Sat_ser_crop_lucky",
+        "rank": 5,
+        "cx": 203.9254608154297,
+        "cy": 199.75009155273438,
+        "semi_a": 66.21953716296166,
+        "semi_b": 59.769041829386005,
+        "angle": 179.73197174072266,
+        "confidence": 0.410219485549707,
+        "shape_reliable": true,
+        "aspect_ratio": 0.902589241635721
+      },
+      {
+        "stem": "2026-08-07-1654_3-U-R-Sat_ser_crop_lucky",
+        "rank": 2,
+        "cx": 206.46856689453125,
+        "cy": 199.83575439453125,
+        "semi_a": 64.95055795781693,
+        "semi_b": 58.89820515385294,
+        "angle": 177.24502563476562,
+        "confidence": 0.40620855641239745,
+        "shape_reliable": true,
+        "aspect_ratio": 0.9068159998272105
+      },
+      {
+        "stem": "2026-08-07-1702_0-U-R-Sat_ser_crop_lucky",
+        "rank": 1,
+        "cx": 204.8634490966797,
+        "cy": 200.38626098632812,
+        "semi_a": 66.09803954137602,
+        "semi_b": 59.485069092556,
+        "angle": 178.48734283447266,
+        "confidence": 0.40509648688767935,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8999520939697396
+      },
+      {
+        "stem": "2026-08-07-1709_7-U-R-Sat_ser_crop_lucky",
+        "rank": 4,
+        "cx": 203.0483856201172,
+        "cy": 200.3433380126953,
+        "semi_a": 66.42086216266645,
+        "semi_b": 59.64467819205312,
+        "angle": 178.0811004638672,
+        "confidence": 0.4054228534538412,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8979810898265927
+      }
+    ],
+    "window_06_IR": [
+      {
+        "stem": "2026-08-07-1645_0-U-IR-Sat_ser_crop_lucky",
+        "rank": 6,
+        "cx": 204.9086151123047,
+        "cy": 200.24932861328125,
+        "semi_a": 66.23334552245737,
+        "semi_b": 55.80243329523105,
+        "angle": 174.79808807373047,
+        "confidence": 0.4035392256135783,
+        "shape_reliable": true,
+        "aspect_ratio": 0.842512677791739
+      },
+      {
+        "stem": "2026-08-07-1652_7-U-IR-Sat_ser_crop_lucky",
+        "rank": 2,
+        "cx": 204.4423370361328,
+        "cy": 197.71401977539062,
+        "semi_a": 66.36709298003889,
+        "semi_b": 56.55644141091054,
+        "angle": 176.23493194580078,
+        "confidence": 0.4065375302663438,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8521759635896802
+      },
+      {
+        "stem": "2026-08-07-1700_4-U-IR-Sat_ser_crop_lucky",
+        "rank": 3,
+        "cx": 204.58639526367188,
+        "cy": 200.81488037109375,
+        "semi_a": 66.40677085480529,
+        "semi_b": 55.93926507578856,
+        "angle": 174.6511001586914,
+        "confidence": 0.4056367833782224,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8423729140225272
+      },
+      {
+        "stem": "2026-08-07-1708_2-U-IR-Sat_ser_crop_lucky",
+        "rank": 4,
+        "cx": 204.7420196533203,
+        "cy": 200.57839965820312,
+        "semi_a": 66.35254456932758,
+        "semi_b": 55.844881756410416,
+        "angle": 175.01665496826172,
+        "confidence": 0.4000386417427426,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8416388869316328
+      },
+      {
+        "stem": "2026-08-07-1715_9-U-IR-Sat_ser_crop_lucky",
+        "rank": 7,
+        "cx": 205.89649963378906,
+        "cy": 197.6350860595703,
+        "semi_a": 66.70880443419557,
+        "semi_b": 56.28583330146325,
+        "angle": 173.34246063232422,
+        "confidence": 0.40022061292024363,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8437541907528265
+      }
+    ],
+    "window_06_R": [
+      {
+        "stem": "2026-08-07-1646_5-U-R-Sat_ser_crop_lucky",
+        "rank": 7,
+        "cx": 203.7530059814453,
+        "cy": 203.0896759033203,
+        "semi_a": 66.5288693615086,
+        "semi_b": 59.70046994003898,
+        "angle": 178.08042907714844,
+        "confidence": 0.40511293124844877,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8973618597910472
+      },
+      {
+        "stem": "2026-08-07-1654_3-U-R-Sat_ser_crop_lucky",
+        "rank": 2,
+        "cx": 206.46856689453125,
+        "cy": 199.83575439453125,
+        "semi_a": 64.95055795781693,
+        "semi_b": 58.89820515385294,
+        "angle": 177.24502563476562,
+        "confidence": 0.40620855641239745,
+        "shape_reliable": true,
+        "aspect_ratio": 0.9068159998272105
+      },
+      {
+        "stem": "2026-08-07-1702_0-U-R-Sat_ser_crop_lucky",
+        "rank": 1,
+        "cx": 204.8634490966797,
+        "cy": 200.38626098632812,
+        "semi_a": 66.09803954137602,
+        "semi_b": 59.485069092556,
+        "angle": 178.48734283447266,
+        "confidence": 0.40509648688767935,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8999520939697396
+      },
+      {
+        "stem": "2026-08-07-1709_7-U-R-Sat_ser_crop_lucky",
+        "rank": 4,
+        "cx": 203.0483856201172,
+        "cy": 200.3433380126953,
+        "semi_a": 66.42086216266645,
+        "semi_b": 59.64467819205312,
+        "angle": 178.0811004638672,
+        "confidence": 0.4054228534538412,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8979810898265927
+      },
+      {
+        "stem": "2026-08-07-1717_4-U-R-Sat_ser_crop_lucky",
+        "rank": 6,
+        "cx": 200.83486938476562,
+        "cy": 197.8176727294922,
+        "semi_a": 66.39495886643952,
+        "semi_b": 60.135685953159836,
+        "angle": 179.81321716308594,
+        "confidence": 0.40324010242269054,
+        "shape_reliable": true,
+        "aspect_ratio": 0.9057266843726663
+      }
+    ],
+    "window_07_IR": [
+      {
+        "stem": "2026-08-07-1652_7-U-IR-Sat_ser_crop_lucky",
+        "rank": 2,
+        "cx": 204.4423370361328,
+        "cy": 197.71401977539062,
+        "semi_a": 66.36709298003889,
+        "semi_b": 56.55644141091054,
+        "angle": 176.23493194580078,
+        "confidence": 0.4065375302663438,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8521759635896802
+      },
+      {
+        "stem": "2026-08-07-1700_4-U-IR-Sat_ser_crop_lucky",
+        "rank": 3,
+        "cx": 204.58639526367188,
+        "cy": 200.81488037109375,
+        "semi_a": 66.40677085480529,
+        "semi_b": 55.93926507578856,
+        "angle": 174.6511001586914,
+        "confidence": 0.4056367833782224,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8423729140225272
+      },
+      {
+        "stem": "2026-08-07-1708_2-U-IR-Sat_ser_crop_lucky",
+        "rank": 4,
+        "cx": 204.7420196533203,
+        "cy": 200.57839965820312,
+        "semi_a": 66.35254456932758,
+        "semi_b": 55.844881756410416,
+        "angle": 175.01665496826172,
+        "confidence": 0.4000386417427426,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8416388869316328
+      },
+      {
+        "stem": "2026-08-07-1723_6-U-IR-Sat_ser_crop_lucky",
+        "rank": 5,
+        "cx": 203.83970642089844,
+        "cy": 199.1907958984375,
+        "semi_a": 66.7983249692136,
+        "semi_b": 56.70005584141328,
+        "angle": 173.88409423828125,
+        "confidence": 0.40672180017309356,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8488245156977444
+      }
+    ],
+    "window_07_R": [
+      {
+        "stem": "2026-08-07-1654_3-U-R-Sat_ser_crop_lucky",
+        "rank": 2,
+        "cx": 206.46856689453125,
+        "cy": 199.83575439453125,
+        "semi_a": 64.95055795781693,
+        "semi_b": 58.89820515385294,
+        "angle": 177.24502563476562,
+        "confidence": 0.40620855641239745,
+        "shape_reliable": true,
+        "aspect_ratio": 0.9068159998272105
+      },
+      {
+        "stem": "2026-08-07-1702_0-U-R-Sat_ser_crop_lucky",
+        "rank": 1,
+        "cx": 204.8634490966797,
+        "cy": 200.38626098632812,
+        "semi_a": 66.09803954137602,
+        "semi_b": 59.485069092556,
+        "angle": 178.48734283447266,
+        "confidence": 0.40509648688767935,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8999520939697396
+      },
+      {
+        "stem": "2026-08-07-1709_7-U-R-Sat_ser_crop_lucky",
+        "rank": 4,
+        "cx": 203.0483856201172,
+        "cy": 200.3433380126953,
+        "semi_a": 66.42086216266645,
+        "semi_b": 59.64467819205312,
+        "angle": 178.0811004638672,
+        "confidence": 0.4054228534538412,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8979810898265927
+      },
+      {
+        "stem": "2026-08-07-1725_1-U-R-Sat_ser_crop_lucky",
+        "rank": 3,
+        "cx": 203.7404327392578,
+        "cy": 199.93777465820312,
+        "semi_a": 67.44861556876283,
+        "semi_b": 60.693151211065256,
+        "angle": 177.15271759033203,
+        "confidence": 0.40329156722354814,
+        "shape_reliable": true,
+        "aspect_ratio": 0.899842801802055
+      }
+    ],
+    "window_08_IR": [
+      {
+        "stem": "2026-08-07-1700_4-U-IR-Sat_ser_crop_lucky",
+        "rank": 3,
+        "cx": 204.58639526367188,
+        "cy": 200.81488037109375,
+        "semi_a": 66.40677085480529,
+        "semi_b": 55.93926507578856,
+        "angle": 174.6511001586914,
+        "confidence": 0.4056367833782224,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8423729140225272
+      },
+      {
+        "stem": "2026-08-07-1708_2-U-IR-Sat_ser_crop_lucky",
+        "rank": 4,
+        "cx": 204.7420196533203,
+        "cy": 200.57839965820312,
+        "semi_a": 66.35254456932758,
+        "semi_b": 55.844881756410416,
+        "angle": 175.01665496826172,
+        "confidence": 0.4000386417427426,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8416388869316328
+      },
+      {
+        "stem": "2026-08-07-1723_6-U-IR-Sat_ser_crop_lucky",
+        "rank": 5,
+        "cx": 203.83970642089844,
+        "cy": 199.1907958984375,
+        "semi_a": 66.7983249692136,
+        "semi_b": 56.70005584141328,
+        "angle": 173.88409423828125,
+        "confidence": 0.40672180017309356,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8488245156977444
+      }
+    ],
+    "window_08_R": [
+      {
+        "stem": "2026-08-07-1702_0-U-R-Sat_ser_crop_lucky",
+        "rank": 1,
+        "cx": 204.8634490966797,
+        "cy": 200.38626098632812,
+        "semi_a": 66.09803954137602,
+        "semi_b": 59.485069092556,
+        "angle": 178.48734283447266,
+        "confidence": 0.40509648688767935,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8999520939697396
+      },
+      {
+        "stem": "2026-08-07-1709_7-U-R-Sat_ser_crop_lucky",
+        "rank": 4,
+        "cx": 203.0483856201172,
+        "cy": 200.3433380126953,
+        "semi_a": 66.42086216266645,
+        "semi_b": 59.64467819205312,
+        "angle": 178.0811004638672,
+        "confidence": 0.4054228534538412,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8979810898265927
+      },
+      {
+        "stem": "2026-08-07-1725_1-U-R-Sat_ser_crop_lucky",
+        "rank": 3,
+        "cx": 203.7404327392578,
+        "cy": 199.93777465820312,
+        "semi_a": 67.44861556876283,
+        "semi_b": 60.693151211065256,
+        "angle": 177.15271759033203,
+        "confidence": 0.40329156722354814,
+        "shape_reliable": true,
+        "aspect_ratio": 0.899842801802055
+      }
+    ],
+    "window_09_IR": [
+      {
+        "stem": "2026-08-07-1708_2-U-IR-Sat_ser_crop_lucky",
+        "rank": 4,
+        "cx": 204.7420196533203,
+        "cy": 200.57839965820312,
+        "semi_a": 66.35254456932758,
+        "semi_b": 55.844881756410416,
+        "angle": 175.01665496826172,
+        "confidence": 0.4000386417427426,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8416388869316328
+      },
+      {
+        "stem": "2026-08-07-1715_9-U-IR-Sat_ser_crop_lucky",
+        "rank": 7,
+        "cx": 205.89649963378906,
+        "cy": 197.6350860595703,
+        "semi_a": 66.70880443419557,
+        "semi_b": 56.28583330146325,
+        "angle": 173.34246063232422,
+        "confidence": 0.40022061292024363,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8437541907528265
+      },
+      {
+        "stem": "2026-08-07-1723_6-U-IR-Sat_ser_crop_lucky",
+        "rank": 5,
+        "cx": 203.83970642089844,
+        "cy": 199.1907958984375,
+        "semi_a": 66.7983249692136,
+        "semi_b": 56.70005584141328,
+        "angle": 173.88409423828125,
+        "confidence": 0.40672180017309356,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8488245156977444
+      }
+    ],
+    "window_09_R": [
+      {
+        "stem": "2026-08-07-1709_7-U-R-Sat_ser_crop_lucky",
+        "rank": 4,
+        "cx": 203.0483856201172,
+        "cy": 200.3433380126953,
+        "semi_a": 66.42086216266645,
+        "semi_b": 59.64467819205312,
+        "angle": 178.0811004638672,
+        "confidence": 0.4054228534538412,
+        "shape_reliable": true,
+        "aspect_ratio": 0.8979810898265927
+      },
+      {
+        "stem": "2026-08-07-1717_4-U-R-Sat_ser_crop_lucky",
+        "rank": 6,
+        "cx": 200.83486938476562,
+        "cy": 197.8176727294922,
+        "semi_a": 66.39495886643952,
+        "semi_b": 60.135685953159836,
+        "angle": 179.81321716308594,
+        "confidence": 0.40324010242269054,
+        "shape_reliable": true,
+        "aspect_ratio": 0.9057266843726663
+      },
+      {
+        "stem": "2026-08-07-1725_1-U-R-Sat_ser_crop_lucky",
+        "rank": 3,
+        "cx": 203.7404327392578,
+        "cy": 199.93777465820312,
+        "semi_a": 67.44861556876283,
+        "semi_b": 60.693151211065256,
+        "angle": 177.15271759033203,
+        "confidence": 0.40329156722354814,
+        "shape_reliable": true,
+        "aspect_ratio": 0.899842801802055
+      }
+    ]
+  },
+  "summary": [
+    {
+      "window": 1,
+      "filter": "IR",
+      "n_frames": 3,
+      "mean_confidence": 0.4040553773058957,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.8443637321731917,
+      "aspect_ratio_stdev": 0.003446522313711802
+    },
+    {
+      "window": 1,
+      "filter": "R",
+      "n_frames": 3,
+      "mean_confidence": 0.4067732012506742,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.8946291077115099,
+      "aspect_ratio_stdev": 0.011270514071425656
+    },
+    {
+      "window": 2,
+      "filter": "IR",
+      "n_frames": 4,
+      "mean_confidence": 0.40392633938281636,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.8439009685778285,
+      "aspect_ratio_stdev": 0.0030905238196405125
+    },
+    {
+      "window": 2,
+      "filter": "R",
+      "n_frames": 4,
+      "mean_confidence": 0.4063581337501178,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.8953122957313943,
+      "aspect_ratio_stdev": 0.009832019283300512
+    },
+    {
+      "window": 3,
+      "filter": "IR",
+      "n_frames": 5,
+      "mean_confidence": 0.4044485775595218,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.8455559675801988,
+      "aspect_ratio_stdev": 0.004312442089489368
+    },
+    {
+      "window": 3,
+      "filter": "R",
+      "n_frames": 5,
+      "mean_confidence": 0.40632821828257376,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.8976130365505576,
+      "aspect_ratio_stdev": 0.00992514563206054
+    },
+    {
+      "window": 4,
+      "filter": "IR",
+      "n_frames": 5,
+      "mean_confidence": 0.4053531474460321,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.845709045115506,
+      "aspect_ratio_stdev": 0.004181154433596752
+    },
+    {
+      "window": 4,
+      "filter": "R",
+      "n_frames": 5,
+      "mean_confidence": 0.40683266417496106,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.9018654158463363,
+      "aspect_ratio_stdev": 0.003147261738168293
+    },
+    {
+      "window": 5,
+      "filter": "IR",
+      "n_frames": 4,
+      "mean_confidence": 0.40393804525022176,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.8446751105838948,
+      "aspect_ratio_stdev": 0.004343318848205773
+    },
+    {
+      "window": 5,
+      "filter": "R",
+      "n_frames": 4,
+      "mean_confidence": 0.4067368455759063,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.9018346063148159,
+      "aspect_ratio_stdev": 0.0033082169611157912
+    },
+    {
+      "window": 6,
+      "filter": "IR",
+      "n_frames": 5,
+      "mean_confidence": 0.40319455878422616,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.8444909266176811,
+      "aspect_ratio_stdev": 0.0039022083270097694
+    },
+    {
+      "window": 6,
+      "filter": "R",
+      "n_frames": 5,
+      "mean_confidence": 0.4050161860850115,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.9015675455574513,
+      "aspect_ratio_stdev": 0.003949806304449986
+    },
+    {
+      "window": 7,
+      "filter": "IR",
+      "n_frames": 4,
+      "mean_confidence": 0.40473368889010064,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.8462530700603962,
+      "aspect_ratio_stdev": 0.004416992677406398
+    },
+    {
+      "window": 7,
+      "filter": "R",
+      "n_frames": 4,
+      "mean_confidence": 0.4050048659943665,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.9011479963563994,
+      "aspect_ratio_stdev": 0.0033648653634568925
+    },
+    {
+      "window": 8,
+      "filter": "IR",
+      "n_frames": 3,
+      "mean_confidence": 0.4041324084313529,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.8442787722173014,
+      "aspect_ratio_stdev": 0.0032282644238077135
+    },
+    {
+      "window": 8,
+      "filter": "R",
+      "n_frames": 3,
+      "mean_confidence": 0.4046036358550229,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.8992586618661291,
+      "aspect_ratio_stdev": 0.000904481041494019
+    },
+    {
+      "window": 9,
+      "filter": "IR",
+      "n_frames": 3,
+      "mean_confidence": 0.4023270182786933,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.8447391977940679,
+      "aspect_ratio_stdev": 0.003015072618756638
+    },
+    {
+      "window": 9,
+      "filter": "R",
+      "n_frames": 3,
+      "mean_confidence": 0.40398484103335996,
+      "frac_shape_reliable": 1.0,
+      "aspect_ratio_mean": 0.9011835253337713,
+      "aspect_ratio_stdev": 0.00330118296063848
+    }
+  ],
+  "errors": []
+}

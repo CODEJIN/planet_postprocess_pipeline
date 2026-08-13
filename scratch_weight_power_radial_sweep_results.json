@@ -1,0 +1,98 @@
+{
+  "IR": {
+    "n1_baseline": {
+      "transition_pos": null,
+      "transition_neg": null
+    },
+    "wp_1.0": {
+      "transition_pos": null,
+      "transition_neg": null,
+      "noise_proxy": 0.006497341673821211,
+      "n_stacked": 3,
+      "profile_min": 0.16724079847335815
+    },
+    "wp_1.5": {
+      "transition_pos": null,
+      "transition_neg": null,
+      "noise_proxy": 0.006496118381619453,
+      "n_stacked": 3,
+      "profile_min": 0.16672484576702118
+    },
+    "wp_2.0": {
+      "transition_pos": null,
+      "transition_neg": null,
+      "noise_proxy": 0.006495447363704443,
+      "n_stacked": 3,
+      "profile_min": 0.16619840264320374
+    },
+    "wp_3.0": {
+      "transition_pos": null,
+      "transition_neg": null,
+      "noise_proxy": 0.006495245732367039,
+      "n_stacked": 3,
+      "profile_min": 0.16514268517494202
+    },
+    "wp_4.0": {
+      "transition_pos": null,
+      "transition_neg": null,
+      "noise_proxy": 0.006496473215520382,
+      "n_stacked": 3,
+      "profile_min": 0.1641165018081665
+    },
+    "wp_8.0": {
+      "transition_pos": null,
+      "transition_neg": null,
+      "noise_proxy": 0.00650995597243309,
+      "n_stacked": 3,
+      "profile_min": 0.16066032648086548
+    }
+  },
+  "R": {
+    "n1_baseline": {
+      "transition_pos": 1.161417968167717,
+      "transition_neg": 1.2520256688110245
+    },
+    "wp_1.0": {
+      "transition_pos": 1.146316684727166,
+      "transition_neg": 1.282228235692127,
+      "noise_proxy": 0.0056792963296175,
+      "n_stacked": 3,
+      "profile_min": 0.12346169352531433
+    },
+    "wp_1.5": {
+      "transition_pos": 1.146316684727166,
+      "transition_neg": 1.2897788774124026,
+      "noise_proxy": 0.005663794931024313,
+      "n_stacked": 3,
+      "profile_min": 0.12388036400079727
+    },
+    "wp_2.0": {
+      "transition_pos": 1.146316684727166,
+      "transition_neg": 1.2897788774124026,
+      "noise_proxy": 0.005648227874189615,
+      "n_stacked": 3,
+      "profile_min": 0.12430191040039062
+    },
+    "wp_3.0": {
+      "transition_pos": 1.146316684727166,
+      "transition_neg": 1.2897788774124026,
+      "noise_proxy": 0.00561709888279438,
+      "n_stacked": 3,
+      "profile_min": 0.12515640258789062
+    },
+    "wp_4.0": {
+      "transition_pos": 1.146316684727166,
+      "transition_neg": 1.2973295191326781,
+      "noise_proxy": 0.005586162209510803,
+      "n_stacked": 3,
+      "profile_min": 0.1258850246667862
+    },
+    "wp_8.0": {
+      "transition_pos": 1.161417968167717,
+      "transition_neg": 1.2973295191326781,
+      "noise_proxy": 0.0054687755182385445,
+      "n_stacked": 3,
+      "profile_min": 0.12835507094860077
+    }
+  }
+}
