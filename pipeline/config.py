@@ -242,6 +242,25 @@ class DerotationConfig:
     # than changing the default, since it hasn't been validated on Jupiter.
     stack_weight_power: float = 1.0
 
+    # Opt-in per-frame raw-sharpness-based stacking selection (2026-08-13).
+    # When enabled, computes each included frame's OWN measured sharpness
+    # (Laplacian variance over the central 55% of its own disk radius,
+    # frame_sharpness_central() in derotation.py) directly from the raw
+    # step02 TIF -- a metric distinct from, and much better correlated with
+    # real per-frame sharpness than, norm_score (see frame_sharpness_
+    # central()'s docstring) -- and excludes the least-sharp fraction of
+    # non-reference frames from the stack. Confirmed on 51 real window x
+    # filter combos (mixed Saturn/Jupiter, 2026-08-13): median (stack/best-
+    # raw-frame) sharpness ratio rose from 0.733 (all frames, norm_score-
+    # weighted, current default) to 0.878 (top-half by this metric).
+    # Default False / keep_fraction=1.0 leaves every existing session's
+    # stacking byte-identical to before this feature existed -- not yet
+    # validated widely enough to become the default; enable explicitly
+    # per-session (same posture as stack_weight_power: confirmed useful,
+    # not auto-defaulted) after checking wavelet-sharpened crops.
+    sharpness_selection_enabled: bool = False
+    sharpness_keep_fraction: float = 1.0
+
     # ── True 3D oblate-spheroid reprojection (WinJUPOS-style, opt-in) ─────────
     # When True, spherical_derotation_warp_3d() replaces the linear
     # spherical_derotation_warp() for this session — see derotation.py's

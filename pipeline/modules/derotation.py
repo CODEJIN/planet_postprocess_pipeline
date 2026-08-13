@@ -2529,6 +2529,69 @@ def normalize_brightness_to_reference(
     return normalized
 
 
+def _laplacian_var_central(
+    image: np.ndarray,
+    cx: float,
+    cy: float,
+    semi_a: float,
+    radius_frac: float = 0.55,
+) -> Optional[float]:
+    """Pure Laplacian-variance sharpness over the central disk interior, at
+    an ALREADY-KNOWN geometry (cx, cy, semi_a) -- no disk detection here,
+    so a caller that already ran find_disk_center()/_find_disk_center_impl
+    for other reasons doesn't pay for it twice. See frame_sharpness_central()
+    below for the full justification and real-data evidence for this metric.
+    """
+    h, w = image.shape[:2]
+    yy, xx = np.mgrid[:h, :w].astype(np.float32)
+    r = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    mask = r < (radius_frac * semi_a)
+    if mask.sum() < 25:
+        return None
+    lap = cv2.Laplacian(image.astype(np.float32), cv2.CV_32F, ksize=3)
+    return float(np.var(lap[mask]))
+
+
+def frame_sharpness_central(image: np.ndarray, radius_frac: float = 0.55) -> Optional[float]:
+    """Public wrapper: runs find_disk_center() then delegates to
+    _laplacian_var_central(). Returns None if disk detection fails
+    (semi_a < 5px) -- callers MUST treat None as "unmeasurable", never
+    coerce it to 0.0 (that reads as "worst frame" and would wrongly exclude
+    an undetectable-but-otherwise-fine frame, e.g. CH4's known-unreliable
+    disk fit).
+
+    Why this metric (not quality.laplacian_var() / norm_score) -- a
+    2026-08-13 real-data investigation into why the final multi-frame
+    stack is measurably blurrier than the single sharpest raw frame in the
+    same window (a gap present deep in the disk interior, i.e. unrelated
+    to de-rotation warp coverage/edge effects, and present equally on both
+    Saturn and Jupiter -- so not a target-specific or coordinate-system
+    issue) found: stacking only the top-half of a window's included frames
+    BY THIS METRIC raised the median (stack_sharpness / best_single_raw_
+    frame_sharpness) ratio from 0.733 to 0.878 across 51 real window x
+    filter combos (mixed Saturn/Jupiter). A same-frame-COUNT bottom-half
+    control (worst frames instead of best) was WORSE than the unfiltered
+    baseline in 5/6 spot checks -- proving the effect is about WHICH
+    frames are kept, not merely averaging fewer of them (a real per-frame
+    seeing/PSF heterogeneity signal, not a sample-size artifact).
+    norm_score (pipeline.modules.quality.quality_metrics()/compute_scores())
+    already tries to measure sharpness via a 0.5*laplacian + 0.3*tenengrad
+    + 0.2*norm_variance blend, computed after a 1.2-sigma Gaussian denoise,
+    over the FULL Otsu-detected disk mask (including the limb) -- but was
+    separately measured this session to correlate ~-0.10 (near-zero, wrong
+    sign) with real per-frame sharpness. Three differences are deliberately
+    NOT carried over here, as the suspected causes: no pre-metric denoise
+    (likely smooths away exactly the fine detail that distinguishes good
+    frames from mediocre ones); central-radius-only mask, not the full
+    disk (the limb's limb-darkening/seeing-smeared low-contrast pixels
+    dilute the signal); pure Laplacian variance only, not a 3-metric blend.
+    """
+    cx, cy, semi_a, _semi_b, _angle = find_disk_center(image)
+    if semi_a < 5:
+        return None
+    return _laplacian_var_central(image, cx, cy, semi_a, radius_frac)
+
+
 def quality_weighted_stack(
     images: List[np.ndarray],
     weights: List[float],
@@ -2604,6 +2667,8 @@ def derotate_filter(
     true_polar_equatorial_ratio: float = 1.0,
     flip_pole_axis: bool = False,
     has_rings: bool = False,
+    sharpness_selection_enabled: bool = False,
+    sharpness_keep_fraction: float = 1.0,
 ) -> Tuple[np.ndarray, dict]:
     """De-rotate and stack a single filter's images for one time window.
 
@@ -2671,6 +2736,17 @@ def derotate_filter(
                         (this uses Saturn-specific physical ring constants,
                         meaningless for other targets). Default False leaves
                         every existing caller's behaviour unchanged.
+        sharpness_selection_enabled, sharpness_keep_fraction: Opt-in (see
+                        frame_sharpness_central()'s docstring for the
+                        2026-08-13 real-data justification). When enabled,
+                        excludes the least-sharp (by raw measured Laplacian
+                        variance, NOT norm_score) fraction of non-reference
+                        included frames from the stack — a window-local,
+                        per-filter selection, applied after outlier-shift
+                        rejection. sharpness_keep_fraction=1.0 (default) or
+                        sharpness_selection_enabled=False (default) is a
+                        complete no-op, byte-identical to before this
+                        parameter existed.
 
     Returns:
         (stacked_image, log_dict)
@@ -2837,6 +2913,7 @@ def derotate_filter(
         # above from this filter's own reference-frame fit), not the
         # window-wide shared_shape flag.
         _raw_lum = _to_luminance(img)
+        _row_sharpness: Optional[float] = None
         try:
             if shared_shape is not None and not _rshape_ok:
                 _rh, _rw = _ref_lum.shape[:2]
@@ -2867,6 +2944,13 @@ def derotate_filter(
                     _find_disk_center_impl(_raw_lum)
                 )
                 if _semi_i >= 5:
+                    # Raw per-frame sharpness (2026-08-13, see
+                    # frame_sharpness_central()'s docstring): reuses the
+                    # geometry this branch already computed above, no
+                    # second disk-detection pass. Independent of the dx/dy
+                    # sanity gate below (sharpness doesn't need a valid
+                    # pre-warp shift to be meaningful).
+                    _row_sharpness = _laplacian_var_central(_raw_lum, _cx_i, _cy_i, _semi_i)
                     _dx = float(ref_cx - _cx_i)
                     _dy = float(ref_cy - _cy_i)
                     if abs(_dx) <= 15.0 and abs(_dy) <= 15.0:
@@ -2955,6 +3039,7 @@ def derotate_filter(
             "pre_warp_shift_dx": round(_pw_entry[0], 3) if _pw_entry else None,
             "pre_warp_shift_dy": round(_pw_entry[1], 3) if _pw_entry else None,
             "pre_warp_scale":    round(_pw_entry[2], 6) if _pw_entry else None,
+            "raw_sharpness":     round(_row_sharpness, 8) if _row_sharpness is not None else None,
         })
 
         if row["stem"] == reference_row["stem"]:
@@ -3061,6 +3146,44 @@ def derotate_filter(
                 warped_images = kept_images
                 weights = kept_weights
 
+    # ── Raw-sharpness-based frame selection (opt-in, 2026-08-13) ──────────
+    # See frame_sharpness_central()'s docstring for the real-data
+    # justification. log_frames itself is never filtered/reordered above —
+    # only warped_images/weights shrink (outlier-shift rejection). Rebuild
+    # the correspondence by skipping any log entry already marked
+    # outlier_excluded, in original order: both warped_images and this
+    # filtered log view were built by skipping exactly those same entries,
+    # in the same order, so surviving_logs[i] <-> warped_images[i] holds
+    # here regardless of whether outlier rejection actually ran.
+    if sharpness_selection_enabled and 0.0 < sharpness_keep_fraction < 1.0:
+        surviving_logs = [fl for fl in log_frames if not fl.get("outlier_excluded")]
+        candidates = [
+            i for i, fl in enumerate(surviving_logs)
+            if fl.get("raw_sharpness") is not None and fl["stem"] != reference_row["stem"]
+        ]
+        if len(candidates) >= 2:
+            vals = np.array([surviving_logs[i]["raw_sharpness"] for i in candidates])
+            threshold = float(np.quantile(vals, 1.0 - sharpness_keep_fraction))
+            exclude_idx = {i for i in candidates if surviving_logs[i]["raw_sharpness"] < threshold}
+            # Never empty the stack, and always keep at least the
+            # reference frame plus one other — mirrors the outlier-
+            # rejection block's own "0 < n < len(...)" guard above.
+            if 0 < len(exclude_idx) < len(warped_images) - 1:
+                kept = [i for i in range(len(warped_images)) if i not in exclude_idx]
+                for i in exclude_idx:
+                    fl = surviving_logs[i]
+                    fl["sharpness_excluded"] = True
+                    print(
+                        f"    [sharpness] {fl['stem']}: raw_sharpness={fl['raw_sharpness']:.2e} "
+                        f"below window threshold {threshold:.2e} "
+                        f"(keep_fraction={sharpness_keep_fraction}) — excluded from stack"
+                    )
+                for i in candidates:
+                    if i not in exclude_idx:
+                        surviving_logs[i]["sharpness_excluded"] = False
+                warped_images = [warped_images[i] for i in kept]
+                weights = [weights[i] for i in kept]
+
     stacked = quality_weighted_stack(warped_images, weights, weight_power=weight_power)
 
     log_dict = {
@@ -3079,6 +3202,8 @@ def derotate_filter(
         "has_rings":             has_rings,
         "ring_crosses_disk":     ring_crosses_disk,
         "sub_observer_lat_deg":  sub_observer_lat_deg,
+        "sharpness_selection_enabled": sharpness_selection_enabled,
+        "sharpness_keep_fraction":     sharpness_keep_fraction,
         "frames":                log_frames,
     }
 
@@ -3105,6 +3230,8 @@ def derotate_window(
     true_polar_equatorial_ratio: float = 1.0,
     flip_pole_axis: bool = False,
     has_rings: bool = False,
+    sharpness_selection_enabled: bool = False,
+    sharpness_keep_fraction: float = 1.0,
 ) -> Dict[str, Tuple[Optional[Path], dict]]:
     """De-rotate and stack all filters in a single time window.
 
@@ -3129,12 +3256,16 @@ def derotate_window(
                           (default) = original linear blend, unchanged for
                           every existing caller.
         use_true_reprojection, sub_observer_lat_deg,
-        true_polar_equatorial_ratio, flip_pole_axis, has_rings:
+        true_polar_equatorial_ratio, flip_pole_axis, has_rings,
+        sharpness_selection_enabled, sharpness_keep_fraction:
                           Passed straight through to derotate_filter() — see
                           its docstring. Default use_true_reprojection=False,
                           has_rings=False leaves every existing caller's
                           behaviour unchanged (Jupiter and any caller not
-                          passing has_rings=True).
+                          passing has_rings=True). sharpness_selection_enabled
+                          default False / sharpness_keep_fraction default 1.0
+                          is likewise a complete no-op for every existing
+                          caller.
 
     Returns:
         {filter: (output_path_or_None, log_dict)}
@@ -3260,6 +3391,8 @@ def derotate_window(
                 true_polar_equatorial_ratio=true_polar_equatorial_ratio,
                 flip_pole_axis=flip_pole_axis,
                 has_rings=has_rings,
+                sharpness_selection_enabled=sharpness_selection_enabled,
+                sharpness_keep_fraction=sharpness_keep_fraction,
             )
         except Exception as exc:
             print(f" ERROR: {exc}")

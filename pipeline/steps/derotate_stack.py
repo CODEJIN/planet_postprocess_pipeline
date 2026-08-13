@@ -769,6 +769,8 @@ def run(
             true_polar_equatorial_ratio=config.derotation.true_polar_equatorial_ratio,
             flip_pole_axis=session_pole_axis_flip,
             has_rings=has_rings,
+            sharpness_selection_enabled=config.derotation.sharpness_selection_enabled,
+            sharpness_keep_fraction=config.derotation.sharpness_keep_fraction,
         )
 
         # ── Satellite compositing (exp9 method) ───────────────────────────────
