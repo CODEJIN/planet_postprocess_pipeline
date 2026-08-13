@@ -28,7 +28,11 @@ import numpy as np
 
 from pipeline.config import PipelineConfig
 from pipeline.modules import image_io, wavelet
-from pipeline.modules.derotation import find_disk_center
+from pipeline.modules.derotation import (
+    find_disk_center,
+    _SATURN_RING_INNER_REQ,
+    _SATURN_RING_OUTER_REQ,
+)
 
 
 
@@ -82,6 +86,7 @@ def run(
         win_label = f"window_{win_idx:02d}"
         t_str = win["center_time"]
         outputs: Dict[str, Optional[Path]] = win.get("outputs", {})
+        logs: Dict[str, dict] = win.get("log", {})
 
         print(f"\n  {win_label}  [{t_str}]")
 
@@ -130,6 +135,86 @@ def run(
                 # find_disk_center returns angle in degrees; convert to radians
                 _angle_rad = np.radians(_angle)
 
+                # Ring-aware sharpening mask (2026-08-12/13 fix): sharpen_disk_
+                # aware's feather mask is normally zero beyond the disk radius,
+                # which was silently zeroing all sharpening gain over Saturn's
+                # rings (the actual root cause of the Cassini Division
+                # vanishing here but not in step07's plain, unmasked
+                # sharpen()) -- see project_derotation_ring_occlusion_fix
+                # memory for the full investigation. Reuses has_rings/
+                # pole_pa_deg/sub_observer_lat_deg exactly as derotate_filter()
+                # computed and used them for THIS filter/window (single source
+                # of truth, no re-derivation), and the same IAU ring-radius
+                # ratio already validated in compute_ring_occlusion_weight().
+                # Anchored on _rx -- this function's own fresh fit on the
+                # actual image being sharpened, not the de-rotation-time
+                # ref_semi_a from a different frame.
+                _wlog = logs.get(filt, {})
+                _extra_rx = _extra_ry = _extra_angle = None
+                _extra_gap_px = None
+                if bool(_wlog.get("has_rings", False)):
+                    _pole_pa_deg = float(_wlog.get("pole_pa_deg", 0.0))
+                    _sub_obs_lat_deg = float(_wlog.get("sub_observer_lat_deg", 0.0))
+                    _sin_b = abs(np.sin(np.radians(_sub_obs_lat_deg)))
+                    # User-reported real-data check (window_01/R): the visible
+                    # ring signal in a de-rotated, multi-frame-stacked image
+                    # fades out gradually well past the strict IAU A-ring
+                    # outer-edge ratio (2.269x) -- measured reaching background
+                    # around 2.7-2.8x, not 2.269x, almost certainly PSF/seeing/
+                    # residual-stacking blur smearing the true edge outward.
+                    # That blur width isn't a fixed physical ring constant, so
+                    # rather than guess a per-session value, apply a generous,
+                    # explicitly-labelled SAFETY margin on top of the physical
+                    # ratio -- over-covering just applies sharpening gain to a
+                    # bit of background sky (harmless), while under-covering
+                    # (the original bug) leaves real ring detail permanently
+                    # unsharpened. Not a physical claim.
+                    _RING_MASK_SAFETY_FACTOR = 1.35
+                    _extra_rx = _rx * _SATURN_RING_OUTER_REQ * _RING_MASK_SAFETY_FACTOR
+                    _extra_ry = max(_extra_rx * _sin_b, 1e-6)
+                    # Inner ramp width for the ring's own weight, starting
+                    # at the globe's own true edge -- see sharpen_disk_
+                    # aware's docstring for the two rejected designs before
+                    # this one (a solid ellipse; then a separate, wrong-
+                    # eccentricity "hole" ellipse; then a HARD pixel-distance
+                    # exclusion band). The hard-exclusion version fixed the
+                    # ringing but real-data review found the disk-to-ring
+                    # "gap" isn't actually empty in real multi-frame Saturn
+                    # stacks -- it's the disk's own fairly bright limb-
+                    # darkening tail -- so a flat zero band there read as a
+                    # distinct, out-of-place "blurry halo" sitting in front
+                    # of the ring (user-reported). extra_gap_px is now the
+                    # width of a single CONTINUOUS ramp (0 at the edge, full
+                    # strength by extra_gap_px pixels out) instead -- no flat
+                    # segment for the eye to pick out. Width still needs to
+                    # be at least the widest ACTIVE wavelet feather zone so
+                    # that level's own transition isn't truncated (the
+                    # original ringing bug); empirical sweep against this
+                    # exact data (0/5/8/12/16px) found 8px -- matching the
+                    # widest active level's own feather_L below -- clean
+                    # under the hard-exclusion design, and it remains a
+                    # reasonable width for the continuous ramp too (wider
+                    # ramps were not re-swept since the flat-segment problem
+                    # that motivated narrowness no longer applies the same
+                    # way, but there's no evidence 8px needs revisiting).
+                    # Deferred until after _use_eff is known (a few lines
+                    # down) since it depends on that.
+                    _extra_gap_px = None  # set below once _use_eff is known
+                    # Reuse pole_pa_deg for the PRIMARY ellipse's angle too
+                    # (overriding the noisy per-image Otsu fit _angle) so the
+                    # globe mask and the ring mask are always co-oriented by
+                    # construction -- user-reported "abnormal line at the
+                    # ring/globe border" traced to this fit's angle (178.5 deg
+                    # here) diverging from pole_pa_deg (173.0 deg mod 180) by
+                    # ~5.5 deg on real data, which made the two independently-
+                    # feathered ellipse boundaries cross paths near the ansa,
+                    # producing a visible dip where both masks were
+                    # simultaneously mid-feather. The globe is close enough to
+                    # circular (ry/rx~0.9) that a few-degree orientation
+                    # change has no visible effect on its own limb feathering.
+                    _angle_rad = np.radians(_pole_pa_deg)
+                    _extra_angle = _angle_rad
+
                 # Auto-estimate eff and expand_px from image data if requested
                 if config.wavelet.auto_params:
                     _lum_auto = img.mean(axis=2) if img.ndim == 3 else img
@@ -141,6 +226,11 @@ def run(
                 else:
                     _use_eff    = config.wavelet.edge_feather_factor
                     _use_expand = config.wavelet.disk_expand_px
+
+                if _extra_rx is not None:
+                    _active_idxs = [i for i, a in enumerate(config.wavelet.master_amounts) if a != 0]
+                    _max_active_level = max(_active_idxs) if _active_idxs else 0
+                    _extra_gap_px = (2 ** _max_active_level) * _use_eff
 
                 if color_mode:
                     sharpened = wavelet.sharpen_color_disk_aware(
@@ -154,6 +244,8 @@ def run(
                         expand_px=_use_expand,
                         denoise_amounts=config.wavelet.master_denoise_amounts,
                         filter_type=config.wavelet.master_filter_type,
+                        extra_rx=_extra_rx, extra_ry=_extra_ry, extra_angle=_extra_angle,
+                        extra_gap_px=_extra_gap_px,
                     )
                 else:
                     sharpened = wavelet.sharpen_disk_aware(
@@ -167,6 +259,8 @@ def run(
                         expand_px=_use_expand,
                         denoise_amounts=config.wavelet.master_denoise_amounts,
                         filter_type=config.wavelet.master_filter_type,
+                        extra_rx=_extra_rx, extra_ry=_extra_ry, extra_angle=_extra_angle,
+                        extra_gap_px=_extra_gap_px,
                     )
                 print(f"    [{filt}] ellipse rx={_rx:.1f} ry={_ry:.1f} angle={_angle:.1f}°")
             else:

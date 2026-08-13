@@ -16,4 +16,5 @@ diag*/
 diag*.py
 docs/shadow_prediction_error_report.md
 Saturn_Data/
-Saturn_Data_Retry/
+Jupiter_Data/
+planetflow_test._260810_0900zip

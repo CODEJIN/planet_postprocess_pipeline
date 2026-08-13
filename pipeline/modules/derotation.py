@@ -2237,6 +2237,79 @@ def apply_shift(image: np.ndarray, dx: float, dy: float) -> np.ndarray:
     return np.clip(shifted, 0.0, 1.0)
 
 
+# Safety clamp for the pre-warp scale correction below -- NOT a physical
+# claim that real frame-to-frame disk radius never varies by more than 5%,
+# just a generous margin above the largest real variation measured this
+# session (~2.15%, Saturn window_01/R) to reject wild affine distortion from
+# a bad disk-shape fit rather than trust it.
+_SCALE_MIN = 0.95
+_SCALE_MAX = 1.05
+
+
+def apply_shift_and_scale(
+    image: np.ndarray,
+    target_cx: float,
+    target_cy: float,
+    ref_cx: float,
+    ref_cy: float,
+    scale: float,
+) -> np.ndarray:
+    """Map this frame's own measured disk centre/radius onto the reference
+    frame's geometry: output = ref_center + scale * (input - target_center).
+
+    Added 2026-08-11 (real-data investigation: the Cassini Division washes
+    out in a multi-frame Saturn stack even though it's visible in a single
+    frame). Root cause confirmed empirically: pre-warp alignment only ever
+    corrected TRANSLATION between frames — each frame's own apparent disk
+    RADIUS (from find_disk_center) varies by ~1-2% frame-to-frame in real
+    data (seeing/focus, not a bug), which is under 1px at the disk itself
+    but becomes 1.6-2.8px at the Cassini Division's radius (~2x the disk
+    radius) -- more than enough to blur out a gap only a few px wide when
+    several frames are averaged without correcting for it. (An earlier,
+    physically incorrect diagnosis blamed uncorrected ring orbital motion
+    instead -- wrong, because the Division is an axisymmetric radial
+    structure, I(r,lambda)=I(r), and shifting material in longitude alone
+    is a no-op on such a structure by definition; that plan was discarded
+    before implementation.)
+
+    BUG CAUGHT BEFORE SHIPPING (external review, math re-derived directly
+    to confirm): scaling around ref_center and then adding the existing
+    (ref_center - target_center) TRANSLATION-only shift is NOT the same
+    transform as scaling around target_center and then translating to
+    ref_center -- they only agree at scale=1.0. This function implements
+    the latter (pivot the scale at the TARGET's own centre first), which
+    is what tests/test_apply_shift_and_scale.py's center-mapping test
+    verifies directly (target_center must map exactly to ref_center).
+
+    A frame-to-frame ROTATION correction was also tried here (2026-08-13/14,
+    real-data investigation: even after the scale fix above, a 3-frame
+    Saturn stack's globe edge was measurably blurrier than a single
+    near-reference frame put through the identical pipeline) but REVERTED
+    after real-data verification: it made no measurable difference to the
+    Saturn transition width/sharpness, and produced a small but consistent
+    regression on Jupiter's 45-combo sharpness sweep (median delta -0.0015,
+    worst-case -0.0297, CH4 systematically worse across nearly every
+    window). Conclusion: the measured 3-4 degree frame-to-frame ellipse
+    angle_major swing is very likely contour-fit noise, not real rotation --
+    "correcting" for it just adds an extra interpolation pass that softens
+    real image content without fixing anything. See project memory for the
+    full investigation; do not re-add this without new evidence the angle
+    measurement itself is reliable.
+    """
+    M = cv2.getRotationMatrix2D((float(target_cx), float(target_cy)), 0.0, float(scale))
+    M[0, 2] += float(ref_cx) - float(target_cx)
+    M[1, 2] += float(ref_cy) - float(target_cy)
+    h, w = image.shape[:2]
+    shifted = cv2.warpAffine(
+        image.astype(np.float32),
+        M,
+        (w, h),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    return np.clip(shifted, 0.0, 1.0)
+
+
 def subpixel_align(
     reference: np.ndarray,
     target: np.ndarray,
@@ -2722,7 +2795,7 @@ def derotate_filter(
     # applied, so the shift is purely seeing-induced wobble and is not
     # contaminated by the warp-induced brightness redistribution that biases
     # post-warp limb_center_align toward partially undoing the de-rotation.
-    _pre_warp_shifts: dict = {}   # stem → (dx, dy)
+    _pre_warp_shifts: dict = {}   # stem → (dx, dy, scale, target_cx, target_cy)
 
     ref_img: Optional[np.ndarray] = None
 
@@ -2776,14 +2849,49 @@ def derotate_filter(
                 else:
                     _dx, _dy = subpixel_align(_ref_lum, _raw_lum)
                 if abs(_dx) <= 15.0 and abs(_dy) <= 15.0:
-                    _pre_warp_shifts[row["stem"]] = (_dx, _dy)
+                    # No independent radius measurement in this fallback
+                    # path (subpixel_align only ever returns a translation),
+                    # so scale correction is not attempted here — this is
+                    # already the branch for filters whose own shape/size
+                    # detection isn't trusted (see the block above), so
+                    # trying to derive a scale factor from it would be
+                    # trusting exactly the measurement already ruled out.
+                    # At scale=1.0, apply_shift_and_scale(p) = ref_center +
+                    # (p - target_center), so to reproduce the original pure
+                    # translation-by-(dx,dy) behaviour exactly, target_center
+                    # must be ref_center - (dx,dy), NOT ref_center itself
+                    # (that would collapse to the identity transform).
+                    _pre_warp_shifts[row["stem"]] = (_dx, _dy, 1.0, ref_cx - _dx, ref_cy - _dy)
             else:
-                _cx_i, _cy_i, _semi_i, *_ = find_disk_center(_raw_lum)
+                _cx_i, _cy_i, _semi_i, _semi_b_i, _angle_i, _conf_i, _shape_ok_i = (
+                    _find_disk_center_impl(_raw_lum)
+                )
                 if _semi_i >= 5:
                     _dx = float(ref_cx - _cx_i)
                     _dy = float(ref_cy - _cy_i)
                     if abs(_dx) <= 15.0 and abs(_dy) <= 15.0:
-                        _pre_warp_shifts[row["stem"]] = (_dx, _dy)
+                        # Scale correction (2026-08-11, real-data
+                        # investigation — see apply_shift_and_scale's
+                        # docstring for why): map this frame's own measured
+                        # radius onto _own_semi_a, THIS FILTER's own raw
+                        # reference-frame radius -- not ref_semi_a, which by
+                        # this point may already reflect cross-filter
+                        # radius_shared/shape_shared consensus adjustments
+                        # (see _own_semi_a's own definition above) that have
+                        # nothing to do with registering this frame against
+                        # its own filter's reference frame. Gated on this
+                        # frame's own fit confidence (mirrors the existing
+                        # translation sanity gate below) and clamped to a
+                        # safety range well outside the largest real
+                        # variation measured this session (~2.15%) — this
+                        # range is a defensive backstop against a bad fit
+                        # producing a wild affine distortion, not a physical
+                        # claim that real scale never varies more than 5%.
+                        _can_scale = _conf_i > 0.0 and np.isfinite(_semi_i)
+                        _scale = float(_own_semi_a) / _semi_i if _can_scale else 1.0
+                        if not (_SCALE_MIN <= _scale <= _SCALE_MAX):
+                            _scale = 1.0
+                        _pre_warp_shifts[row["stem"]] = (_dx, _dy, _scale, _cx_i, _cy_i)
         except Exception:
             pass
 
@@ -2807,8 +2915,8 @@ def derotate_filter(
         # phase_correlate fallback chain, which inherently needs the warped
         # image to measure against).
         if row["stem"] in _pre_warp_shifts:
-            _pw_dx, _pw_dy = _pre_warp_shifts[row["stem"]]
-            img = apply_shift(img, _pw_dx, _pw_dy)
+            _, _, _pw_scale, _pw_target_cx, _pw_target_cy = _pre_warp_shifts[row["stem"]]
+            img = apply_shift_and_scale(img, _pw_target_cx, _pw_target_cy, ref_cx, ref_cy, _pw_scale)
 
         dt_sec = (row["timestamp"] - t_reference).total_seconds()
         if use_true_reprojection:
@@ -2833,6 +2941,7 @@ def derotate_filter(
                 ring_crossing_mask=ring_crossing_mask,
             )
 
+        _pw_entry = _pre_warp_shifts.get(row["stem"])
         log_frames.append({
             "stem":              row["stem"],
             "timestamp":         row["timestamp"].strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -2843,6 +2952,9 @@ def derotate_filter(
             "own_disk_radius_px": round(_own_semi_a, 2),
             "radius_shared":     "+radius_shared" in _geometry_source,
             "delta_lambda_deg":  round((dt_sec / (period_hours * 3600.0)) * 360.0, 4),
+            "pre_warp_shift_dx": round(_pw_entry[0], 3) if _pw_entry else None,
+            "pre_warp_shift_dy": round(_pw_entry[1], 3) if _pw_entry else None,
+            "pre_warp_scale":    round(_pw_entry[2], 6) if _pw_entry else None,
         })
 
         if row["stem"] == reference_row["stem"]:
@@ -2888,7 +3000,7 @@ def derotate_filter(
                 if stem in _pre_warp_shifts:
                     # Already applied to the raw frame before warping —
                     # nothing left to do here except log what was applied.
-                    dx, dy = _pre_warp_shifts[stem]
+                    dx, dy, _, _, _ = _pre_warp_shifts[stem]
                     aligned_images.append(img)
                     frame_log["align_shift_px"] = [round(dx, 3), round(dy, 3)]
                     frame_log["align_method"] = "pre_warp_center"

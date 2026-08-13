@@ -930,6 +930,10 @@ def sharpen_disk_aware(
     expand_px: float = 0.0,
     denoise_amounts: Optional[List[float]] = None,
     filter_type: str = 'gaussian',
+    extra_rx: Optional[float] = None,
+    extra_ry: Optional[float] = None,
+    extra_angle: Optional[float] = None,
+    extra_gap_px: Optional[float] = None,
 ) -> np.ndarray:
     """À trous wavelet sharpening with per-level spatial edge feathering.
 
@@ -944,6 +948,44 @@ def sharpen_disk_aware(
     When ``ry`` is provided, the feather zone follows the actual elliptical
     disk boundary (rx=radius semi-major, ry semi-minor, angle tilt in radians)
     rather than a circle.
+
+    When ``extra_rx`` is also provided, a SECOND co-centred ellipse is
+    unioned into the mask — for a target with a coplanar structure that
+    extends well past the primary disk (e.g. Saturn's rings), this lets that
+    structure receive sharpening gain too, without which it sits at gain=0
+    and is passed through completely unsharpened. This function has no
+    notion of what the second shape physically represents; the caller
+    supplies its geometry.
+
+    IMPORTANT when the second shape sits right outside the primary disk (as
+    a ring does): omitting ``extra_gap_px`` makes the union a solid ellipse
+    reaching all the way to the centre, which backfills gain=1 immediately
+    outside the primary disk's own feather zone -- defeating that feather's
+    purpose of giving the disk's real limb gradient a "quiet" unboosted
+    buffer before any further content is sharpened, and reintroducing a
+    ringing artifact right at the limb (confirmed 2026-08-13 on real Saturn
+    data). ``extra_gap_px`` fixes this by ramping the second shape's own
+    weight smoothly from 0 (right at the primary disk's true boundary,
+    measured by actual pixel distance, not a second ellipse) up to full
+    strength over that many pixels -- a single continuous ramp, not a flat
+    exclusion zone. Two earlier attempts at this were tried and rejected on
+    real data (2026-08-13): (a) a separate, differently-eccentric "inner
+    ellipse" (e.g. the ring system's own physical inner edge, a very flat
+    ellipse vs. the near-circular globe) to carve a hole -- but that
+    ellipse's boundary crosses the primary disk's boundary at some off-axis
+    angle (any two co-centred ellipses of different eccentricity do), and
+    right at that crossing the hole no longer reached the disk's actual
+    edge, leaving a wedge of still-bright, still-unboosted pixels amid
+    heavily sharpened neighbours (a visible dark cusp, confirmed by directly
+    visualising the mask); (b) a HARD pixel-distance exclusion band (weight
+    forced to exactly 0 for extra_gap_px pixels, then a separate fade-in
+    beyond it) -- geometrically consistent (no crossing), but in real
+    multi-frame Saturn stacks that "gap" isn't empty, it's the disk's own
+    fairly bright limb-darkening tail, so a flat zero band there read as a
+    visibly distinct unsharpened "halo" between two sharpened regions. The
+    single continuous ramp has neither problem: no crossing (isotropic
+    pixel distance from the disk's own true shape) and no flat segment for
+    the eye to pick out (every pixel gets some, gradually increasing, gain).
 
     Args:
         image:               Float array in [0, 1], 2-D or 3-D.
@@ -960,6 +1002,20 @@ def sharpen_disk_aware(
         expand_px:           Extra pixels to expand the mask boundary outward.
         denoise_amounts:     Per-level soft-threshold coefficient (0.0=off, 0.1=gentle, 1.0=strong).
         filter_type:         'gaussian', 'zerogauss', or 'bilateral'.
+        extra_rx:            Semi-major axis of an optional second, co-centred
+                              ellipse to also include in the mask (union, via
+                              per-level max). None = no second ellipse (default,
+                              every existing caller's behaviour unchanged).
+        extra_ry:            Semi-minor axis of the second ellipse. None/<=0
+                              falls back to a circle of radius extra_rx.
+        extra_angle:         Tilt angle (radians) of the second ellipse. None
+                              falls back to reusing `angle`.
+        extra_gap_px:        Width (pixels) of the continuous ramp the second
+                              shape's own weight rises over, starting at 0
+                              right at the primary disk's true boundary (see
+                              above). None/<=0 = no ramp (solid union,
+                              reaching full strength immediately at the
+                              disk's own edge).
 
     Returns:
         Float32 array in [0, 1], same shape as input.
@@ -988,6 +1044,8 @@ def sharpen_disk_aware(
                 expand_px=expand_px,
                 denoise_amounts=denoise_amounts,
                 filter_type=filter_type,
+                extra_rx=extra_rx, extra_ry=extra_ry, extra_angle=extra_angle,
+                extra_gap_px=extra_gap_px,
             )
             for c in range(image.shape[2])
         ]
@@ -1023,6 +1081,56 @@ def sharpen_disk_aware(
     if disk_flat.sum() < 10:
         disk_flat = None
 
+    # When a second shape (extra_rx) is present, its OUTER boundary is still
+    # feathered with the normal per-shape normalised-ellipse method (a single
+    # shape's own boundary, no crossing-with-anything-else concern). Its
+    # INNER edge (where it meets the primary disk) is different: two
+    # real-data bugs were found and fixed here on 2026-08-13 --
+    #
+    # (1) A solid second ellipse reaching the centre backfills gain=1
+    #     immediately outside the disk's own feather zone, defeating that
+    #     feather's purpose of giving the disk's real limb gradient a quiet,
+    #     unboosted buffer -- visible ringing right at the border.
+    # (2) Carving a hole with a SEPARATE ellipse at the extra shape's own
+    #     (generally different) eccentricity crosses the disk's boundary at
+    #     some off-axis angle (any two co-centred ellipses of different
+    #     eccentricity do), and right at that crossing the hole stops
+    #     reaching the disk's actual edge -- a wedge of still-bright,
+    #     still-unboosted pixels amid sharpened neighbours (a visible cusp).
+    #
+    # A first fix for (2) used a HARD pixel-distance exclusion band (weight
+    # forced to exactly 0 for a fixed width outside the disk, matching (1)'s
+    # convention of "feather only fades on the inside, hard 0 immediately
+    # outside"), applied via cv2.distanceTransform of the disk shape (no
+    # crossing issue, unlike a second ellipse). That worked for the ringing,
+    # but real-data review found the "gap" isn't actually empty in real
+    # multi-frame Saturn stacks -- it's the disk's own fairly-bright
+    # limb-darkening tail -- so a FLAT zero band there (plus the extra
+    # shape's own separate fade-in just beyond it) reads as a visibly
+    # distinct unsharpened "halo" sandwiched between two sharpened regions.
+    #
+    # Final fix: make the inner edge a single CONTINUOUS ramp with no flat
+    # segment at all -- weight rises smoothly from 0 right at the disk's own
+    # boundary (measured by real pixel distance, so still no eccentricity
+    # crossing) up to full strength over extra_gap_px pixels. Every pixel in
+    # that zone gets *some* gain, increasing gradually, rather than "zero
+    # for a while, then a separate ramp" -- there is no longer a
+    # perceptually-flat band for the eye to pick out.
+    _disk_dist_out = None
+    if extra_rx is not None and extra_rx > 0 and extra_gap_px is not None and extra_gap_px > 0:
+        import cv2 as _cv2
+
+        if use_ellipse:
+            cos_a, sin_a = np.cos(angle), np.sin(angle)
+            dx_r = (X_g - cx) * cos_a + (Y_g - cy) * sin_a
+            dy_r = -(X_g - cx) * sin_a + (Y_g - cy) * cos_a
+            disk_core = ((dx_r / rx_m) ** 2 + (dy_r / ry_m) ** 2) <= 1.0
+        else:
+            disk_core = ((X_g - cx) ** 2 + (Y_g - cy) ** 2) <= rx_m ** 2
+        _disk_dist_out = _cv2.distanceTransform(
+            (~disk_core).astype(np.uint8), _cv2.DIST_L2, 5
+        )
+
     result = original.copy()
     for level_idx, (detail, gain) in enumerate(zip(coeffs[:-1], gains)):
         if gain == 0.0:
@@ -1041,6 +1149,18 @@ def sharpen_disk_aware(
             )
         else:
             weight_map = _make_disk_weight(h, w, cx, cy, rx_m, feather_L)
+
+        if extra_rx is not None and extra_rx > 0:
+            _extra_ry = extra_ry if (extra_ry is not None and extra_ry > 0) else extra_rx
+            _extra_angle = extra_angle if extra_angle is not None else angle
+            extra_weight_map = _make_disk_weight_ellipse(
+                h, w, cx, cy, extra_rx, _extra_ry, _extra_angle, feather_L
+            )
+            if _disk_dist_out is not None:
+                t_inner = np.clip(_disk_dist_out / extra_gap_px, 0.0, 1.0)
+                inner_ramp = (0.5 * (1.0 - np.cos(np.pi * t_inner))).astype(np.float32)
+                extra_weight_map = np.minimum(extra_weight_map, inner_ramp)
+            weight_map = np.maximum(weight_map, extra_weight_map)
 
         result = result + d_thr * gain * weight_map
 
@@ -1063,14 +1183,20 @@ def sharpen_color_disk_aware(
     expand_px: float = 0.0,
     denoise_amounts: Optional[List[float]] = None,
     filter_type: str = 'gaussian',
+    extra_rx: Optional[float] = None,
+    extra_ry: Optional[float] = None,
+    extra_angle: Optional[float] = None,
+    extra_gap_px: Optional[float] = None,
 ) -> np.ndarray:
     """Disk-aware sharpening for colour (H, W, 3) RGB float images via Lab L-channel.
 
     Converts RGB → Lab, applies :func:`sharpen_disk_aware` to the L channel
     only, then converts back.  Chrominance is preserved unchanged.
 
-    Args and returns: same as :func:`sharpen_color` plus disk geometry args
-    and the new denoise_amounts / filter_type parameters.
+    Args and returns: same as :func:`sharpen_color` plus disk geometry args,
+    the denoise_amounts / filter_type parameters, and the optional second-
+    ellipse extra_rx/extra_ry/extra_angle/extra_gap_px (see
+    sharpen_disk_aware's docstring).
     """
     import cv2 as _cv2
     bgr = _cv2.cvtColor(image.astype(np.float32), _cv2.COLOR_RGB2BGR)
@@ -1086,6 +1212,8 @@ def sharpen_color_disk_aware(
         expand_px=expand_px,
         denoise_amounts=denoise_amounts,
         filter_type=filter_type,
+        extra_rx=extra_rx, extra_ry=extra_ry, extra_angle=extra_angle,
+        extra_gap_px=extra_gap_px,
     )
     lab[:, :, 0] = np.clip(L_sharp * 100.0, 0.0, 100.0)
 
