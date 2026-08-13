@@ -1,12 +1,20 @@
-"""Corrected 45-combo sharpness sweep (2026-08-11): calls the REAL
-derotate_window() (not derotate_filter() directly per-filter) so that
-shared_shape/shared_radius_px/filter_pose are computed and threaded through
-exactly as production does (see derotate_window()'s "Ring-aware shared
-shape/pose" block). scratch_shared_shape_fix_sweep.py called derotate_filter()
-directly without ever passing shared_shape, so it silently bypassed BOTH the
-shared_shape gating fix (2dc3773) and the aspect-ratio-disagreement fix
-(this commit) -- its "0.865, unchanged before/after" result was invalid,
-not a real verification. This script is the corrected replacement.
+"""Jupiter equivalent of scratch_window_level_sweep.py (the Saturn 45-combo
+step05-vs-step07 sharpness sweep, see project_saturn_step05_sharpness_gap
+memory: median ratio ended at ~0.862 after 3 real bug fixes, with IR/CH4
+causes still unexplained).
+
+User question (2026-08-13): "why doesn't Jupiter show the same outer-edge
+blur if it uses the identical algorithm?" -- this has never actually been
+measured for Jupiter with the same rigorous methodology; the Saturn number
+came from derotate_window() (not derotate_filter() directly, which silently
+skips shared_shape/shared_radius_px/filter_pose threading -- see
+project_shared_shape_gating_bug memory). This script replicates that exact
+harness for Jupiter_Data, passing use_true_reprojection=True/
+true_polar_equatorial_ratio to match this user's ACTUAL saved profile
+settings (~/.astropipe/profiles/mono.json has use_true_reprojection: true,
+and Jupiter_Data's own existing derotation_log.json already shows a
+nonzero sub_observer_lat_deg confirming that flag was on when this data was
+originally produced).
 """
 from __future__ import annotations
 
@@ -24,16 +32,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 from pipeline.modules import image_io
 from pipeline.modules.derotation import derotate_window, find_disk_center
 
-STEP02_DIR = Path("Saturn_Data/step02_lucky_stack")
-STEP04_DIR = Path("Saturn_Data/step04_derotated")
-WINDOWS_JSON = Path("Saturn_Data/step03_quality/windows.json")
+STEP02_DIR = Path("Jupiter_Data/step02_lucky_stack")
+STEP04_DIR = Path("Jupiter_Data/step04_derotated")
+WINDOWS_JSON = Path("Jupiter_Data/step03_quality/windows.json")
 
 FILTERS = ["IR", "R", "G", "B", "CH4"]
 
 # 2026-08-13: toggle for the raw-sharpness-based frame selection feature
 # (see frame_sharpness_central() in pipeline/modules/derotation.py). Set
 # via env var so this script can be re-run both ways without editing code:
-#   SHARPNESS_SELECTION=1 python3 scratch_window_level_sweep.py
+#   SHARPNESS_SELECTION=1 python3 scratch_jupiter_step05_sharpness_sweep.py
 import os
 SHARPNESS_SELECTION_ENABLED = os.environ.get("SHARPNESS_SELECTION", "0") == "1"
 SHARPNESS_KEEP_FRACTION = float(os.environ.get("SHARPNESS_KEEP_FRACTION", "0.5"))
@@ -81,13 +89,13 @@ def main():
 
     results = []
     with tempfile.TemporaryDirectory() as tmpdir:
-        for wi in range(1, 10):
+        for wi in sorted(windows.keys())[:9]:
             window = windows[wi]
-            window_log = json.load(open(STEP04_DIR / f"window_{wi:02d}" / "derotation_log.json"))
+            log_path = STEP04_DIR / f"window_{wi:02d}" / "derotation_log.json"
+            if not log_path.exists():
+                continue
+            window_log = json.load(open(log_path))
             hydrated = _hydrate_window(window)
-
-            # All filters in a window share these (confirmed identical across
-            # filters in every window's real derotation_log.json).
             any_flog = next(iter(window_log["filters"].values()))
 
             out_dir = Path(tmpdir) / f"window_{wi:02d}"
@@ -105,8 +113,10 @@ def main():
                 color_mode=False,
                 flip_direction=any_flog["flip_direction"],
                 weight_power=any_flog["weight_power"],
-                has_rings=any_flog["has_rings"],
-                sub_observer_lat_deg=any_flog["sub_observer_lat_deg"],
+                has_rings=any_flog.get("has_rings", False),
+                sub_observer_lat_deg=any_flog.get("sub_observer_lat_deg", 0.0),
+                use_true_reprojection=True,
+                true_polar_equatorial_ratio=0.9,  # Jupiter's true Rpol/Req
                 out_dir=out_dir,
                 sharpness_selection_enabled=SHARPNESS_SELECTION_ENABLED,
                 sharpness_keep_fraction=SHARPNESS_KEEP_FRACTION,
@@ -144,7 +154,6 @@ def main():
                     "window": wi, "filter": filt,
                     "n_stacked": log_dict.get("n_stacked"),
                     "geometry_source": log_dict.get("geometry_source"),
-                    "ring_crosses_disk": log_dict.get("ring_crosses_disk"),
                     "stack_sharpness": stack_sharp,
                     "best_single_sharpness": best_sharp,
                     "ratio_vs_best_single": ratio,
@@ -152,13 +161,19 @@ def main():
                 print(f"window_{wi:02d} {filt:>4}: n={log_dict.get('n_stacked')} "
                       f"geom={log_dict.get('geometry_source')} ratio={ratio:.4f}")
 
-    out_path = Path("scratch_window_level_sweep_results.json")
+    out_path = Path("scratch_jupiter_step05_sharpness_sweep_results.json")
     out_path.write_text(json.dumps(results, indent=2))
 
     ratios = [r["ratio_vs_best_single"] for r in results]
     worse = sum(1 for r in ratios if r < 1.0)
     print(f"\n=== Summary: n={len(ratios)} median={np.median(ratios):.4f} "
           f"mean={np.mean(ratios):.4f} worse={worse}/{len(ratios)} ===")
+
+    print("\n=== By filter ===")
+    for f in FILTERS:
+        fr = [r["ratio_vs_best_single"] for r in results if r["filter"] == f]
+        if fr:
+            print(f"  {f:>4}: n={len(fr)} median={np.median(fr):.4f} mean={np.mean(fr):.4f}")
     print(f"Wrote {out_path}")
 
 
