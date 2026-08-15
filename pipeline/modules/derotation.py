@@ -1391,6 +1391,103 @@ def compute_ring_occlusion_weight_3d(
     return _feather_ring_foreground_boundary(h, w, is_foreground)
 
 
+def compute_ring_sharpening_mask(
+    h: int,
+    w: int,
+    cx: float,
+    cy: float,
+    disk_semi_a: float,
+    disk_semi_b: float,
+    pole_pa_deg: float,
+    sub_observer_lat_deg: float,
+    outer_safety_factor: float = 1.35,
+) -> np.ndarray:
+    """[0,1] weight for wavelet.sharpen_disk_aware's extra_weight_map: where
+    Saturn's rings should receive sharpening gain, as a TRUE ANNULUS rather
+    than a filled ellipse.
+
+    2026-08-15 root cause (real-data confirmed, see project_ring_limb_
+    ringing_bug memory and SATURN_RING_WAVELET_STATUS_2026-08-15.md): the
+    previous mechanism (sharpen_disk_aware's extra_rx/extra_ry/extra_gap_px)
+    builds a FILLED ellipse out to the ring's outer edge, with only an
+    extra_gap_px-wide (~8px) ramp protecting the zone just outside the
+    globe's own true boundary. But the real gap between the globe (r=1) and
+    the ring's own true inner edge (r=_SATURN_RING_INNER_REQ, ~1.239) is far
+    wider than 8px, and real-data profiling confirmed it carries high-SNR
+    signal that is NOT ring material -- it's the globe's own PSF-blurred
+    limb tail plus genuine empty gap. Applying full ring-level sharpening
+    gain there amplified whatever faint gradient sits in that zone into the
+    white-rim/dark-trough artifact. This function instead:
+
+      1. Restricts the "extra" gain to the TRUE ring annulus (inner_ring_semi_a
+         to outer_ring_semi_a*outer_safety_factor) -- nothing in the gap
+         between the globe and the ring's real inner edge gets any gain from
+         this mask at all.
+      2. Where that annulus overlaps the globe's own silhouette (the ring
+         visually crossing the disk), restricts further to the FRONT arc
+         only (depth_ring > 0, the same closed-form depth compute_ring_
+         occlusion_weight_3d already uses) -- the far/occluded ring arc must
+         not receive gain there, since what's actually visible is the
+         globe's own near surface, not ring. Everywhere the annulus does
+         NOT overlap the globe (the vast majority of the ring), both near
+         and far arcs are equally real, visible ring material and get full
+         coverage -- gating by depth_ring globally (this function's own
+         first, incorrect attempt) wrongly zeroed out the entire far arc's
+         open-sky portion too.
+      3. Feathers only the annulus's own outer boundary (reusing
+         _feather_ring_foreground_boundary, the same helper already used for
+         compute_ring_occlusion_weight/_3d) -- no independent inner-edge
+         ramp, so no new seam is introduced at the globe/ring connection:
+         wherever this mask overlaps the primary disk mask, the primary
+         mask (already ~1.0 there) simply dominates via the caller's
+         max-combine.
+
+    outer_safety_factor: matches wavelet_master.py's existing _RING_MASK_
+    SAFETY_FACTOR -- real multi-frame Saturn stacks show ring signal fading
+    out well past the strict IAU A-ring outer-edge ratio (2.269x), almost
+    certainly PSF/seeing/residual-stacking blur smearing the true edge
+    outward (see wavelet_master.py's own comment on this constant). Not a
+    physical claim, just over-covering being harmless (extends gain a bit
+    into background) versus under-covering leaving real ring detail
+    unsharpened.
+
+    Validated 2026-08-15 on real window_01/R: eliminates the white-rim
+    overshoot that extra_rx produced at the disk-ring junction while
+    keeping ring band detail sharpened right up to (but not into) the
+    globe's own halo -- see experiments/ringing_fix_validation/v2_fullring_*
+    from that session's investigation.
+    """
+    sin_b = abs(math.sin(math.radians(sub_observer_lat_deg)))
+    inner_ring_semi_a = disk_semi_a * _SATURN_RING_INNER_REQ
+    inner_ring_semi_b = inner_ring_semi_a * sin_b
+    outer_ring_semi_a = disk_semi_a * _SATURN_RING_OUTER_REQ * outer_safety_factor
+    outer_ring_semi_b = max(outer_ring_semi_a * sin_b, 1e-6)
+
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+    ang = math.radians(pole_pa_deg)
+    cos_a, sin_a = math.cos(ang), math.sin(ang)
+    dx, dy = xx - cx, yy - cy
+    xr = dx * cos_a + dy * sin_a
+    yr = -dx * sin_a + dy * cos_a
+
+    in_ring_outer = (xr / outer_ring_semi_a) ** 2 + (yr / outer_ring_semi_b) ** 2 <= 1.0
+    in_ring_inner = (xr / inner_ring_semi_a) ** 2 + (yr / max(inner_ring_semi_b, 1e-6)) ** 2 <= 1.0
+    in_ring_annulus = in_ring_outer & ~in_ring_inner
+    in_globe = (xr / disk_semi_a) ** 2 + (yr / max(disk_semi_b, 1e-6)) ** 2 <= 1.0
+
+    if abs(sub_observer_lat_deg) < _SUB_OBS_LAT_SMALL_DEG:
+        # Ring-plane edge-on: front/back is undefined/degenerate: no globe
+        # overlap to worry about resolving, so skip the depth test entirely.
+        return _feather_ring_foreground_boundary(h, w, in_ring_annulus)
+
+    B_rad = math.radians(sub_observer_lat_deg)
+    depth_ring = -1.0 * yr / math.tan(B_rad)
+    front_only = depth_ring > 0
+
+    ring_footprint = in_ring_annulus & (front_only | ~in_globe)
+    return _feather_ring_foreground_boundary(h, w, ring_footprint)
+
+
 # ── Shared disk geometry across filters (shape/pose separation) ───────────────
 #
 # A ringed planet's per-filter disk fits disagree slightly (different SNR/

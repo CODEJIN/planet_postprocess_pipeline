@@ -1107,6 +1107,7 @@ def sharpen_disk_aware(
     confidence_map: Optional[np.ndarray] = None,
     fill_outside_before_sharpen: bool = False,
     overshoot_clamp_radius_px: float = 0.0,
+    extra_weight_map: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """À trous wavelet sharpening with per-level spatial edge feathering.
 
@@ -1189,6 +1190,47 @@ def sharpen_disk_aware(
                               above). None/<=0 = no ramp (solid union,
                               reaching full strength immediately at the
                               disk's own edge).
+        extra_weight_map:    Optional pre-built (H, W) float array in [0, 1],
+                              same spatial shape as `image`, unioned (per-
+                              level, via max) into the mask exactly where
+                              extra_rx's own filled-ellipse-plus-ramp weight
+                              would otherwise go. When provided, extra_rx/
+                              extra_ry/extra_angle/extra_gap_px are ignored
+                              entirely for the "extra" component (the primary
+                              ellipse mask is unaffected either way).
+                              This exists because extra_rx's own construction
+                              is a FILLED ellipse (minimum-combined with an
+                              inner ramp that starts at the primary disk's
+                              edge) -- appropriate for a caller whose second
+                              shape genuinely has content reaching inward
+                              toward the disk, but wrong for Saturn's rings,
+                              which are an ANNULUS with a real, mostly-empty
+                              gap between the globe's true edge and the
+                              ring's own true inner edge (confirmed via real-
+                              data profile: SNR there is high, it's real
+                              signal, but it's disk-edge PSF blur + physical
+                              gap, not ring material). extra_rx's ramp only
+                              protects `extra_gap_px` (~8px) of that gap
+                              before resuming full gain -- for Saturn's
+                              geometry the true gap is far wider, so most of
+                              it was getting full ring-level sharpening gain
+                              applied to a region with no ring signal,
+                              amplifying whatever faint gradient sits there
+                              into the white-rim/dark-trough artifact (real-
+                              data confirmed 2026-08-15 -- see
+                              project_ring_limb_ringing_bug memory and
+                              SATURN_RING_WAVELET_STATUS_2026-08-15.md).
+                              wavelet_master.py builds the actual mask for
+                              Saturn (true ring annulus, front-arc-only where
+                              it overlaps the globe silhouette so the far/
+                              occluded ring arc never gets gain, full annulus
+                              coverage everywhere else) and passes it here --
+                              this function stays agnostic to what physical
+                              structure the array represents, matching
+                              extra_rx's own existing "caller supplies the
+                              geometry" convention. None (default): bit-
+                              identical, falls back to the extra_rx path
+                              exactly as before.
         confidence_map:      Optional (H, W) float array in [0, 1], same
                               spatial shape as `image`, multiplied into every
                               level's gain (see coverage_to_confidence()).
@@ -1287,12 +1329,18 @@ def sharpen_disk_aware(
                 confidence_map=confidence_map,
                 fill_outside_before_sharpen=fill_outside_before_sharpen,
                 overshoot_clamp_radius_px=overshoot_clamp_radius_px,
+                extra_weight_map=extra_weight_map,
             )
             for c in range(image.shape[2])
         ]
         return np.stack(channels, axis=2).astype(np.float32)
 
     h, w = image.shape
+    if extra_weight_map is not None and extra_weight_map.shape != (h, w):
+        raise ValueError(
+            f"extra_weight_map.shape={extra_weight_map.shape} must match "
+            f"image spatial shape ({h}, {w})"
+        )
     if confidence_map is not None and confidence_map.shape != (h, w):
         raise ValueError(
             f"confidence_map.shape={confidence_map.shape} must match "
@@ -1431,17 +1479,23 @@ def sharpen_disk_aware(
         else:
             weight_map = _make_disk_weight(h, w, cx, cy, rx_m, feather_L)
 
-        if extra_rx is not None and extra_rx > 0:
+        if extra_weight_map is not None:
+            # Pre-built array (see docstring): used as-is, same at every
+            # level -- no per-level feather_L reconstruction, since the
+            # caller already baked in whatever feathering it needs (e.g.
+            # _feather_ring_foreground_boundary's fixed-pixel-distance ramp).
+            weight_map = np.maximum(weight_map, extra_weight_map)
+        elif extra_rx is not None and extra_rx > 0:
             _extra_ry = extra_ry if (extra_ry is not None and extra_ry > 0) else extra_rx
             _extra_angle = extra_angle if extra_angle is not None else angle
-            extra_weight_map = _make_disk_weight_ellipse(
+            extra_ellipse_map = _make_disk_weight_ellipse(
                 h, w, cx, cy, extra_rx, _extra_ry, _extra_angle, feather_L
             )
             if _disk_dist_out is not None:
                 t_inner = np.clip(_disk_dist_out / extra_gap_px, 0.0, 1.0)
                 inner_ramp = (0.5 * (1.0 - np.cos(np.pi * t_inner))).astype(np.float32)
-                extra_weight_map = np.minimum(extra_weight_map, inner_ramp)
-            weight_map = np.maximum(weight_map, extra_weight_map)
+                extra_ellipse_map = np.minimum(extra_ellipse_map, inner_ramp)
+            weight_map = np.maximum(weight_map, extra_ellipse_map)
 
         result = result + d_thr * gain * weight_map * _conf
 
@@ -1475,6 +1529,7 @@ def sharpen_color_disk_aware(
     confidence_map: Optional[np.ndarray] = None,
     fill_outside_before_sharpen: bool = False,
     overshoot_clamp_radius_px: float = 0.0,
+    extra_weight_map: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Disk-aware sharpening for colour (H, W, 3) RGB float images via Lab L-channel.
 
@@ -1483,11 +1538,11 @@ def sharpen_color_disk_aware(
 
     Args and returns: same as :func:`sharpen_color` plus disk geometry args,
     the denoise_amounts / filter_type parameters, and the optional second-
-    ellipse extra_rx/extra_ry/extra_angle/extra_gap_px, confidence_map,
-    fill_outside_before_sharpen, and overshoot_clamp_radius_px (see
-    sharpen_disk_aware's docstring) -- all channel-agnostic (pure spatial
-    signals) so they are passed straight through to the single L-channel
-    call, no per-channel handling needed.
+    ellipse extra_rx/extra_ry/extra_angle/extra_gap_px, extra_weight_map,
+    confidence_map, fill_outside_before_sharpen, and
+    overshoot_clamp_radius_px (see sharpen_disk_aware's docstring) -- all
+    channel-agnostic (pure spatial signals) so they are passed straight
+    through to the single L-channel call, no per-channel handling needed.
     """
     import cv2 as _cv2
     bgr = _cv2.cvtColor(image.astype(np.float32), _cv2.COLOR_RGB2BGR)
@@ -1508,6 +1563,7 @@ def sharpen_color_disk_aware(
         confidence_map=confidence_map,
         fill_outside_before_sharpen=fill_outside_before_sharpen,
         overshoot_clamp_radius_px=overshoot_clamp_radius_px,
+        extra_weight_map=extra_weight_map,
     )
     lab[:, :, 0] = np.clip(L_sharp * 100.0, 0.0, 100.0)
 

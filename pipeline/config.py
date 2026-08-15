@@ -190,6 +190,25 @@ class WaveletConfig:
     # alone; a zoomed (4-5x) crop of the ring/globe boundary must show zero
     # visible bright overshoot before this can ship (see
     # feedback_white_rim_is_critical_defect memory).
+    #
+    # UPDATE (2026-08-15, later same day): root cause of case D's artifact
+    # identified precisely -- extra_rx builds a FILLED ellipse (only an
+    # ~8px inner ramp protects the zone just outside the globe's true edge),
+    # so it handed full ring-level sharpening gain to the wide, real,
+    # high-SNR-but-not-ring gap between the globe's true edge and the ring's
+    # own true inner edge (r=1.0 to r~1.239) -- amplifying that zone's faint
+    # gradient into the white-rim/dark-trough. When this flag is True, the
+    # implementation now uses derotation.compute_ring_sharpening_mask() (a
+    # true ring ANNULUS, front-arc-only where it overlaps the globe
+    # silhouette, zero gain in the globe-to-ring gap) via wavelet.
+    # sharpen_disk_aware's extra_weight_map, instead of extra_rx/extra_ry/
+    # extra_angle/extra_gap_px. Validated on real window_01/R (both the
+    # direct sharpen_disk_aware call and the full wavelet_master.run()
+    # pipeline path): white-rim gone, ring band detail sharpened right up to
+    # the globe's own halo, zoomed crops in experiments/ringing_fix_
+    # validation/realpipe_ON_*. Kept default False pending validation across
+    # more windows/filters -- one window is not enough to flip a production
+    # default per this session's own established discipline.
     master_ring_extension_enabled: bool = False
 
     # ── Overshoot clamp: output-domain ringing suppression (2026-08-15) ──────

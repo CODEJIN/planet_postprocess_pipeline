@@ -31,8 +31,7 @@ from pipeline.modules import image_io, wavelet
 from pipeline.modules.derotation import (
     find_disk_center,
     _robust_ellipse_refit,
-    _SATURN_RING_INNER_REQ,
-    _SATURN_RING_OUTER_REQ,
+    compute_ring_sharpening_mask,
 )
 
 
@@ -198,8 +197,7 @@ def run(
                               f"and s0_sl_blend_enabled or master_coverage_aware_sharpening "
                               f"active at step04) -- sharpening without confidence weighting")
 
-                _extra_rx = _extra_ry = _extra_angle = None
-                _extra_gap_px = None
+                _extra_weight_map = None
                 if bool(_wlog.get("has_rings", False)):
                     _pole_pa_deg = float(_wlog.get("pole_pa_deg", 0.0))
                     # Reuse pole_pa_deg for the PRIMARY ellipse's angle too
@@ -221,52 +219,29 @@ def run(
 
                 if bool(_wlog.get("has_rings", False)) and config.wavelet.master_ring_extension_enabled:
                     _sub_obs_lat_deg = float(_wlog.get("sub_observer_lat_deg", 0.0))
-                    _sin_b = abs(np.sin(np.radians(_sub_obs_lat_deg)))
-                    # User-reported real-data check (window_01/R): the visible
-                    # ring signal in a de-rotated, multi-frame-stacked image
-                    # fades out gradually well past the strict IAU A-ring
-                    # outer-edge ratio (2.269x) -- measured reaching background
-                    # around 2.7-2.8x, not 2.269x, almost certainly PSF/seeing/
-                    # residual-stacking blur smearing the true edge outward.
-                    # That blur width isn't a fixed physical ring constant, so
-                    # rather than guess a per-session value, apply a generous,
-                    # explicitly-labelled SAFETY margin on top of the physical
-                    # ratio -- over-covering just applies sharpening gain to a
-                    # bit of background sky (harmless), while under-covering
-                    # (the original bug) leaves real ring detail permanently
-                    # unsharpened. Not a physical claim.
-                    _RING_MASK_SAFETY_FACTOR = 1.35
-                    _extra_rx = _rx * _SATURN_RING_OUTER_REQ * _RING_MASK_SAFETY_FACTOR
-                    _extra_ry = max(_extra_rx * _sin_b, 1e-6)
-                    # Inner ramp width for the ring's own weight, starting
-                    # at the globe's own true edge -- see sharpen_disk_
-                    # aware's docstring for the two rejected designs before
-                    # this one (a solid ellipse; then a separate, wrong-
-                    # eccentricity "hole" ellipse; then a HARD pixel-distance
-                    # exclusion band). The hard-exclusion version fixed the
-                    # ringing but real-data review found the disk-to-ring
-                    # "gap" isn't actually empty in real multi-frame Saturn
-                    # stacks -- it's the disk's own fairly bright limb-
-                    # darkening tail -- so a flat zero band there read as a
-                    # distinct, out-of-place "blurry halo" sitting in front
-                    # of the ring (user-reported). extra_gap_px is now the
-                    # width of a single CONTINUOUS ramp (0 at the edge, full
-                    # strength by extra_gap_px pixels out) instead -- no flat
-                    # segment for the eye to pick out. Width still needs to
-                    # be at least the widest ACTIVE wavelet feather zone so
-                    # that level's own transition isn't truncated (the
-                    # original ringing bug); empirical sweep against this
-                    # exact data (0/5/8/12/16px) found 8px -- matching the
-                    # widest active level's own feather_L below -- clean
-                    # under the hard-exclusion design, and it remains a
-                    # reasonable width for the continuous ramp too (wider
-                    # ramps were not re-swept since the flat-segment problem
-                    # that motivated narrowness no longer applies the same
-                    # way, but there's no evidence 8px needs revisiting).
-                    # Deferred until after _use_eff is known (a few lines
-                    # down) since it depends on that.
-                    _extra_gap_px = None  # set below once _use_eff is known
-                    _extra_angle = _angle_rad
+                    # 2026-08-15 (second pass, same day): the original extra_rx/
+                    # extra_ry/extra_gap_px approach below (a FILLED ellipse
+                    # with only an ~8px inner ramp) was found -- via external
+                    # review, confirmed against real data -- to hand full
+                    # ring-level sharpening gain to the wide, mostly-empty gap
+                    # between the globe's true edge and the ring's own true
+                    # inner edge (r=1.0 to r=_SATURN_RING_INNER_REQ~1.239),
+                    # which is real high-SNR signal but is the globe's own PSF
+                    # limb tail, not ring material -- amplifying it produced
+                    # the white-rim/dark-trough artifact at the disk-ring
+                    # junction. Replaced with a true ring ANNULUS mask (see
+                    # compute_ring_sharpening_mask's docstring for the full
+                    # derivation and the real-data validation, experiments/
+                    # ringing_fix_validation/v2_fullring_* from that session):
+                    # nothing in the globe-to-ring gap gets any gain from this
+                    # mask, the far/occluded ring arc is excluded only where
+                    # it overlaps the globe's own silhouette, and the outer
+                    # edge is feathered the same way compute_ring_occlusion_
+                    # weight_3d already feathers its own boundary.
+                    _extra_weight_map = compute_ring_sharpening_mask(
+                        img.shape[0], img.shape[1], _cx, _cy, _rx, _ry,
+                        _pole_pa_deg, _sub_obs_lat_deg,
+                    )
 
                 # Auto-estimate eff and expand_px from image data if requested
                 if config.wavelet.auto_params:
@@ -280,11 +255,6 @@ def run(
                     _use_eff    = config.wavelet.edge_feather_factor
                     _use_expand = config.wavelet.disk_expand_px
 
-                if _extra_rx is not None:
-                    _active_idxs = [i for i, a in enumerate(config.wavelet.master_amounts) if a != 0]
-                    _max_active_level = max(_active_idxs) if _active_idxs else 0
-                    _extra_gap_px = (2 ** _max_active_level) * _use_eff
-
                 if color_mode:
                     sharpened = wavelet.sharpen_color_disk_aware(
                         img, _cx, _cy, _rx,
@@ -297,8 +267,7 @@ def run(
                         expand_px=_use_expand,
                         denoise_amounts=config.wavelet.master_denoise_amounts,
                         filter_type=config.wavelet.master_filter_type,
-                        extra_rx=_extra_rx, extra_ry=_extra_ry, extra_angle=_extra_angle,
-                        extra_gap_px=_extra_gap_px,
+                        extra_weight_map=_extra_weight_map,
                         confidence_map=_confidence_map,
                         fill_outside_before_sharpen=config.wavelet.master_edge_extension_enabled,
                         overshoot_clamp_radius_px=config.wavelet.master_overshoot_clamp_radius_px,
@@ -315,8 +284,7 @@ def run(
                         expand_px=_use_expand,
                         denoise_amounts=config.wavelet.master_denoise_amounts,
                         filter_type=config.wavelet.master_filter_type,
-                        extra_rx=_extra_rx, extra_ry=_extra_ry, extra_angle=_extra_angle,
-                        extra_gap_px=_extra_gap_px,
+                        extra_weight_map=_extra_weight_map,
                         confidence_map=_confidence_map,
                         fill_outside_before_sharpen=config.wavelet.master_edge_extension_enabled,
                         overshoot_clamp_radius_px=config.wavelet.master_overshoot_clamp_radius_px,
