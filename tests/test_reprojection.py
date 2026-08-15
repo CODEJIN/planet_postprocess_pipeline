@@ -357,6 +357,47 @@ def test_no_hard_ring_at_invalid_boundary():
     )
 
 
+# ── ring_crossing_mask param (2026-08-15) ───────────────────────────────────
+
+def test_ring_crossing_mask_none_is_byte_identical():
+    """ring_crossing_mask=None (default) must be a pure no-op -- every
+    existing Jupiter/non-ring caller's output must not change one bit."""
+    h, w = 300, 300
+    cx, cy, disk_r, period_h = 150.0, 150.0, 120.0, 10.0
+    rng = np.random.default_rng(2)
+    img = rng.random((h, w)).astype(np.float32)
+    kwargs = dict(
+        cx=cx, cy=cy, disk_radius_px=disk_r, period_hours=period_h,
+        sub_observer_lat_deg=20.0, pole_pa_deg=15.0,
+        polar_equatorial_ratio_true=0.935, scale=1.0,
+    )
+    dt_sec = period_h * 3600.0 * 0.05
+    out_omitted = spherical_derotation_warp_3d(img, dt_sec, **kwargs)
+    out_explicit_none = spherical_derotation_warp_3d(img, dt_sec, ring_crossing_mask=None, **kwargs)
+    np.testing.assert_array_equal(out_omitted, out_explicit_none)
+
+
+def test_ring_crossing_mask_full_frame_returns_input_unchanged():
+    """ring_crossing_mask=1.0 everywhere must force full identity fallback
+    (this frame's own original content, no warp at all) -- the same
+    output-side + source-side blending that keeps ordinary atmosphere
+    pixels away from foreground-ring content must also correctly leave a
+    FULLY ring-occluded frame completely untouched."""
+    h, w = 300, 300
+    cx, cy, disk_r, period_h = 150.0, 150.0, 120.0, 10.0
+    rng = np.random.default_rng(3)
+    img = rng.random((h, w)).astype(np.float32)
+    dt_sec = period_h * 3600.0 * 0.05
+    full_mask = np.ones((h, w), dtype=np.float32)
+    out = spherical_derotation_warp_3d(
+        img, dt_sec, cx, cy, disk_r, period_h,
+        sub_observer_lat_deg=20.0, pole_pa_deg=15.0,
+        polar_equatorial_ratio_true=0.935, scale=1.0,
+        ring_crossing_mask=full_mask,
+    )
+    np.testing.assert_allclose(out, img, atol=1e-5)
+
+
 if __name__ == "__main__":
     test_round_trip_self_consistency()
     print("round-trip self-consistency: OK")
@@ -376,4 +417,8 @@ if __name__ == "__main__":
     print("auto_detect_equator_pa sign matches warp convention: OK")
     test_no_hard_ring_at_invalid_boundary()
     print("no hard ring at invalid boundary: OK")
+    test_ring_crossing_mask_none_is_byte_identical()
+    print("ring_crossing_mask=None is byte-identical: OK")
+    test_ring_crossing_mask_full_frame_returns_input_unchanged()
+    print("ring_crossing_mask=1 everywhere returns input unchanged: OK")
     print("\nAll checks passed.")

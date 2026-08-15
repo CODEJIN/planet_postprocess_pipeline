@@ -90,6 +90,7 @@ import numpy as np
 
 from pipeline.modules import image_io
 from pipeline.modules.wavelet import sharpen as _wavelet_sharpen
+from pipeline.modules.wavelet import coverage_to_confidence
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -833,6 +834,109 @@ _SATURN_RING_OUTER_REQ = 136_780.0 / 60_268.0  # ~2.269
 _RING_DEPTH_FEATHER_PX = 12.0
 
 
+def _ring_globe_overlap_ellipses(
+    h: int,
+    w: int,
+    cx: float,
+    cy: float,
+    disk_semi_a: float,
+    disk_semi_b: float,
+    pole_pa_deg: float,
+    sub_observer_lat_deg: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Screen positions where the ring's (apparent, 2D) projected footprint
+    overlaps the globe's own silhouette -- shared between compute_ring_
+    occlusion_weight() (legacy linear-warp depth convention) and compute_
+    ring_occlusion_weight_3d() (true-reprojection depth convention), which
+    differ only in how they resolve foreground/background DEPTH at a given
+    overlap pixel, not in this footprint test itself (pure apparent-ellipse
+    geometry, unaffected by which depth model is used downstream).
+
+    Returns (overlap, dx, dy, xr, yr). dx/dy are RAW screen offsets from
+    centre (xx-cx, yy-cy); xr/yr are the SAME offsets after undoing pole_pa
+    rotation (used for the ellipse tests here and for compute_ring_
+    occlusion_weight's depth_ring closed form). A caller needing _oblate_
+    ortho_inverse's own depth MUST pass it dx/dy, never xr/yr -- that
+    function performs its own internal pole_pa un-rotation, so feeding it
+    the already-rotated xr/yr would double-rotate (invisible at pole_pa=0,
+    which is exactly why this note exists -- see compute_ring_occlusion_
+    weight_3d()).
+    """
+    sin_b = abs(math.sin(math.radians(sub_observer_lat_deg)))
+    inner_ring_semi_a = disk_semi_a * _SATURN_RING_INNER_REQ
+    inner_ring_semi_b = inner_ring_semi_a * sin_b
+    outer_ring_semi_a = disk_semi_a * _SATURN_RING_OUTER_REQ
+    outer_ring_semi_b = outer_ring_semi_a * sin_b
+
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+    ang = math.radians(pole_pa_deg)
+    cos_a, sin_a = math.cos(ang), math.sin(ang)
+    dx, dy = xx - cx, yy - cy
+    xr = dx * cos_a + dy * sin_a
+    yr = -dx * sin_a + dy * cos_a
+
+    in_globe = (xr / disk_semi_a) ** 2 + (yr / disk_semi_b) ** 2 <= 1.0
+    in_ring_outer = (xr / outer_ring_semi_a) ** 2 + (yr / max(outer_ring_semi_b, 1e-6)) ** 2 <= 1.0
+    in_ring_inner = (xr / inner_ring_semi_a) ** 2 + (yr / max(inner_ring_semi_b, 1e-6)) ** 2 <= 1.0
+    in_ring_annulus = in_ring_outer & ~in_ring_inner
+    overlap = in_globe & in_ring_annulus
+    return overlap, dx, dy, xr, yr
+
+
+def _feather_ring_foreground_boundary(
+    h: int, w: int, is_foreground: np.ndarray
+) -> np.ndarray:
+    """Shared feathering tail for compute_ring_occlusion_weight() and
+    compute_ring_occlusion_weight_3d(): feather is_foreground's boundary by
+    real image-pixel distance (see compute_ring_occlusion_weight()'s
+    2026-08-11 bugfix note for why depth-space feathering alone produced a
+    non-uniform, sometimes near-hard edge in image space -- the same
+    reasoning applies regardless of which depth model produced
+    `is_foreground`).
+
+    BUG FIXED 2026-08-15 (real-Saturn-data visual inspection, window_01/IR,
+    pole_pa=-7deg, B=-11.07deg): an earlier version only ran this distance-
+    transform feathering when the caller's `overlap` region contained BOTH
+    foreground and background pixels, and it then re-masked the result back
+    down to exactly `overlap` (zero outside it) -- i.e. TWO separate hard
+    edges: (a) whenever `overlap` happened to be 100% foreground with no
+    background portion at all (confirmed to occur on real data, not just a
+    theoretical edge case), it skipped feathering entirely and fell back to
+    a raw, pixelated boolean mask; (b) even in the normal case, the smooth
+    feather field was clipped hard at the analytic ring/globe overlap
+    footprint's own boundary, which -- since that footprint is capped by
+    the globe's OWN silhouette (`in_globe`) -- coincides with the disk's
+    true limb over most of the ring-crossing band's width. Both produced a
+    genuinely hard mask-value step exactly at/near the true photometric
+    limb, which wavelet sharpening amplified into a visible bright wedge
+    right where the ring crosses the globe (real-data confirmed: present
+    even with ring occlusion completely neutered in the WARP, i.e. this bug
+    lives entirely in this mask function, not in how it's applied).
+
+    Fixed by feathering `is_foreground` against its full-image complement
+    unconditionally (well-defined and correctly near-zero far from the
+    band even when `is_foreground` happens to equal the ENTIRE analytic
+    overlap region), and returning that field directly instead of re-
+    masking it to `overlap` -- letting the same smooth falloff carry
+    ~_RING_DEPTH_FEATHER_PX px past the analytic footprint's own edge
+    (harmless: outside the disk this only touches pixels the base warp's
+    own identity fallback already keeps at ~zero drift; inside the disk it
+    replaces exactly the discontinuity described above with a smooth ramp).
+    """
+    if not is_foreground.any():
+        return np.zeros((h, w), dtype=np.float32)
+    fg_u8 = is_foreground.astype(np.uint8)
+    dist_from_fg = cv2.distanceTransform(1 - fg_u8, cv2.DIST_L2, 5)
+    dist_into_fg = cv2.distanceTransform(fg_u8, cv2.DIST_L2, 5)
+    # 0 right at the boundary, ramping to 1 over _RING_DEPTH_FEATHER_PX px on
+    # the foreground side; ramping to 0 over the same distance on the
+    # background/exterior side (dist_from_fg subtracted so it's negative
+    # there, clipped to 0).
+    signed_dist = np.where(fg_u8 > 0, dist_into_fg, -dist_from_fg)
+    ring_exclude = np.clip(signed_dist / _RING_DEPTH_FEATHER_PX + 0.5, 0.0, 1.0)
+    return ring_exclude.astype(np.float32)
+
+
 def compute_ring_occlusion_weight(
     h: int,
     w: int,
@@ -890,21 +994,9 @@ def compute_ring_occlusion_weight(
         # possible at this tilt.
         return np.zeros((h, w), dtype=np.float32)
 
-    outer_ring_semi_a = disk_semi_a * _SATURN_RING_OUTER_REQ
-    outer_ring_semi_b = outer_ring_semi_a * sin_b
-
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
-    ang = math.radians(pole_pa_deg)
-    cos_a, sin_a = math.cos(ang), math.sin(ang)
-    dx, dy = xx - cx, yy - cy
-    xr = dx * cos_a + dy * sin_a
-    yr = -dx * sin_a + dy * cos_a
-
-    in_globe = (xr / disk_semi_a) ** 2 + (yr / disk_semi_b) ** 2 <= 1.0
-    in_ring_outer = (xr / outer_ring_semi_a) ** 2 + (yr / max(outer_ring_semi_b, 1e-6)) ** 2 <= 1.0
-    in_ring_inner = (xr / inner_ring_semi_a) ** 2 + (yr / max(inner_ring_semi_b, 1e-6)) ** 2 <= 1.0
-    in_ring_annulus = in_ring_outer & ~in_ring_inner
-    overlap = in_globe & in_ring_annulus
+    overlap, _dx, _dy, xr, yr = _ring_globe_overlap_ellipses(
+        h, w, cx, cy, disk_semi_a, disk_semi_b, pole_pa_deg, sub_observer_lat_deg,
+    )
 
     if not overlap.any():
         return np.zeros((h, w), dtype=np.float32)
@@ -971,23 +1063,116 @@ def compute_ring_occlusion_weight(
     # uniform transition width regardless of how steep the underlying
     # depth gradient is at any particular point on the boundary.
     is_foreground = overlap & (depth_ring > depth_globe)
-    if is_foreground.any() and (overlap & ~is_foreground).any():
-        fg_u8 = is_foreground.astype(np.uint8)
-        dist_from_fg = cv2.distanceTransform(1 - fg_u8, cv2.DIST_L2, 5)
-        dist_into_fg = cv2.distanceTransform(fg_u8, cv2.DIST_L2, 5)
-        # 0 right at the boundary, ramping to 1 over _RING_DEPTH_FEATHER_PX
-        # px on the foreground side; ramping to 0 over the same distance on
-        # the background side (dist_from_fg subtracted so it's negative
-        # there, clipped to 0).
-        signed_dist = np.where(fg_u8 > 0, dist_into_fg, -dist_from_fg)
-        ring_exclude = np.clip(signed_dist / _RING_DEPTH_FEATHER_PX + 0.5, 0.0, 1.0)
-        # (total transition width = _RING_DEPTH_FEATHER_PX px, centered on
-        # the boundary: ring_exclude=0 at signed_dist<=-PX/2, 0.5 at the
-        # boundary, 1 at signed_dist>=+PX/2.)
-    else:
-        ring_exclude = is_foreground.astype(np.float64)
-    weight[overlap] = ring_exclude[overlap]
-    return weight.astype(np.float32)
+    return _feather_ring_foreground_boundary(h, w, is_foreground)
+
+
+def compute_ring_occlusion_weight_3d(
+    h: int,
+    w: int,
+    cx: float,
+    cy: float,
+    disk_semi_a: float,
+    disk_semi_b: float,
+    pole_pa_deg: float,
+    sub_observer_lat_deg: float,
+    polar_equatorial_ratio_true: float,
+    flip_pole_axis: bool = False,
+) -> np.ndarray:
+    """Same continuous [0,1] foreground-ring-occlusion weight as compute_
+    ring_occlusion_weight() (see its docstring for the physical picture),
+    but with the globe-side depth resolved in the TRUE 3D oblate-spheroid
+    reprojection's own depth convention (_oblate_ortho_inverse/_oblate_
+    ortho_forward) instead of that function's linear-warp-derived sqrt
+    approximation -- for use as spherical_derotation_warp_3d()'s
+    ring_crossing_mask (2026-08-15, external-review-identified gap: the
+    2026-08-11 ring-occlusion fix was only ever wired into the legacy
+    linear warp; this session's production Saturn config actually runs
+    use_true_reprojection=True, so that validated fix was silently inert).
+
+    depth_ring (the ring-plane side of the comparison) needs NO change: the
+    closed form -yr/tan(B) is proven algebraically identical to _oblate_
+    ortho_forward(phi=0, ...)'s own depth (see tests/test_ring_occlusion_
+    weight.py's test_matches_oblate_ortho_forward_ring_depth) -- it was
+    always expressed in this same 3D convention, just reused by the linear
+    warp's helper too. Only depth_globe changes here.
+
+    Two bugs found and fixed during this feature's design review, both
+    invisible at the field-default pole_pa_deg=0 / flip_pole_axis=False
+    that a quick smoke test would exercise -- do not simplify this function
+    to "just call compute_ring_occlusion_weight's formula with a different
+    depth_globe" without re-deriving these:
+
+      1. flip_pole_axis sign: _oblate_ortho_forward negates Y AFTER depth is
+         computed from the un-negated Y (see its own docstring/code, and
+         the module note on flip_pole_axis above spherical_derotation_
+         warp_3d). `yr` here (from _ring_globe_overlap_ellipses) recovers
+         Y_USED (post-flip), not Y_raw. For a ring point (phi=0): depth =
+         -Y_raw/tan(B). flip_pole_axis=False -> yr=Y_raw -> depth=-yr/
+         tan(B) (matches compute_ring_occlusion_weight's fixed formula,
+         which has no flip_pole_axis concept since the linear warp doesn't
+         have one). flip_pole_axis=True -> yr=-Y_raw -> depth=+yr/tan(B):
+         the sign FLIPS. Verified algebraically and via
+         test_matches_oblate_ortho_forward_ring_depth_3d (must use nonzero
+         pole_pa -- the bug is invisible at pole_pa=0 for an unrelated
+         reason, see #2).
+      2. _oblate_ortho_inverse's own internal pole_pa un-rotation: it must
+         be called with RAW (dx, dy) = (xx-cx, yy-cy), never the already-
+         rotated (xr, yr) this function also uses for the ellipse tests and
+         depth_ring -- feeding it (xr, yr) double-rotates. This is exactly
+         why _ring_globe_overlap_ellipses() returns both pairs separately
+         rather than just (xr, yr): at pole_pa_deg=0, dx==xr and dy==yr, so
+         this mistake would be silently invisible during the most obvious
+         smoke test. Real sessions use nonzero pole_pa (this file's own
+         tests already use -7.0/20.0), so this is not a theoretical
+         concern.
+      3. _oblate_ortho_inverse marks an unresolvable (no near-side
+         solution) point with a literal depth=-1.0 sentinel, not -inf/NaN.
+         Comparing depth_ring directly against that raw sentinel would
+         misclassify exactly the physically important near-crossing-line
+         band (depth_ring in the tens of pixels close to 0, well within
+         (-1.0, 0) at this module's real pixel-unit depth scale) -- the
+         opposite of the intended "unresolvable globe depth -> treat
+         conservatively as foreground/occluded" policy (the same
+         conservative posture already used by the B~0 fallback above).
+         Fixed by explicitly replacing invalid points (phi is NaN) with
+         -inf before the comparison, rather than trusting the raw sentinel.
+    """
+    sin_b = abs(math.sin(math.radians(sub_observer_lat_deg)))
+    inner_ring_semi_a = disk_semi_a * _SATURN_RING_INNER_REQ
+    inner_ring_semi_b = inner_ring_semi_a * sin_b
+    if inner_ring_semi_b >= disk_semi_b:
+        return np.zeros((h, w), dtype=np.float32)
+
+    overlap, dx, dy, xr, yr = _ring_globe_overlap_ellipses(
+        h, w, cx, cy, disk_semi_a, disk_semi_b, pole_pa_deg, sub_observer_lat_deg,
+    )
+
+    if not overlap.any():
+        return np.zeros((h, w), dtype=np.float32)
+
+    B_rad = math.radians(sub_observer_lat_deg)
+    if abs(sub_observer_lat_deg) < _SUB_OBS_LAT_SMALL_DEG:
+        weight = np.zeros((h, w), dtype=np.float64)
+        weight[overlap] = 1.0
+        return weight.astype(np.float32)
+
+    depth_ring = (1.0 if flip_pole_axis else -1.0) * yr / math.tan(B_rad)
+
+    # Same req_px/rpol_px convention as _reprojected_position()/spherical_
+    # derotation_warp_3d() -- MUST match so depth_globe is directly
+    # comparable to depth_ring in the same units (both ultimately derive
+    # from _oblate_ortho_forward/_inverse's shared parametrization).
+    req_px = disk_semi_a * 1.05
+    rpol_px = req_px * polar_equatorial_ratio_true
+    phi_globe, _lam_globe, depth_globe_raw = _oblate_ortho_inverse(
+        dx, dy, sub_observer_lat_deg, pole_pa_deg, req_px, rpol_px,
+        flip_pole_axis=flip_pole_axis,
+    )
+    # Bug #3 fix: never compare against the raw -1.0 invalid-depth sentinel.
+    depth_globe = np.where(np.isnan(phi_globe), -np.inf, depth_globe_raw)
+
+    is_foreground = overlap & (depth_ring > depth_globe)
+    return _feather_ring_foreground_boundary(h, w, is_foreground)
 
 
 # ── Shared disk geometry across filters (shape/pose separation) ───────────────
@@ -1801,6 +1986,7 @@ def spherical_derotation_warp_3d(
     scale: float = 1.0,
     flip_direction: bool = False,
     flip_pole_axis: bool = False,
+    ring_crossing_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """True oblate-spheroid orthographic reprojection de-rotation warp.
 
@@ -1816,6 +2002,37 @@ def spherical_derotation_warp_3d(
     Rpol/Req (a per-target constant, e.g. Saturn=0.9021) — NOT the apparent
     fitted ellipse aspect ratio used by the linear warp, which is
     contaminated by B-foreshortening once B is modelled explicitly.
+
+    ring_crossing_mask: Optional continuous [0,1] float array, same (h, w)
+                        as image, from compute_ring_occlusion_weight_3d()
+                        (2026-08-15 — NOT compute_ring_occlusion_weight(),
+                        which is depth-calibrated for the LINEAR warp; see
+                        that function's docstring for why the two aren't
+                        interchangeable). 1.0 = pixel is occluded by
+                        FOREGROUND ring material; 0.0 = ordinary atmosphere.
+                        None (default) is a complete no-op, byte-identical
+                        to every existing caller. Mechanism differs from
+                        spherical_derotation_warp()'s (which damps an
+                        intermediate depth_map/drift quantity before it
+                        forms map_x/map_y, equivalent there to blending the
+                        fetch COORDINATES toward identity only because that
+                        warp's map_x is a strictly linear function of one
+                        scalar depth value): this function instead blends
+                        the fully-resolved PIXEL VALUES (the completed warp
+                        vs. this frame's own untouched content) at the very
+                        end, AFTER the cubic/linear interpolation blend —
+                        found necessary by real-Saturn-data visual
+                        inspection (2026-08-15): blending map_x/map_y
+                        directly (mirroring the linear warp's mechanism)
+                        samples a physically meaningless in-between screen
+                        position wherever this warp's highly nonlinear
+                        reprojection is strongly curved, producing a bright
+                        seam at the globe/ring boundary and a visible break
+                        where the ring exits the disk silhouette. Applies
+                        the same two-step (output-side, then source-side
+                        fetch-point leak) structure as spherical_derotation_
+                        warp()'s ring_crossing_mask handling, just as a
+                        value blend instead of a coordinate blend.
 
     Returns: warped float [0, 1] array, same shape as input.
     """
@@ -1882,7 +2099,129 @@ def spherical_derotation_warp_3d(
     # reported was there, not an extra masking pass in this function, which
     # was tried first and did not actually change the output).
 
+    if ring_crossing_mask is not None:
+        # BUG FOUND 2026-08-15 (real-data visual inspection, before this ever
+        # shipped): an earlier version of this block blended the FETCH
+        # COORDINATES (map_x/map_y) toward identity by the mask -- exactly
+        # mirroring spherical_derotation_warp()'s mechanism, which is
+        # algebraically equivalent to damping its depth_map there ONLY
+        # because that warp's map_x is a strictly LINEAR function of one
+        # scalar depth value. This warp's map_x/map_y are a highly nonlinear
+        # function of the full oblate-spheroid reprojection (longitude
+        # shift -> reproject), so a straight-line blend between the
+        # "rotated" and "identity" coordinates samples a screen position
+        # that corresponds to neither -- a physically meaningless
+        # in-between point wherever the reprojection is strongly curved.
+        # Rendered on real Saturn data this produced a bright seam right at
+        # the globe/ring boundary and a visible break where the ring exits
+        # the disk silhouette -- exactly where curvature is highest. Fixed
+        # by blending the fully-resolved PIXEL VALUES instead (the already-
+        # completed `warped` render vs. this frame's own untouched
+        # `src_f32`), a plain alpha-composite of two independently correct
+        # images -- same category of blend already used elsewhere in this
+        # module for an analogous "smoothly trust one interpretation over
+        # another" problem (the warped_cubic/warped_linear blend just
+        # above, and derotate_filter's S0/S_L stacking blend).
+        ring_b = ring_crossing_mask[:, :, np.newaxis] if warped.ndim == 3 else ring_crossing_mask
+        warped = warped * (1.0 - ring_b) + src_f32 * ring_b
+
+        # Source-side leak (mirrors spherical_derotation_warp()'s fix): an
+        # ordinary-atmosphere OUTPUT pixel's fetch point can still land on
+        # foreground-ring territory. Resample the mask at the (unmodified)
+        # fetch point and blend the VALUE further toward this frame's own
+        # original content -- same value-blend principle as above, not a
+        # further coordinate adjustment.
+        _src_ring_weight = cv2.remap(
+            ring_crossing_mask, map_x, map_y,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0,
+        )
+        _src_b = _src_ring_weight[:, :, np.newaxis] if warped.ndim == 3 else _src_ring_weight
+        warped = warped * (1.0 - _src_b) + src_f32 * _src_b
+
     return np.clip(warped, 0.0, 1.0)
+
+
+def compute_frame_coverage_mask(
+    h: int,
+    w: int,
+    dt_sec: float,
+    cx: float,
+    cy: float,
+    disk_radius_px: float,
+    period_hours: float,
+    sub_observer_lat_deg: float,
+    pole_pa_deg: float,
+    polar_equatorial_ratio_true: float,
+    scale: float = 1.0,
+    flip_direction: bool = False,
+    flip_pole_axis: bool = False,
+) -> np.ndarray:
+    """Per-pixel bool: True where this frame's source content, AT ITS OWN
+    CAPTURE TIME, was a genuine on-globe, rotation-valid sample (as opposed
+    to identity-fallback content from a stale epoch).
+
+    Deliberately keeps two checks SEPARATE rather than collapsing them into
+    a single "valid" test, per a 2026-08-13 attempt this session that used
+    _reprojected_position()'s combined `valid` directly as a per-pixel
+    STACKING weight, found a real bug, and was fully reverted (zero trace
+    left in this file — confirmed via `git log -S"return_valid"` on this
+    module returning no hits):
+
+      1. on_globe_domain = isfinite(phi) from _oblate_ortho_inverse — this
+         is dt-INDEPENDENT: False wherever the OUTPUT position itself falls
+         outside the padded oblate-spheroid model's domain (r beyond
+         req_px = disk_radius_px*1.05), true for EVERY frame regardless of
+         rotation. On a ringed planet this is exactly where the ring system
+         (and background sky) lives — nothing to do with atmosphere
+         rotation staleness at all.
+      2. rotation_valid = _reprojected_position()'s own `valid` (isfinite
+         (phi) & source_depth>0) — dt-DEPENDENT: the genuine "this frame's
+         source had already rotated to the far side at ITS OWN capture
+         time" signal.
+
+    The reverted attempt conflated these (used the combined `valid` alone),
+    which wrongly collapsed non-reference frames' weight across the ENTIRE
+    ring system and background sky, not just the true rotation-invalid
+    band near the limb. Fixed here by reporting True for off-domain pixels
+    ("not applicable — full coverage"), so this signal is only ever
+    resisted by real, dt-dependent rotation invalidity:
+
+        return rotation_valid | ~on_globe_domain
+
+    This time the signal feeds sharpening gain and an S0/S_L stacking
+    blend (see quality_weighted_stack's docstring history and
+    derotate_filter's compute_coverage_map/s0_sl_blend_enabled), not the
+    per-pixel stacking weight itself — the earlier finding that this kind
+    of signal barely moved the STACK's own sharpness (real rotation-
+    invalid fraction, once correctly isolated, was only 0-5% in the
+    affected band) does not apply to these different consumers.
+
+    KNOWN GAP, not fixed here (2026-08-15): this function has no notion of
+    Saturn's ring occlusion (see compute_ring_occlusion_weight_3d) — a pixel
+    held at identity because FOREGROUND ring material occludes it (not
+    because of rotation invalidity) still reports on_globe_domain=True and
+    typically rotation_valid=True here, so n(x) over-reports genuine
+    coverage there. Not addressed in the same change that wired ring
+    occlusion into spherical_derotation_warp_3d(), since compute_coverage_map/
+    s0_sl_blend_enabled and has_rings are not combined in this session's
+    production config — revisit if that combination is ever enabled.
+    """
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+    req_px = disk_radius_px * 1.05
+    rpol_px = req_px * polar_equatorial_ratio_true
+    phi, _lam, _depth = _oblate_ortho_inverse(
+        xx - cx, yy - cy, sub_observer_lat_deg, pole_pa_deg, req_px, rpol_px,
+        flip_pole_axis=flip_pole_axis,
+    )
+    on_globe_domain = np.isfinite(phi)
+
+    _new_x, _new_y, rotation_valid = _reprojected_position(
+        xx, yy, dt_sec, cx, cy, disk_radius_px, period_hours,
+        sub_observer_lat_deg, pole_pa_deg, polar_equatorial_ratio_true,
+        scale=scale, flip_direction=flip_direction, flip_pole_axis=flip_pole_axis,
+    )
+    return rotation_valid | ~on_globe_domain
 
 
 def auto_detect_pole_axis_flip(
@@ -2244,6 +2583,21 @@ def apply_shift(image: np.ndarray, dx: float, dy: float) -> np.ndarray:
 # a bad disk-shape fit rather than trust it.
 _SCALE_MIN = 0.95
 _SCALE_MAX = 1.05
+
+# Smoothing applied ONCE to the aggregated multi-frame coverage map n(x)
+# (derotate_filter's compute_coverage_map), not per-frame -- summing several
+# frames' hard per-pixel boolean coverage (compute_frame_coverage_mask),
+# each at a slightly different dt-dependent boundary radius, already grades
+# the field into up to N discrete levels without any per-frame feathering
+# (deliberately NOT repeating the 2026-08-13 reverted attempt's per-frame
+# signed-distance feather, which leaked ~50% weight onto invalid pixels).
+# A single small blur on the final sum removes the remaining discrete-level
+# steps so a per-pixel wavelet-gain multiplier or S0/S_L blend weight
+# derived from it doesn't itself introduce a new sharp edge for unsharp-
+# mask sharpening to ring on. 2.0px matches this module's own established
+# feather-scale convention (_RING_DEPTH_FEATHER_PX, spherical_derotation_
+# warp's _interp_feather_px) for the same class of problem.
+_COVERAGE_SMOOTH_SIGMA_PX = 2.0
 
 
 def apply_shift_and_scale(
@@ -2669,6 +3023,8 @@ def derotate_filter(
     has_rings: bool = False,
     sharpness_selection_enabled: bool = False,
     sharpness_keep_fraction: float = 1.0,
+    compute_coverage_map: bool = False,
+    s0_sl_blend_enabled: bool = False,
 ) -> Tuple[np.ndarray, dict]:
     """De-rotate and stack a single filter's images for one time window.
 
@@ -2723,15 +3079,26 @@ def derotate_filter(
                         apparent ellipse-fit ratio the linear warp uses).
         flip_pole_axis: Sign-ambiguity escape hatch for the reprojection —
                         only used when use_true_reprojection=True.
-        has_rings:      If True, compute a ring occlusion weight (see
-                        compute_ring_occlusion_weight) from this filter's own
-                        resolved geometry and sub_observer_lat_deg, and scale
-                        down the linear warp's atmosphere rotation only where
-                        FOREGROUND ring material actually occludes the view
-                        (passed to spherical_derotation_warp() as
-                        ring_crossing_mask; NOT wired into the
-                        use_true_reprojection path — out of scope, Saturn
-                        uses the linear warp by default). Set by
+        has_rings:      If True, compute a ring occlusion weight from this
+                        filter's own resolved geometry and
+                        sub_observer_lat_deg, and scale down the warp's
+                        atmosphere rotation only where FOREGROUND ring
+                        material actually occludes the view. Wired into
+                        WHICHEVER warp is actually selected below: the
+                        legacy linear warp via compute_ring_occlusion_weight()
+                        (as spherical_derotation_warp()'s ring_crossing_mask),
+                        or (2026-08-15) the true 3D reprojection via
+                        compute_ring_occlusion_weight_3d() (as spherical_
+                        derotation_warp_3d()'s ring_crossing_mask, using the
+                        same depth convention as that warp instead of the
+                        linear warp's approximation). Previously this was
+                        computed with the linear-warp version unconditionally
+                        and never passed to spherical_derotation_warp_3d() at
+                        all — silently inert for use_true_reprojection=True
+                        sessions (this session's actual production Saturn
+                        config: has_rings=True AND use_true_reprojection=True
+                        simultaneously — the premise that "Saturn uses the
+                        linear warp by default" no longer holds). Set by
                         derotate_window()/derotate_stack.py only for Saturn
                         (this uses Saturn-specific physical ring constants,
                         meaningless for other targets). Default False leaves
@@ -2747,6 +3114,25 @@ def derotate_filter(
                         sharpness_selection_enabled=False (default) is a
                         complete no-op, byte-identical to before this
                         parameter existed.
+        compute_coverage_map, s0_sl_blend_enabled: Opt-in (see
+                        compute_frame_coverage_mask()'s docstring). Only
+                        meaningful when use_true_reprojection=True — a
+                        per-pixel de-rotation coverage signal n(x) doesn't
+                        exist for the linear warp, so both are silently
+                        inert (no-op) otherwise. compute_coverage_map alone
+                        only computes and logs n(x) (e.g. for step05's
+                        coverage-aware sharpening to consume) without
+                        touching the stack itself. s0_sl_blend_enabled
+                        additionally blends the stack toward the reference
+                        frame's own (dt=0, no warp) rendering wherever n(x)
+                        is low: result = alpha(x)*stack + (1-alpha(x))*
+                        ref_img, alpha(x) = coverage_to_confidence(n(x),
+                        floor=0.0) — alpha->0 falls back EXACTLY to the
+                        reference frame where coverage is poor, so the
+                        result is never worse than the single-reference-
+                        frame baseline there by construction. Both default
+                        False: complete no-op, byte-identical to before
+                        these parameters existed.
 
     Returns:
         (stacked_image, log_dict)
@@ -2854,18 +3240,44 @@ def derotate_filter(
     # for the source-side fetch-point check (2026-08-11, external review)
     # that also applies this mask to prevent the inverse remap from ever
     # sampling foreground-ring content for an ordinary-atmosphere pixel.
+    #
+    # 2026-08-15 (external review, production-config gap): this filter's own
+    # ring_crossing_mask is now computed with WHICHEVER warp is actually
+    # used below -- compute_ring_occlusion_weight_3d() (matching depth
+    # convention) + true_polar_equatorial_ratio/flip_pole_axis for the true
+    # 3D reprojection, or the original compute_ring_occlusion_weight() for
+    # the legacy linear warp. Before this, ring_crossing_mask was ALWAYS the
+    # linear-warp version and was simply never passed to spherical_
+    # derotation_warp_3d() at all -- silently inert for every session with
+    # use_true_reprojection=True AND has_rings=True (this session's actual
+    # production Saturn config, confirmed via ~/.astropipe/session.json).
     ring_crossing_mask: Optional[np.ndarray] = None
     ring_crosses_disk = False
     if has_rings:
         _rh, _rw = _ref_lum.shape[:2]
-        ring_crossing_mask = compute_ring_occlusion_weight(
-            _rh, _rw, ref_cx, ref_cy, ref_semi_a, ref_semi_b,
-            pole_pa_deg, sub_observer_lat_deg,
-        )
+        if use_true_reprojection:
+            ring_crossing_mask = compute_ring_occlusion_weight_3d(
+                _rh, _rw, ref_cx, ref_cy, ref_semi_a, ref_semi_b,
+                pole_pa_deg, sub_observer_lat_deg,
+                polar_equatorial_ratio_true=true_polar_equatorial_ratio,
+                flip_pole_axis=flip_pole_axis,
+            )
+        else:
+            ring_crossing_mask = compute_ring_occlusion_weight(
+                _rh, _rw, ref_cx, ref_cy, ref_semi_a, ref_semi_b,
+                pole_pa_deg, sub_observer_lat_deg,
+            )
         ring_crosses_disk = bool((ring_crossing_mask > 0.5).any())
+
+    # Re-checked locally rather than trusted from the caller (matches this
+    # function's existing style, e.g. ring_crosses_disk above is
+    # independently re-derived) -- the coverage signal only exists for the
+    # 3D reprojection warp (see compute_frame_coverage_mask's docstring).
+    _do_coverage = compute_coverage_map and use_true_reprojection
 
     warped_images: List[np.ndarray] = []
     weights: List[float] = []
+    coverage_masks: List[np.ndarray] = []
     log_frames: List[dict] = []
     # Pre-warp disk center shifts: measured from raw frame before any warp is
     # applied, so the shift is purely seeing-induced wobble and is not
@@ -3013,6 +3425,7 @@ def derotate_filter(
                 scale=warp_scale,
                 flip_direction=flip_direction,
                 flip_pole_axis=flip_pole_axis,
+                ring_crossing_mask=ring_crossing_mask,
             )
         else:
             warped = spherical_derotation_warp(
@@ -3044,6 +3457,18 @@ def derotate_filter(
 
         if row["stem"] == reference_row["stem"]:
             ref_img = warped
+
+        if _do_coverage:
+            if row["stem"] == reference_row["stem"]:
+                # dt=0 by construction: always full coverage, unconditionally.
+                coverage_masks.append(np.ones(warped.shape[:2], dtype=bool))
+            else:
+                coverage_masks.append(compute_frame_coverage_mask(
+                    warped.shape[0], warped.shape[1], dt_sec, ref_cx, ref_cy, ref_semi_a,
+                    period_hours, sub_observer_lat_deg, pole_pa_deg,
+                    true_polar_equatorial_ratio, scale=warp_scale,
+                    flip_direction=flip_direction, flip_pole_axis=flip_pole_axis,
+                ))
 
         warped_images.append(warped)
         weights.append(float(row["norm_score"]))
@@ -3130,6 +3555,7 @@ def derotate_filter(
             if 0 < n_outliers < len(warped_images):
                 kept_images: List[np.ndarray] = []
                 kept_weights: List[float] = []
+                kept_coverage: List[np.ndarray] = []
                 for i, (img, wgt) in enumerate(zip(warped_images, weights)):
                     fl = log_frames[i]
                     if outlier[i]:
@@ -3143,8 +3569,12 @@ def derotate_filter(
                         continue
                     kept_images.append(img)
                     kept_weights.append(wgt)
+                    if _do_coverage:
+                        kept_coverage.append(coverage_masks[i])
                 warped_images = kept_images
                 weights = kept_weights
+                if _do_coverage:
+                    coverage_masks = kept_coverage
 
     # ── Raw-sharpness-based frame selection (opt-in, 2026-08-13) ──────────
     # See frame_sharpness_central()'s docstring for the real-data
@@ -3183,8 +3613,37 @@ def derotate_filter(
                         surviving_logs[i]["sharpness_excluded"] = False
                 warped_images = [warped_images[i] for i in kept]
                 weights = [weights[i] for i in kept]
+                if _do_coverage:
+                    coverage_masks = [coverage_masks[i] for i in kept]
+
+    n_map: Optional[np.ndarray] = None
+    if _do_coverage and coverage_masks:
+        # Duplicates quality_weighted_stack's own weight-normalisation
+        # formula rather than refactoring that stable, tested function --
+        # keep in sync if that normalisation ever changes.
+        _cov_w = np.clip(np.array(weights, dtype=np.float64), 1e-9, None)
+        if weight_power != 1.0:
+            _cov_w = _cov_w ** weight_power
+        _cov_w /= _cov_w.sum()
+        n_map = np.zeros(coverage_masks[0].shape, dtype=np.float64)
+        for _cov, _wi in zip(coverage_masks, _cov_w):
+            n_map += _wi * _cov.astype(np.float64)
+        n_map = cv2.GaussianBlur(
+            n_map.astype(np.float32), (0, 0), sigmaX=_COVERAGE_SMOOTH_SIGMA_PX
+        )
+        n_map = np.clip(n_map, 0.0, 1.0).astype(np.float32)
 
     stacked = quality_weighted_stack(warped_images, weights, weight_power=weight_power)
+
+    _s0_sl_blend_applied = False
+    if s0_sl_blend_enabled and use_true_reprojection and n_map is not None and ref_img is not None:
+        alpha = coverage_to_confidence(n_map, floor=0.0)
+        alpha_b = alpha[:, :, np.newaxis] if (stacked.ndim == 3 and alpha.ndim == 2) else alpha
+        stacked = np.clip(
+            alpha_b * stacked.astype(np.float64) + (1.0 - alpha_b) * ref_img.astype(np.float64),
+            0.0, 1.0,
+        ).astype(np.float32)
+        _s0_sl_blend_applied = True
 
     log_dict = {
         "n_stacked":             len(warped_images),
@@ -3204,6 +3663,18 @@ def derotate_filter(
         "sub_observer_lat_deg":  sub_observer_lat_deg,
         "sharpness_selection_enabled": sharpness_selection_enabled,
         "sharpness_keep_fraction":     sharpness_keep_fraction,
+        "coverage_computed":     _do_coverage,
+        "s0_sl_blend_enabled":   s0_sl_blend_enabled,
+        "s0_sl_blend_applied":   _s0_sl_blend_applied,
+        "coverage_mean":         round(float(n_map.mean()), 4) if n_map is not None else None,
+        "coverage_min":          round(float(n_map.min()), 4) if n_map is not None else None,
+        # RAW ndarray -- MUST be popped by the caller (derotate_window())
+        # before this dict reaches any JSON serialization path (see
+        # derotate_window's coverage-map handling). Kept in this same
+        # (stacked, log_dict) 2-tuple, not a 3rd return value, so existing
+        # direct callers of derotate_filter() (tests, scratch scripts) keep
+        # working unchanged.
+        "coverage_map":          n_map,
         "frames":                log_frames,
     }
 
@@ -3232,6 +3703,8 @@ def derotate_window(
     has_rings: bool = False,
     sharpness_selection_enabled: bool = False,
     sharpness_keep_fraction: float = 1.0,
+    compute_coverage_map: bool = False,
+    s0_sl_blend_enabled: bool = False,
 ) -> Dict[str, Tuple[Optional[Path], dict]]:
     """De-rotate and stack all filters in a single time window.
 
@@ -3265,7 +3738,17 @@ def derotate_window(
                           passing has_rings=True). sharpness_selection_enabled
                           default False / sharpness_keep_fraction default 1.0
                           is likewise a complete no-op for every existing
-                          caller.
+                          caller. compute_coverage_map/s0_sl_blend_enabled:
+                          passed straight through to derotate_filter() — see
+                          its docstring; default False/False is a complete
+                          no-op. When compute_coverage_map is True and
+                          out_dir is provided, the per-pixel coverage map is
+                          additionally saved as ``<filt>_coverage.tif`` next
+                          to the derotated TIF, with its path recorded in
+                          log_dict["coverage_map_file"] (the raw array itself
+                          is never left in log_dict — see the popping logic
+                          below — since that dict is later spread wholesale
+                          into a JSON file elsewhere in the pipeline).
 
     Returns:
         {filter: (output_path_or_None, log_dict)}
@@ -3393,11 +3876,27 @@ def derotate_window(
                 has_rings=has_rings,
                 sharpness_selection_enabled=sharpness_selection_enabled,
                 sharpness_keep_fraction=sharpness_keep_fraction,
+                compute_coverage_map=compute_coverage_map,
+                s0_sl_blend_enabled=s0_sl_blend_enabled,
             )
         except Exception as exc:
             print(f" ERROR: {exc}")
             results[filt] = (None, {"error": str(exc)})
             continue
+
+        # The raw coverage-map ndarray (if any) must never survive into
+        # log_dict past this point: derotation_log_to_json() later spreads
+        # log_dict wholesale (**log) into a dict that gets json.dump'd, and
+        # an ndarray there would break/bloat that. Save it as a companion
+        # TIF (mirrors output_file's own path-not-pixels convention) and
+        # keep only the path string.
+        _coverage_arr = log.pop("coverage_map", None)
+        if _coverage_arr is not None and out_dir is not None:
+            cov_path = out_dir / f"{filt}_coverage.tif"
+            image_io.write_tif_16bit(_coverage_arr, cov_path)
+            log["coverage_map_file"] = str(cov_path)
+        else:
+            log["coverage_map_file"] = None
 
         out_path: Optional[Path] = None
         if out_dir is not None:

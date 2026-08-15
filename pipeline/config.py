@@ -98,6 +98,51 @@ class WaveletConfig:
     # Ignored when auto_params=True (value estimated per-image from data).
     disk_expand_px: float = 0.0
 
+    # ── Coverage-aware sharpening gain (2026-08-15, opt-in) ───────────────────
+    # Multiplies each wavelet level's gain by a per-pixel confidence map
+    # derived from derotate_filter()'s coverage signal n(x), instead of
+    # full-strength gain uniformly inside the disk-feather mask. Targets a
+    # diagnosed Saturn asymmetric limb-ringing artifact: find_disk_center()'s
+    # ellipse fit has a measured ~0.5-0.9px asymmetric error vs the TRUE
+    # photometric limb (right ansa: true edge 0.86px OUTSIDE the fit; left:
+    # 0.53px INSIDE), almost certainly from ring signal biasing the Otsu
+    # contour fit unevenly. Since the feather zone is anchored to the FITTED
+    # boundary, this misaligns it with the true steep limb gradient
+    # asymmetrically; full-strength gain there produces classic unsharp-mask
+    # ringing/overshoot. n(x) naturally starts dropping in nearly the same
+    # zone (rotation-invalidity begins ~r/semi_a=0.95), so reducing gain
+    # there mitigates the ringing without needing the fit itself to become
+    # pixel-perfect (a re-design already attempted once and abandoned after
+    # 100% real-data detection failure — see project_saturn_ring_globe_
+    # separation memory).
+    # Requires derotate_filter's use_true_reprojection=True precondition
+    # (see DerotationConfig.s0_sl_blend_enabled) — silently inert otherwise.
+    # Default False: complete no-op (confidence_map=None everywhere).
+    master_coverage_aware_sharpening: bool = False
+
+    # Floor for the confidence multiplier (wavelet.coverage_to_confidence) --
+    # gain never drops below this fraction even at zero measured coverage.
+    # A hard 0-floor would itself read as a new artifact (a flat unsharpened
+    # patch at the real limb) -- same halo-avoidance principle as
+    # sharpen_disk_aware()'s extra_gap_px ramp. 0.3 is an initial,
+    # unvalidated choice -- tune after the real-data verification pass.
+    # Ignored when master_coverage_aware_sharpening=False.
+    master_coverage_confidence_floor: float = 0.3
+
+    # ── Edge extension before sharpening (2026-08-15, opt-in) ─────────────────
+    # Extends the disk signal past the fitted boundary (wavelet.
+    # _fill_outside_ellipse -- dead code since commit a8db01a until this flag
+    # wired it in) before wavelet decomposition, so the à trous filter never
+    # reads unrelated background/ring content near the limb. Targets the same
+    # diagnosed Saturn asymmetric limb-ringing as master_coverage_aware_
+    # sharpening above, but structurally: removes the real intensity step
+    # from what the filter sees (the Gibbs-ringing root cause) instead of
+    # only scaling gain down near it. Complementary to, and independent of,
+    # master_coverage_aware_sharpening -- both may be enabled together.
+    # See project_ring_limb_ringing_bug memory for the full diagnosis.
+    # Default False: bit-identical, no second decompose() call.
+    master_edge_extension_enabled: bool = False
+
     # When True, edge_feather_factor and disk_expand_px are estimated
     # automatically from each de-rotation stack image before sharpening.
     # The manual values above are ignored; auto-estimated values are printed.
@@ -260,6 +305,23 @@ class DerotationConfig:
     # not auto-defaulted) after checking wavelet-sharpened crops.
     sharpness_selection_enabled: bool = False
     sharpness_keep_fraction: float = 1.0
+
+    # ── Pixel-adaptive S0/S_L blend (2026-08-15, opt-in) ──────────────────────
+    # S0 = reference frame's own de-rotated rendering (dt~0, no multi-frame
+    #      de-rotation warp error by construction -- matches the repeated
+    #      finding that a single near-reference frame is already about as
+    #      sharp as achievable, the "step07" gold-standard baseline used
+    #      throughout this investigation).
+    # S_L = the existing full-window multi-frame de-rotation stack.
+    # result(x) = alpha(x)*S_L(x) + (1-alpha(x))*S0(x), alpha(x) a smoothstep
+    # of the per-pixel rotation-coverage signal n(x) (see
+    # compute_frame_coverage_mask() in derotation.py) -- alpha->0 falls back
+    # EXACTLY to S0 by construction where coverage is poor, guaranteeing the
+    # result is never worse than the single-reference-frame baseline there.
+    # HARD PRECONDITION: silently inert whenever use_true_reprojection=False
+    # (the per-pixel coverage signal doesn't exist for the linear warp).
+    # Default False: complete no-op, byte-identical stacking.
+    s0_sl_blend_enabled: bool = False
 
     # ── True 3D oblate-spheroid reprojection (WinJUPOS-style, opt-in) ─────────
     # When True, spherical_derotation_warp_3d() replaces the linear

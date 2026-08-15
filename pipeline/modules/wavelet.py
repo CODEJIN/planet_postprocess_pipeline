@@ -713,6 +713,39 @@ def _make_disk_weight_ellipse(
     return (0.5 * (1.0 - np.cos(np.pi * t))).astype(np.float32)
 
 
+def coverage_to_confidence(n: np.ndarray, floor: float = 0.0) -> np.ndarray:
+    """Shape a raw [0,1] per-pixel de-rotation coverage fraction (see
+    derotation.compute_frame_coverage_mask / derotate_filter's coverage
+    aggregation) into a monotonic [floor,1] sharpening-gain / stacking-blend
+    multiplier, via a smoothstep (3n^2 - 2n^3).
+
+    Smoothstep specifically (not a linear map) because it has zero
+    derivative at n=0 AND n=1 -- the disk interior sits at n=1 exactly, so
+    a linear map would leave a slope discontinuity (kink) right where
+    coverage saturates, which unsharp-mask sharpening could itself
+    amplify into a new, smaller-scale ringing artifact -- exactly the
+    failure mode this feature exists to reduce (see the 2026-08-13 Saturn
+    limb-ringing diagnosis: find_disk_center's ellipse fit has a measured
+    ~0.5-0.9px asymmetric error vs the true photometric limb, and full-
+    strength gain at that mismatch produces classic overshoot).
+
+    Args:
+        n: raw coverage fraction, any shape, expected in [0,1] (values
+           outside are clipped).
+        floor: minimum multiplier, reached at n=0. 0.0 (default) is
+           appropriate for the S0/S_L stacking blend's alpha(x), where
+           hitting exactly zero is required for "never worse than S0" to
+           hold by construction. A floor > 0.0 is appropriate for
+           sharpening gain reduction instead -- a hard zero-gain cliff
+           would itself read as a new artifact (a flat, unsharpened patch
+           right at the real limb), the same halo-avoidance principle
+           already applied once in sharpen_disk_aware's extra_gap_px ramp.
+    """
+    n_c = np.clip(n, 0.0, 1.0).astype(np.float32)
+    smooth = n_c * n_c * (3.0 - 2.0 * n_c)
+    return (floor + (1.0 - floor) * smooth).astype(np.float32)
+
+
 def _fill_outside_ellipse(
     image: np.ndarray,
     cx: float,
@@ -720,26 +753,51 @@ def _fill_outside_ellipse(
     rx: float,
     ry: float,
     angle_rad: float,
+    baseline_px: float = 3.0,
 ) -> np.ndarray:
-    """Fill pixels outside the ellipse with the nearest ellipse-boundary pixel value.
+    """Extend pixels outside the ellipse by continuing the LOCAL RADIAL
+    GRADIENT measured just inside the boundary, rather than copying a flat
+    boundary value.
 
     Before applying the à trous wavelet, background pixels (near-zero) outside
     the disk are read by the B3 kernel and artificially inflate detail
-    coefficients near the limb — creating a bright ring after sharpening.
-    Replacing the outside region with a smooth extension (nearest limb pixel
-    along each radial direction) makes the wavelet see a natural signal at the
-    boundary, eliminating this artifact.
+    coefficients near the limb — creating ringing after sharpening. Extending
+    the outside region with a natural continuation of the boundary's own
+    signal (rather than an abrupt value step) makes the wavelet see a natural
+    signal at the boundary, eliminating this artifact.
+
+    A first version of this (2026-08-15) copied a FLAT value (the boundary
+    pixel's own brightness) outward. On real Saturn/Jupiter data this made
+    things WORSE: real limb-darkening brightness keeps decreasing just
+    outside the fitted boundary, so flattening it introduced a new abrupt
+    first-derivative discontinuity (a kink) right where the flat region
+    began — which the wavelet read as a new, more visible bright halo
+    encircling the whole limb (worse than the original asymmetric ringing
+    this was meant to fix). Continuing the measured LOCAL slope instead
+    (clamped to non-increasing, since a measured local brightness INCREASE
+    just inside the boundary is almost always noise or nearby unrelated
+    structure, not a trend safe to extrapolate) avoids introducing that
+    kink: the extension tapers down the same way the real signal already
+    was, then floors at 0 once it would go negative.
 
     Args:
-        image:     2-D float array (single channel).
-        cx, cy:    Disk centre in pixels.
-        rx, ry:    Semi-major and semi-minor axes of the fill boundary.
-        angle_rad: Ellipse tilt in radians (semi-major axis from x-axis).
+        image:       2-D float array (single channel).
+        cx, cy:      Disk centre in pixels.
+        rx, ry:      Semi-major and semi-minor axes of the fill boundary.
+        angle_rad:   Ellipse tilt in radians (semi-major axis from x-axis).
+        baseline_px: Pixel distance inward from the boundary used to
+                     estimate the local outward slope. Small enough to stay
+                     local (not confounded by unrelated features further
+                     in), large enough to be somewhat robust to per-pixel
+                     noise.
 
     Returns:
-        Copy of *image* with pixels outside the ellipse replaced by the value
-        of their radially-projected nearest boundary pixel.
+        Copy of *image* with pixels outside the ellipse replaced by a
+        gradient-continuing extrapolation from their radially-projected
+        boundary point.
     """
+    import cv2
+
     h, w = image.shape[0], image.shape[1]
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
     dx, dy = xx - cx, yy - cy
@@ -762,11 +820,44 @@ def _fill_outside_ellipse(
     # Rotate back to image frame
     px = cos_a * px_r - sin_a * py_r   # dx from centre
     py = sin_a * px_r + cos_a * py_r   # dy from centre
-    xi = np.clip(np.round(cx + px).astype(int), 0, w - 1)
-    yi = np.clip(np.round(cy + py).astype(int), 0, h - 1)
+    boundary_x = (cx + px).astype(np.float32)
+    boundary_y = (cy + py).astype(np.float32)
+
+    # Outward unit vector from the boundary point through this pixel (same
+    # ray as above, but measured from the boundary rather than the centre,
+    # so it stays well-defined even very close to the boundary).
+    seg_dx = xx - boundary_x
+    seg_dy = yy - boundary_y
+    t_out = np.sqrt(seg_dx ** 2 + seg_dy ** 2)          # pixel distance beyond boundary
+    t_safe = np.where(t_out > 1e-6, t_out, 1.0)
+    unit_x = seg_dx / t_safe
+    unit_y = seg_dy / t_safe
+    inward_x = boundary_x - baseline_px * unit_x
+    inward_y = boundary_y - baseline_px * unit_y
+
+    # Bilinear sampling (not nearest-integer rounding) is required here:
+    # rounding to the nearest pixel made adjacent output pixels -- whose
+    # continuous projected angle differs only infinitesimally -- snap to
+    # different integer boundary pixels whenever real limb texture varies
+    # along the ellipse, producing a fine quantisation/aliasing pattern.
+    # The a trous wavelet then reads this as genuine high-frequency detail
+    # and amplifies it into a visible checkerboard/moire artifact right at
+    # the boundary (found on real Saturn/Jupiter data, 2026-08-15).
+    img_f = image.astype(np.float32)
+    val_boundary = cv2.remap(
+        img_f, boundary_x, boundary_y,
+        interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE,
+    )
+    val_inward = cv2.remap(
+        img_f, inward_x, inward_y,
+        interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE,
+    )
+
+    slope = np.minimum((val_boundary - val_inward) / baseline_px, 0.0)
+    extrapolated = np.clip(val_boundary + slope * t_out, 0.0, val_boundary)
 
     filled = image.copy()
-    filled[outside] = image[yi[outside], xi[outside]]
+    filled[outside] = extrapolated[outside].astype(image.dtype)
     return filled
 
 
@@ -934,6 +1025,8 @@ def sharpen_disk_aware(
     extra_ry: Optional[float] = None,
     extra_angle: Optional[float] = None,
     extra_gap_px: Optional[float] = None,
+    confidence_map: Optional[np.ndarray] = None,
+    fill_outside_before_sharpen: bool = False,
 ) -> np.ndarray:
     """À trous wavelet sharpening with per-level spatial edge feathering.
 
@@ -1016,6 +1109,56 @@ def sharpen_disk_aware(
                               above). None/<=0 = no ramp (solid union,
                               reaching full strength immediately at the
                               disk's own edge).
+        confidence_map:      Optional (H, W) float array in [0, 1], same
+                              spatial shape as `image`, multiplied into every
+                              level's gain (see coverage_to_confidence()).
+                              None (default) is bit-identical to every
+                              existing caller -- multiplying by the scalar
+                              1.0 rather than allocating a full-size array.
+                              Intended for derotate_filter's per-pixel
+                              de-rotation coverage signal: reduces
+                              sharpening gain where the underlying multi-
+                              frame stack is less reliable (near the limb,
+                              where find_disk_center's ellipse fit has a
+                              measured sub-pixel asymmetric error vs the
+                              true photometric limb -- see the 2026-08-13
+                              Saturn limb-ringing diagnosis), rather than
+                              applying full-strength gain uniformly inside
+                              the disk-feather mask regardless of coverage.
+        fill_outside_before_sharpen: When True, replaces pixels outside the
+                              primary ellipse (rx_m, ry_m) with their
+                              radially-projected nearest-boundary value
+                              (via _fill_outside_ellipse) before computing
+                              the DETAIL coefficients used for the gain
+                              correction -- but never for `original`, the
+                              base the output is built from, which always
+                              comes from the real unmodified image. This
+                              stops the à trous kernel from reading
+                              unrelated background/ring content and
+                              inflating detail right at the limb (classic
+                              Gibbs-ringing precursor), independent of and
+                              complementary to confidence_map above (that
+                              scales gain down near the limb; this removes
+                              the intensity step the filter sees there in
+                              the first place). Only the primary ellipse is
+                              extended -- the extra_rx ring boundary is not
+                              (a separate, differently-shaped problem).
+                              The extension itself is capped to a bounded
+                              band around the primary boundary (roughly
+                              4x the widest ACTIVE level's own feather
+                              width): filling the ENTIRE rest of the frame
+                              with a flat radial projection was tried first
+                              and found to corrupt real detail far from the
+                              disk on real data -- when a co-centred
+                              extra_rx shape (e.g. Saturn's rings) is also
+                              present, its real texture sits well outside
+                              this cap and must decompose from its own true
+                              pixel values, not the globe-boundary's
+                              artificial fill (confirmed via a visible
+                              checkerboard/moiré artifact in the ring band
+                              before this cap was added).
+                              False (default): bit-identical, no second
+                              decompose() call.
 
     Returns:
         Float32 array in [0, 1], same shape as input.
@@ -1046,12 +1189,20 @@ def sharpen_disk_aware(
                 filter_type=filter_type,
                 extra_rx=extra_rx, extra_ry=extra_ry, extra_angle=extra_angle,
                 extra_gap_px=extra_gap_px,
+                confidence_map=confidence_map,
+                fill_outside_before_sharpen=fill_outside_before_sharpen,
             )
             for c in range(image.shape[2])
         ]
         return np.stack(channels, axis=2).astype(np.float32)
 
     h, w = image.shape
+    if confidence_map is not None and confidence_map.shape != (h, w):
+        raise ValueError(
+            f"confidence_map.shape={confidence_map.shape} must match "
+            f"image spatial shape ({h}, {w})"
+        )
+    _conf = confidence_map if confidence_map is not None else np.float32(1.0)
     rx_m = radius + expand_px
     ry_m = (ry + expand_px) if use_ellipse else None
 
@@ -1060,6 +1211,40 @@ def sharpen_disk_aware(
     original = coeffs[-1].copy()
     for d in coeffs[:-1]:
         original = original + d
+
+    if fill_outside_before_sharpen:
+        fill_ry = ry_m if use_ellipse else rx_m
+        filled = _fill_outside_ellipse(image, cx, cy, rx_m, fill_ry, angle)
+
+        # Cap the extension to a bounded band around the primary boundary.
+        # Filling the entire rest of the frame (unbounded) was tried first
+        # and corrupts any co-centred extra_rx shape's (e.g. Saturn's rings)
+        # own real detail far from the globe -- decomposing an artificial
+        # radial extrapolation there instead of true pixel values produced
+        # a visible checkerboard/moiré artifact once extra_weight_map pulled
+        # those spurious coefficients back in. Cap width mirrors the same
+        # "widest active feather" reasoning already used for extra_gap_px.
+        active_feathers = [(2 ** i) * edge_feather_factor for i, g in enumerate(gains) if g != 0]
+        cap_px = 4.0 * (max(active_feathers) if active_feathers else edge_feather_factor)
+        if extra_rx is not None and extra_rx > 0 and extra_gap_px is not None and extra_gap_px > 0:
+            # The ring's own inner ramp starts contributing real weight
+            # starting right at the globe's true boundary (see extra_gap_px's
+            # docstring) -- that zone's content is the globe's own real
+            # limb-darkening tail, not background, and must decompose from
+            # its own true pixel values. Stay safely clear of it.
+            cap_px = min(cap_px, 0.5 * extra_gap_px)
+        cap_rx = rx_m + cap_px
+        cap_ry = (fill_ry + cap_px) if use_ellipse else cap_rx
+        yy_cap, xx_cap = np.mgrid[0:h, 0:w].astype(np.float64)
+        cos_c, sin_c = np.cos(angle), np.sin(angle)
+        dxr = (xx_cap - cx) * cos_c + (yy_cap - cy) * sin_c
+        dyr = -(xx_cap - cx) * sin_c + (yy_cap - cy) * cos_c
+        beyond_cap = ((dxr / cap_rx) ** 2 + (dyr / cap_ry) ** 2) > 1.0
+        filled[beyond_cap] = image[beyond_cap]
+
+        detail_coeffs = decompose(filled.astype(np.float64), levels, filter_type=filter_type)[:-1]
+    else:
+        detail_coeffs = coeffs[:-1]
 
     # Build a binary disk mask for noise estimation.  Using the actual disk
     # geometry gives a precise planet-region MAD without relying on brightness
@@ -1132,7 +1317,7 @@ def sharpen_disk_aware(
         )
 
     result = original.copy()
-    for level_idx, (detail, gain) in enumerate(zip(coeffs[:-1], gains)):
+    for level_idx, (detail, gain) in enumerate(zip(detail_coeffs, gains)):
         if gain == 0.0:
             continue
 
@@ -1162,7 +1347,7 @@ def sharpen_disk_aware(
                 extra_weight_map = np.minimum(extra_weight_map, inner_ramp)
             weight_map = np.maximum(weight_map, extra_weight_map)
 
-        result = result + d_thr * gain * weight_map
+        result = result + d_thr * gain * weight_map * _conf
 
     return np.clip(result, 0.0, 1.0).astype(np.float32)
 
@@ -1187,6 +1372,8 @@ def sharpen_color_disk_aware(
     extra_ry: Optional[float] = None,
     extra_angle: Optional[float] = None,
     extra_gap_px: Optional[float] = None,
+    confidence_map: Optional[np.ndarray] = None,
+    fill_outside_before_sharpen: bool = False,
 ) -> np.ndarray:
     """Disk-aware sharpening for colour (H, W, 3) RGB float images via Lab L-channel.
 
@@ -1195,8 +1382,11 @@ def sharpen_color_disk_aware(
 
     Args and returns: same as :func:`sharpen_color` plus disk geometry args,
     the denoise_amounts / filter_type parameters, and the optional second-
-    ellipse extra_rx/extra_ry/extra_angle/extra_gap_px (see
-    sharpen_disk_aware's docstring).
+    ellipse extra_rx/extra_ry/extra_angle/extra_gap_px, confidence_map, and
+    fill_outside_before_sharpen (see sharpen_disk_aware's docstring) --
+    both are channel-agnostic (pure spatial signals) so they are passed
+    straight through to the single L-channel call, no per-channel handling
+    needed.
     """
     import cv2 as _cv2
     bgr = _cv2.cvtColor(image.astype(np.float32), _cv2.COLOR_RGB2BGR)
@@ -1214,6 +1404,8 @@ def sharpen_color_disk_aware(
         filter_type=filter_type,
         extra_rx=extra_rx, extra_ry=extra_ry, extra_angle=extra_angle,
         extra_gap_px=extra_gap_px,
+        confidence_map=confidence_map,
+        fill_outside_before_sharpen=fill_outside_before_sharpen,
     )
     lab[:, :, 0] = np.clip(L_sharp * 100.0, 0.0, 100.0)
 

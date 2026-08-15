@@ -150,6 +150,35 @@ def run(
                 # actual image being sharpened, not the de-rotation-time
                 # ref_semi_a from a different frame.
                 _wlog = logs.get(filt, {})
+
+                # Coverage-aware sharpening gain (2026-08-15, opt-in): reduce
+                # wavelet gain where derotate_filter()'s per-pixel de-rotation
+                # coverage n(x) is low, targeting the diagnosed Saturn
+                # asymmetric limb-ringing (find_disk_center's ellipse fit has
+                # a measured ~0.5-0.9px asymmetric error vs the true
+                # photometric limb -- see WaveletConfig.master_coverage_
+                # aware_sharpening's docstring). Reads the companion coverage
+                # TIF that derotate_window() saved next to the derotated TIF
+                # (path only -- the raw array is never left in the in-memory
+                # log dict, see derotate_window()'s own popping logic).
+                _confidence_map = None
+                if config.wavelet.master_coverage_aware_sharpening:
+                    _cov_path = _wlog.get("coverage_map_file")
+                    if _cov_path:
+                        try:
+                            _cov_raw = image_io.read_tif(Path(_cov_path))
+                            _confidence_map = wavelet.coverage_to_confidence(
+                                _cov_raw, floor=config.wavelet.master_coverage_confidence_floor
+                            )
+                        except Exception as exc:
+                            print(f"    [{filt}] coverage map read failed ({exc}) "
+                                  f"-- sharpening without confidence weighting")
+                    else:
+                        print(f"    [{filt}] master_coverage_aware_sharpening enabled but "
+                              f"no coverage_map_file logged (needs use_true_reprojection=True "
+                              f"and s0_sl_blend_enabled or master_coverage_aware_sharpening "
+                              f"active at step04) -- sharpening without confidence weighting")
+
                 _extra_rx = _extra_ry = _extra_angle = None
                 _extra_gap_px = None
                 if bool(_wlog.get("has_rings", False)):
@@ -246,6 +275,8 @@ def run(
                         filter_type=config.wavelet.master_filter_type,
                         extra_rx=_extra_rx, extra_ry=_extra_ry, extra_angle=_extra_angle,
                         extra_gap_px=_extra_gap_px,
+                        confidence_map=_confidence_map,
+                        fill_outside_before_sharpen=config.wavelet.master_edge_extension_enabled,
                     )
                 else:
                     sharpened = wavelet.sharpen_disk_aware(
@@ -261,6 +292,8 @@ def run(
                         filter_type=config.wavelet.master_filter_type,
                         extra_rx=_extra_rx, extra_ry=_extra_ry, extra_angle=_extra_angle,
                         extra_gap_px=_extra_gap_px,
+                        confidence_map=_confidence_map,
+                        fill_outside_before_sharpen=config.wavelet.master_edge_extension_enabled,
                     )
                 print(f"    [{filt}] ellipse rx={_rx:.1f} ry={_ry:.1f} angle={_angle:.1f}°")
             else:

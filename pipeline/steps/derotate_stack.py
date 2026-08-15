@@ -717,6 +717,29 @@ def run(
         # not needed.
         use_true_reprojection = bool(config.derotation.use_true_reprojection)
         has_rings = config.derotation.horizons_id == "699"  # Saturn
+
+        # The coverage-aware sharpening / S0-S_L blend features (both opt-in)
+        # share one per-pixel signal, computed once here (see
+        # compute_frame_coverage_mask()'s docstring in derotation.py) — it
+        # only exists on the true 3D reprojection warp path, so requesting
+        # either feature without use_true_reprojection=True is a hard no-op
+        # rather than a silent partial effect, matching this codebase's
+        # existing has_rings-style "derive once, thread down as a plain
+        # bool" pattern.
+        compute_coverage_map = (
+            config.derotation.s0_sl_blend_enabled
+            or config.wavelet.master_coverage_aware_sharpening
+        )
+        if compute_coverage_map and not use_true_reprojection:
+            print(
+                "  [WARNING] coverage-aware sharpening / S0-S_L blend requested but "
+                "use_true_reprojection=False -- the per-pixel rotation-validity signal "
+                "these features need only exists for the true 3D reprojection warp "
+                "(spherical_derotation_warp_3d); the default linear warp has no such "
+                "per-pixel concept. No-op: proceeding with neither feature."
+            )
+            compute_coverage_map = False
+
         sub_observer_lat_val = 0.0
         if use_true_reprojection or has_rings:
             sub_obs_lat = query_horizons_sub_observer_lat(
@@ -771,6 +794,8 @@ def run(
             has_rings=has_rings,
             sharpness_selection_enabled=config.derotation.sharpness_selection_enabled,
             sharpness_keep_fraction=config.derotation.sharpness_keep_fraction,
+            compute_coverage_map=compute_coverage_map,
+            s0_sl_blend_enabled=config.derotation.s0_sl_blend_enabled,
         )
 
         # ── Satellite compositing (exp9 method) ───────────────────────────────
