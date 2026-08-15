@@ -445,6 +445,53 @@ def _has_ring_signature(image: np.ndarray, aspect_threshold: float = 0.80) -> bo
     return (semi_b / semi_a) < aspect_threshold
 
 
+def _subpixel_ray_edge(
+    profile: np.ndarray,
+    dr: float,
+    smooth_sigma: float = 1.5,
+    margin: Optional[int] = None,
+) -> Optional[float]:
+    """Steepest-gradient sub-pixel edge index along one already-sampled
+    radial brightness profile (uniform sample spacing `dr`). Shared by
+    `_gradient_disk_r()` and `_robust_ellipse_refit()` (2026-08-15 extract
+    -- previously this exact smooth/gradient/argmin/parabolic-interpolation
+    sequence was duplicated inline in `_gradient_disk_r`; factored out here
+    so the two callers can't drift out of sync when one is tuned and the
+    other isn't).
+
+    `margin`: exclude this many samples at each end of the profile from the
+    argmin search (default: len(profile)//20, min 3) -- guards against a
+    convolution edge-padding artifact winning the global argmin instead of
+    a genuine interior gradient minimum (found 2026-08-15 diagnosing why an
+    early version of the independent ground-truth measurement script
+    returned zero valid rays on real ring-adjacent Saturn data: the profile
+    kept decreasing all the way to the sampled window's own boundary, and
+    the "same"-mode convolution's edge replication made the discrete
+    gradient there spuriously the most negative point in the array).
+
+    Returns the sub-pixel sample INDEX (not a radius -- caller multiplies by
+    dr and adds the corresponding r_vals[0]/r_start), or None if no genuine
+    interior minimum exists (result would land in the excluded margin).
+    """
+    smoothed = _gaussian_filter1d_np(profile, sigma=smooth_sigma)
+    grad = np.gradient(smoothed, dr)
+    if margin is None:
+        margin = max(3, len(grad) // 20)
+    if margin <= 0:
+        search = grad
+    else:
+        if len(grad) <= 2 * margin:
+            return None
+        search = grad[margin:-margin]
+    idx = margin + int(np.argmin(search))
+    if idx <= 0 or idx >= len(grad) - 1:
+        return None
+    y0, y1, y2 = grad[idx - 1], grad[idx], grad[idx + 1]
+    denom = 2.0 * (y2 - 2.0 * y1 + y0)
+    sub = -(y2 - y0) / denom if abs(denom) > 1e-12 else 0.0
+    return idx + sub
+
+
 def _gradient_disk_r(
     image: np.ndarray,
     cx: float,
@@ -487,15 +534,17 @@ def _gradient_disk_r(
            (ys < 0).any() or (ys >= h - 1).any():
             continue
         profile = _bilinear_interp(image, ys, xs)
-        smoothed = _gaussian_filter1d_np(profile, sigma=smooth_sigma)
-        grad = np.gradient(smoothed, dr)
-        idx = int(np.argmin(grad))
-        if idx == 0 or idx == len(grad) - 1:
+        # margin=0 matches this function's own long-established convention
+        # (only reject when the argmin lands EXACTLY on index 0 or the last
+        # index, not a wider margin) -- preserved exactly for byte-identical
+        # behavior; _robust_ellipse_refit (a new, different caller) uses
+        # _subpixel_ray_edge's own default margin instead, since it targets
+        # a different (narrower, closer-in) search window where the wider
+        # default margin matters (see that function's docstring).
+        sub_idx = _subpixel_ray_edge(profile, dr, smooth_sigma=smooth_sigma, margin=0)
+        if sub_idx is None:
             continue
-        y0, y1, y2 = grad[idx - 1], grad[idx], grad[idx + 1]
-        denom = 2.0 * (y2 - 2.0 * y1 + y0)
-        sub = -(y2 - y0) / denom if abs(denom) > 1e-12 else 0.0
-        edge_radii.append(float(r_vals[idx] + sub * dr))
+        edge_radii.append(float(r_vals[0] + sub_idx * dr))
 
     if len(edge_radii) < 8:
         return (r_rough, len(edge_radii)) if return_n_valid else r_rough
@@ -507,6 +556,173 @@ def _gradient_disk_r(
         keep = arr
     result = float(np.median(keep))
     return (result, len(edge_radii)) if return_n_valid else result
+
+
+def _ray_limb_edge(
+    image: np.ndarray,
+    cx: float,
+    cy: float,
+    semi_a: float,
+    semi_b: float,
+    angle_deg: float,
+    theta_deg: float,
+    search_frac: Tuple[float, float] = (0.90, 1.10),
+    n_samples: int = 300,
+    smooth_sigma: float = 1.5,
+) -> Optional[float]:
+    """Steepest-gradient limb radius at image-frame angle `theta_deg`,
+    searched in a NARROW window around the already-fitted ellipse's own
+    boundary radius in that direction. Used by `_robust_ellipse_refit()` to
+    re-measure the residual between a seed ellipse (`find_disk_center()`'s
+    output) and the true limb, one ray at a time.
+
+    The narrow `search_frac` (vs. `_gradient_disk_r`'s wider 0.75-1.30) is
+    deliberate: this only needs to resolve a small residual on top of an
+    already-refined seed, not re-find the limb from scratch. A wide window
+    risks reaching Saturn's ring re-brightening the profile past the true
+    dark gap (see `_subpixel_ray_edge`'s margin-exclusion docstring for the
+    related boundary-artifact issue this also avoids).
+
+    Returns the true edge radius (distance from (cx, cy)), or None if the
+    ray exits the image or `_subpixel_ray_edge` finds no genuine interior
+    gradient minimum.
+    """
+    theta = math.radians(theta_deg)
+    dx_u, dy_u = math.cos(theta), math.sin(theta)
+    ang = math.radians(angle_deg)
+    cos_a, sin_a = math.cos(ang), math.sin(ang)
+    dxr = cos_a * dx_u + sin_a * dy_u
+    dyr = -sin_a * dx_u + cos_a * dy_u
+    r_ell = 1.0 / math.sqrt((dxr / semi_a) ** 2 + (dyr / semi_b) ** 2)
+
+    r_vals = np.linspace(r_ell * search_frac[0], r_ell * search_frac[1], n_samples)
+    dr = r_vals[1] - r_vals[0]
+    xs = cx + r_vals * dx_u
+    ys = cy + r_vals * dy_u
+    h, w = image.shape[:2]
+    if (xs < 0).any() or (xs >= w - 1).any() or (ys < 0).any() or (ys >= h - 1).any():
+        return None
+    profile = _bilinear_interp(image, ys, xs)
+    sub_idx = _subpixel_ray_edge(profile, dr, smooth_sigma=smooth_sigma)
+    if sub_idx is None:
+        return None
+    return float(r_vals[0] + sub_idx * dr)
+
+
+def _robust_ellipse_refit(
+    image: np.ndarray,
+    cx: float,
+    cy: float,
+    semi_a: float,
+    semi_b: float,
+    angle_deg: float,
+    n_rays: int = 72,
+    search_frac: Tuple[float, float] = (0.90, 1.10),
+    n_samples: int = 300,
+    smooth_sigma: float = 1.5,
+    n_iter: int = 3,
+    outlier_sigma: float = 2.5,
+    min_keep: int = 20,
+    min_arc_span_deg: float = 180.0,
+) -> Optional[Tuple[float, float, float, float, float, int]]:
+    """Refine a seed ellipse (from `find_disk_center()`) against the true
+    photometric limb via an iteratively-reweighted (MAD-based outlier
+    rejection) refit over `n_rays` sub-pixel edge measurements.
+
+    Added 2026-08-15 to address a measured ~0.5-0.9px ASYMMETRIC error
+    between `find_disk_center()`'s ellipse fit and the true limb (root cause
+    of the gray halo / white-rim wavelet artifact trade-off documented in
+    `SATURN_RING_WAVELET_STATUS_2026-08-15.md`). Validated via
+    `experiments/scratch_globe_fit_asymmetry_diagnosis.py` on real data:
+    dramatically reduces worst-case fit-vs-true-limb residual on Jupiter
+    (ringless target, 9.04px->2.26px and 7.84px->2.49px across two windows)
+    by rejecting rays hijacked by local albedo features (e.g. cloud belts)
+    that compete with the true limb gradient.
+
+    **Validated for ringless targets only.** On Saturn, MAD-based rejection
+    keeps ~71-72/72 rays (essentially rejects nothing) because ring-crossing
+    contamination is a large *contiguous* angular arc (~40% of rays) rather
+    than scattered points -- point-wise robust statistics can't distinguish
+    "consensus" from "contaminated majority" in that regime. Callers should
+    NOT rely on this to help Saturn; it is expected to be a near-no-op there
+    (see the same status doc's "Saturn root cause" section for the full set
+    of ruled-out hypotheses: ring-ray exclusion alone, hybrid, frame-count,
+    quadrupole/aspect-scale).
+
+    This is a NEW, additive function -- does not modify `find_disk_center()`,
+    `_find_disk_center_impl()`, or `_gradient_disk_r()`'s behavior. Callers
+    must treat a `None` return as "keep the seed ellipse unchanged"; this
+    function never returns something worse than the seed by construction
+    (insufficient/too-narrow-arc surviving rays -> None, not a bad fit).
+
+    Returns (cx, cy, semi_a, semi_b, angle_deg, n_kept), or None if fewer
+    than `min_keep` rays survive or the surviving rays don't span at least
+    `min_arc_span_deg` of arc (an ellipse fit from a narrow arc is
+    numerically ill-conditioned and not trustworthy).
+    """
+    thetas_deg = np.arange(0.0, 360.0, 360.0 / n_rays)
+    pts = []
+    kept_thetas = []
+    for theta_deg in thetas_deg:
+        r_true = _ray_limb_edge(
+            image, cx, cy, semi_a, semi_b, angle_deg, theta_deg,
+            search_frac=search_frac, n_samples=n_samples, smooth_sigma=smooth_sigma,
+        )
+        if r_true is None:
+            continue
+        theta = math.radians(theta_deg)
+        pts.append((cx + r_true * math.cos(theta), cy + r_true * math.sin(theta)))
+        kept_thetas.append(theta_deg)
+    if len(pts) < min_keep:
+        return None
+    pts = np.array(pts, dtype=np.float32)
+    kept_thetas = np.array(kept_thetas)
+
+    def _arc_span_ok(thetas: np.ndarray) -> bool:
+        bins = set(int(t) // 10 for t in thetas)
+        return len(bins) * 10 >= min_arc_span_deg
+
+    if not _arc_span_ok(kept_thetas):
+        return None
+
+    current = pts
+    current_thetas = kept_thetas
+    for _ in range(n_iter):
+        if len(current) < 5:
+            return None
+        (fcx, fcy), (fma, fmi), fangle = cv2.fitEllipse(current)
+        dx = current[:, 0] - fcx
+        dy = current[:, 1] - fcy
+        ang = np.radians(fangle)
+        cos_a, sin_a = np.cos(ang), np.sin(ang)
+        dxr = cos_a * dx + sin_a * dy
+        dyr = -sin_a * dx + cos_a * dy
+        semi_a_i = max(fma, fmi) / 2.0
+        semi_b_i = max(1e-3, min(fma, fmi) / 2.0)
+        pred_r = 1.0 / np.sqrt((dxr / semi_a_i) ** 2 + (dyr / semi_b_i) ** 2 + 1e-12)
+        actual_r = np.sqrt(dx ** 2 + dy ** 2)
+        resid = actual_r - pred_r
+        med = np.median(resid)
+        # MAD (median absolute deviation, x1.4826 for normal-equivalent
+        # scale) -- far more resistant than std to a high outlier fraction;
+        # see docstring above re: std "masking" itself on Saturn.
+        scale = 1.4826 * np.median(np.abs(resid - med))
+        keep_mask = np.abs(resid - med) < outlier_sigma * (scale + 0.3)
+        if keep_mask.sum() < min_keep or keep_mask.sum() == len(current):
+            current = current[keep_mask] if keep_mask.sum() >= min_keep else current
+            break
+        current = current[keep_mask]
+        current_thetas = current_thetas[keep_mask]
+        if not _arc_span_ok(current_thetas):
+            return None
+
+    if len(current) < min_keep:
+        return None
+    (fcx, fcy), (fma, fmi), fangle = cv2.fitEllipse(current)
+    semi_a_f, semi_b_f = max(fma, fmi) / 2.0, min(fma, fmi) / 2.0
+    if fma < fmi:
+        fangle = (fangle + 90.0) % 180.0
+    return fcx, fcy, semi_a_f, semi_b_f, fangle, len(current)
 
 
 def find_disk_center(

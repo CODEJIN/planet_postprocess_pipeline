@@ -183,7 +183,138 @@ class WaveletConfig:
     # re-enable only after finding a mask design that doesn't reintroduce case
     # D's artifact (see project_ring_occlusion_3d_reprojection_gap memory and
     # SATURN_RING_WAVELET_STATUS_2026-08-15.md for the full investigation).
+    #
+    # Per explicit user ruling: this white-rim/double-limb class of artifact
+    # is a critical defect, not a tolerable trade-off against the disk-edge
+    # gray halo -- do not re-enable based on a numeric metric improving
+    # alone; a zoomed (4-5x) crop of the ring/globe boundary must show zero
+    # visible bright overshoot before this can ship (see
+    # feedback_white_rim_is_critical_defect memory).
     master_ring_extension_enabled: bool = False
+
+    # ── Overshoot clamp: output-domain ringing suppression (2026-08-15) ──────
+    # When > 0.0 (default 0.0, off), clamps each sharpened pixel to the local
+    # min/max of the REAL, pre-sharpen image within this pixel radius (see
+    # wavelet._local_min_max()). A pixel that ends up brighter or darker than
+    # every real nearby pixel is by definition invented by the sharpening
+    # filter, not real detail -- so this removes exactly that (unsharp-mask
+    # overshoot/ringing, the white-rim class of artifact) while leaving
+    # legitimate local-contrast enhancement untouched (real graded detail
+    # stays within a modest neighborhood's true min/max; only a genuinely
+    # hard edge's ringing lobe reaches past it).
+    #
+    # Why this is different from every other flag in this file that touches
+    # the same symptom (master_ring_extension_enabled above,
+    # master_limb_fit_refinement_enabled below, and the three prior attempts
+    # in project_ring_limb_ringing_bug memory): all of those work in the
+    # INPUT/MASK domain -- they change WHERE the sharpening mask's gain
+    # reaches zero relative to the true limb gradient. Every one of them hit
+    # the same wall: move gain=0 away from the true gradient -> gray halo;
+    # move it onto the true gradient -> ringing, because wavelet unsharp-
+    # masking a genuinely steep edge rings regardless of how precisely the
+    # mask boundary is placed. This flag instead clamps the OUTPUT after the
+    # fact, which is a fundamentally different lever and does not depend on
+    # ring geometry, ellipse-fit accuracy, or has_rings at all -- it is a
+    # candidate to fix the white-rim class of artifact regardless of *why*
+    # the edge got too sharp, including cases the other flags each caused
+    # (see wavelet_master.py wiring: this flag has no has_rings gating,
+    # unlike master_limb_fit_refinement_enabled).
+    #
+    # !! DO NOT ENABLE -- crushes real detail everywhere, not just at edges !!
+    # STATUS (2026-08-15, investigated same day as added): the "leaves
+    # legitimate local-contrast enhancement untouched" claim above is WRONG
+    # and was disproven twice, independently: (1) a synthetic real-graded-
+    # texture test found a small radius (1-3px) suppressed 92-98% of
+    # legitimate sharpening boost, not just hard-edge overshoot; (2) a
+    # follow-up investigation tried this as a HYBRID on top of the already-
+    # tested filter_type='bilateral' (see master_filter_type usage in
+    # wavelet_master.py / SATURN_RING_WAVELET_STATUS_2026-08-15.md) and found
+    # a 1px clamp crushed boost to ~3-6% regardless of bilateral's own
+    # sigma_color (0.08 through 0.40 all tested) -- the clamp dominates and
+    # never helps recover anything. Root cause: this project's calibrated
+    # wavelet gains concentrate almost entirely in the finest 1-2 levels
+    # (_MAX_GAINS = [29.15, 9.48, 0, 0, 0, 0]), i.e. exactly the spatial
+    # scale a small clamp radius operates at -- there is no clamp radius
+    # that is simultaneously "small enough to spare real fine detail" and
+    # "large enough to see the true plateau on both sides of a hard edge."
+    # This is a structural mismatch between a single-scale "prevent
+    # overshoot" clamp (the classic textbook technique this was modeled on)
+    # and this codebase's multi-scale wavelet sharpener, not a tunable-away
+    # implementation bug.
+    #
+    # Kept in the codebase (implemented, unit-tested, default off) rather
+    # than reverted, matching this project's convention of keeping working-
+    # but-insufficient opt-in code with an honest docstring instead of
+    # deleting it -- see tests/test_overshoot_clamp.py's
+    # test_clamp_significantly_reduces_real_detail_enhancement for the
+    # characterization test. Per explicit user ruling
+    # (feedback_white_rim_is_critical_defect memory), a white-rim artifact
+    # is never an acceptable trade-off regardless -- but this flag doesn't
+    # even reach "acceptable trade-off" territory, it just breaks sharpening
+    # broadly. Do not enable without a fundamentally different mechanism
+    # (see SATURN_RING_WAVELET_STATUS_2026-08-15.md's full investigation,
+    # including why filter_type='bilateral', guided-filter, and local-
+    # gradient-gating alternatives were also tried and rejected).
+    #
+    # Default 0.0: bit-identical, no clamp applied, for every existing caller.
+    master_overshoot_clamp_radius_px: float = 0.0
+
+    # ── Robust disk-limb refit for the wavelet mask fit (ringless targets only, 2026-08-15) ──
+    # When True (default False), wavelet_master.py's post-derotation
+    # find_disk_center() fit is refined via derotation._robust_ellipse_refit()
+    # -- an iteratively-reweighted (MAD-based outlier rejection) refit over
+    # 72 sub-pixel-measured radial rays -- before building the sharpening
+    # mask. Root cause: find_disk_center()'s ellipse fit has a measured
+    # ~0.5-0.9px ASYMMETRIC error vs. the true photometric limb (see
+    # project_ring_limb_ringing_bug memory), which is the underlying reason
+    # the disk-edge feather has to trade off a visible gray halo (gain=0 at
+    # the boundary) against a white-rim overshoot (gain raised near the
+    # boundary, e.g. via master_ring_extension_enabled) -- fixing the fit
+    # itself, rather than tuning the gain map again, is the only approach
+    # this session tried that hasn't already failed (see
+    # SATURN_RING_WAVELET_STATUS_2026-08-15.md for three prior gain-map
+    # attempts that all failed or traded one artifact for another).
+    #
+    # Fit accuracy VALIDATED for ringless targets (e.g. Jupiter) only:
+    # worst-case fit-vs-true-limb residual dropped 9.04px->2.26px and
+    # 7.84px->2.49px across two real test windows.
+    #
+    # !! DO NOT ENABLE -- confirmed to produce a white-rim overshoot !!
+    # Real-pipeline visual validation (2026-08-15) found that enabling this
+    # on Jupiter removes the gray halo but introduces a thin bright overshoot
+    # rim traced continuously along the whole limb (confirmed via row-by-row
+    # pixel diffs, not a rendering fluke -- see experiments/limb_fit_
+    # validation/scratch_limb_fit_jupiter_limb_zoom.png). Per explicit user
+    # ruling: a white-rim/overshoot outline at the disk boundary is NOT a
+    # tolerable trade-off against the gray halo -- it is a critical defect,
+    # full stop, regardless of how thin it is (see
+    # feedback_white_rim_is_critical_defect memory). Widening
+    # edge_feather_factor shrinks the rim but does not eliminate it, and
+    # starts bringing the halo back -- same underlying gain-vs-gradient
+    # curve, not escaped by this fix alone. Root-cause diagnosis (the
+    # asymmetric fit error) was correct and the fit-accuracy win above is
+    # real, but this flag does NOT ship a usable fix by itself and must stay
+    # off until paired with a mask/gain-map change that keeps the gain=0
+    # point clear of the true gradient (not yet designed).
+    #
+    # On Saturn (has_rings=True), the same refit was ALSO tested extensively
+    # and found NOT to help fit accuracy at all -- ring-crossing
+    # contamination is a large contiguous angular arc (~40% of rays), which
+    # point-wise MAD-based rejection cannot distinguish from a genuine
+    # consensus. wavelet_master.py therefore only applies this refinement
+    # when has_rings is False; Saturn keeps today's fit unchanged and the
+    # gray-halo/white-rim problem remains open for it (see
+    # SATURN_RING_WAVELET_STATUS_2026-08-15.md's "Saturn root cause" section
+    # for the full list of ruled-out hypotheses, so a future session doesn't
+    # repeat this exact investigation).
+    #
+    # _robust_ellipse_refit() never returns something worse than the seed by
+    # construction (returns None -> caller keeps find_disk_center()'s result
+    # unchanged, on insufficient/too-narrow-arc surviving rays) -- but "not
+    # worse than the seed fit" does not mean "safe to ship"; see above.
+    #
+    # Default False: byte-identical to today's fit for every target.
+    master_limb_fit_refinement_enabled: bool = False
 
     # When True, edge_feather_factor and disk_expand_px are estimated
     # automatically from each de-rotation stack image before sharpening.

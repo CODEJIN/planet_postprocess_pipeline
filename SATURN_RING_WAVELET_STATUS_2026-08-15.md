@@ -170,3 +170,194 @@ extension_enabled`(기본 **False**)로 감쌈:
 - [[project_ring_limb_ringing_bug]] — 3번의 선행 실패 시도 기록 + 오늘 발견의 관계
 - [[project_derotation_ring_occlusion_fix]] — 2026-08-11 원래 ring occlusion fix
 - [[feedback_ab_test_via_real_pipeline]] — 오늘 모든 검증에 적용한 원칙
+
+## 이번 세션 목표였던 "진짜 근본 원인" 조사 — 타원 피팅 자체를 고쳐봄 (2026-08-15, 이어서)
+
+사용자가 이 세션의 목표를 "gray halo(디스크 외곽 회색 링)와 white-rim(오버슈트) 둘 다
+없어지는 진짜 해결책"으로 명시적으로 재지정 — 위의 `extra_rx` 해결은 고리 쪽 재노출
+경로만 막았을 뿐, `find_disk_center()`의 타원 피팅이 진짜 photometric limb과
+0.5~0.9px 비대칭으로 어긋나 있다는 근본 원인 자체는 그대로였음.
+
+### 조사 결과 요약
+
+- **Jupiter(고리 없음)도 고리와 무관한 비슷한 이상치성 오차**를 보임 → "Saturn 전용
+  고리 오염" 가설 기각, robust(MAD 기반 outlier 제거) 타원 재피팅으로 피봇.
+- **Jupiter: 검증된 실제 개선.** 72개 방사형 레이의 서브픽셀 gradient 측정 +
+  반복적(iteratively-reweighted) MAD 기반 outlier 제거로 재피팅한 결과, 실측
+  worst-case 피팅오차가 9.04px→2.26px, 7.84px→2.49px로 대폭 감소(진단 스크립트 기준;
+  프로덕션 코드 자체 측정으로는 60~62% 감소, 아래 참고).
+- **Saturn: 안 풀림.** 같은 robust refit이 Saturn에서는 ~40%에 달하는 ray가 고리에
+  오염되어 있고 그게 "흩어진 점"이 아니라 "연속된 각도 구간"이라 MAD 같은 point-wise
+  통계로는 오염된 다수를 정상으로 오인함(오염 비율이 너무 높고 연속적). ring-ray
+  사전제외/hybrid/프레임 수/quadrupole(장단축 스케일 오차) 등 추가로 시도한 4가지
+  전부 효과 없거나 불충분(R 필터는 조금 개선, IR은 거의 무변화) — Saturn 원인은
+  여전히 미해결.
+- **사용자 최종 결정**: "Jupiter용으로 구현하고 Saturn은 문서화만."
+
+### 구현 (프로덕션, 커밋 전 — 이 세션 마지막 작업)
+
+- `pipeline/modules/derotation.py`: `_gradient_disk_r`의 서브픽셀 gradient 측정 로직을
+  `_subpixel_ray_edge()`로 추출(byte-identical 리팩터, 78개 기존 테스트로 확인) 후,
+  이를 재사용하는 신규 `_ray_limb_edge()` + `_robust_ellipse_refit()` 추가. `find_disk_
+  center()`/`_find_disk_center_impl()`/`_gradient_disk_r()` 자체는 무변경(등록/추적
+  경로에 영향 없음 — Phase 0 스코프 경계 그대로 준수).
+- `pipeline/config.py`: `WaveletConfig.master_limb_fit_refinement_enabled`(기본
+  **False**) 추가.
+- `pipeline/steps/wavelet_master.py`: `find_disk_center()` 결과를 얻은 직후,
+  플래그가 켜져 있고 **`has_rings=False`일 때만** `_robust_ellipse_refit()`로
+  재피팅(Saturn은 검증 안 됐으므로 아예 호출 자체를 안 함 — 조건문 게이팅, 근사치
+  fallback이 아니라 완전 스킵).
+- 신규 테스트 7개(`tests/test_limb_fit_refinement.py`): 합성 데이터 기준 정확한 기하
+  복원, 국소 오염(소수 ray) 상황에서도 정확한 복원 유지, ray 부족시 None 반환(안전한
+  폴백), config 기본값 False, 그리고 **실제 `wavelet_master.run()`을 monkeypatch spy로
+  감시**해 (a) 플래그 꺼짐 시 전혀 호출 안 됨, (b) `has_rings=True`면 플래그가 켜져도
+  호출 안 됨, (c) `has_rings=False`+플래그 켜짐이면 실제로 호출됨을 확인. 전체
+  85개(기존 78 + 신규 7) 테스트 통과.
+
+### ⚠️ 실측 검증에서 발견한 새로운 트레이드오프 — "고쳤다"고 선언할 수 없음
+
+`feedback_ab_test_via_real_pipeline` 원칙대로 실제 `derotate_window()` →
+`wavelet_master.run()` 정식 경로로 Jupiter window_03 IR/R 검증:
+
+1. **정량 개선은 진짜임**: 프로덕션 코드 자체로 측정해도 max|residual| 9.04px→3.42px
+   (+62%), 7.84px→3.13px(+60%) — 계획서의 "≥30% 개선"이라는 노이즈-바닥 기준을 크게
+   상회.
+2. **Saturn은 완전히 무영향**: 실제 `wavelet_master.run()`을 flag off/on으로 두 번
+   돌려서 출력 PNG가 byte-identical함을 직접 증명(`has_rings=True` 게이팅이 정확히
+   작동).
+3. **⚠️ 그런데 Jupiter 전체 프레임을 확대해서 보니, 이전엔 없던 얇고 밝은 오버슈트
+   윤곽선이 disk limb 전체를 따라 새로 나타남.** flag off는 완전히 매끄러운 단조
+   감소 프로파일(오버슈트 없음, 원래의 "회색 halo"만 있음) — flag on은 같은 위치에서
+   주변 대비 뚜렷한 밝은 스파이크가 생기고, 이게 한 지점의 우연이 아니라 여러 행
+   (dy=-15~+15)에 걸쳐 limb을 따라 연속적으로 나타남(진짜 아치형 아티팩트).
+4. **원인 추정**: 피팅이 진짜 limb에 훨씬 더 가까워지면서, primary mask의 "경계에서
+   gain=0으로 페더링"하는 지점이 이제 실제 가파른 photometric gradient 바로 위에
+   놓이게 됨 — 예전엔 피팅 오차(최대 9px) 덕분에 gain=0 지점이 진짜 gradient에서
+   떨어져 있어서(halo의 원인이자 동시에 오버슈트 회피 수단) 우연히 보호되고 있었던
+   것. `edge_feather_factor`를 2→3→4로 넓혀보면 오버슈트 진폭이 4134→2048→1196
+   (16비트 기준)으로 줄지만 완전히 없어지지 않고, eff=4에서는 halo스러운 부드러움이
+   다시 스며들기 시작함 — **같은 트레이드오프 곡선 위에서 재앙커링된 것일 뿐, 곡선
+   자체를 벗어난 게 아님.**
+5. 시각 비교/스윕 이미지: `experiments/limb_fit_validation/` (특히
+   `scratch_limb_fit_jupiter_limb_zoom.png`, `scratch_limb_fit_feather_sweep.png`).
+
+**결론**: `_robust_ellipse_refit()`는 실제로 정확하고 검증된 피팅 개선이며(합성+실측
+둘 다), Saturn에 전혀 영향 없이 안전하게 게이팅되어 있음 — 코드/테스트는 그대로
+유지할 가치가 있음. 하지만 **"halo와 white-rim을 동시에 없앤다"는 이번 세션 원래
+목표는 아직 달성되지 못함** — 이 피팅 수정 하나만으로는 같은 gain-vs-gradient
+트레이드오프를 벗어나지 못하고, 얇아진 형태로 재현됨. 기본값 **False로 유지**하고
+사용자에게 있는 그대로 보고. 후속으로 고려할 수 있는 방향(미착수): (a) gain=0 지점을
+피팅된 경계보다 살짝 바깥에 의도적으로 앵커링(피팅은 정확하게 하되 마스크는 여전히
+약간의 여유를 둠), (b) 이 오버슈트 자체를 억제하는 국소 게인 제한 로직(3번 실패
+이력 있음, `project_ring_limb_ringing_bug` 참고), (c) 현 수준(halo 유지) 수용.
+
+## ⚠️→❌ 후속 시도 5~9: "b) 오버슈트 자체를 억제" 방향을 5가지 방식으로 시도 — 전부 실패, 정직하게 기록
+
+사용자가 "이런 흰색 윤곽선은 퀄리티에 치명적이라서 절대로 나오면 안돼. 지금 토성에서
+고리가 끊어져보이는 건 하나는 헤일로고 하나는 이런 윤곽선"이라고 명확히 못박음 —
+white-rim은 halo와 대등한 "트레이드오프"가 아니라 그 자체로 출시 불가급 결함이라는
+원칙 확정 ([[feedback_white_rim_is_critical_defect]] 메모리 참고). 이에 따라 위
+(b) 방향(오버슈트 자체를 억제하는 로직)을 본격적으로 시도.
+
+### 시도 5: 출력값 클램핑 (local min/max clamp) — 합성 테스트에서도, 실측 하이브리드
+### 테스트에서도 실패
+
+아이디어: 샤프닝 후 각 픽셀을 "원본(샤프닝 전) 이미지의 국소 min~max 범위" 밖으로
+못 나가게 자르는 것. `pipeline/modules/wavelet.py`에 `_local_min_max()`(cv2.erode/
+dilate 기반 국소 min/max) + `overshoot_clamp_radius_px` 파라미터를
+`sharpen()`/`sharpen_disk_aware()`/`sharpen_color_disk_aware()`/`sharpen_color()`
+4개 함수 전부에 배선(기본값 0.0=완전 무효과). `WaveletConfig.master_overshoot_
+clamp_radius_px`(기본 0.0) 추가.
+
+**실패 발견 1(합성 테스트)**: 하드 엣지에서는 오버슈트를 완벽히 0으로 제거하지만,
+디스크 안쪽의 부드러운 벨트 모양 텍스처(진짜 디테일)에도 반경 1px만 줘도 샤프닝
+효과의 92~98%가 사라짐. 원인: 이 프로젝트의 실제 게인 테이블
+(`_MAX_GAINS=[29.15, 9.48, 0, 0, 0, 0]`)이 가장 미세한 2개 레벨에만 집중돼있는데,
+"국소 대비를 높인다"는 샤프닝의 정의 자체가 "그 픽셀을 바로 옆 이웃보다 튀게
+만든다"는 뜻이라, 그 스케일과 겹치는 작은 반경의 클램프는 진짜 디테일 강조까지
+거의 다 눌러버림. 최초 테스트는 손으로 재구현한 gain 테이블을 써서 부정확했으나(아래
+"교훈" 참고), 실제 `sharpen()`으로 재검증해도 결론은 동일.
+
+**실패 발견 2(실측 하이브리드 테스트, 병렬 조사 워크플로우)**: bilateral 필터(아래
+시도 6)와 결합해서 "관대한 sigma_color + 작은 클램프로 뒷정리"를 시도했으나, 클램프
+반경 1px만 있어도 sigma_color 값(0.08~0.40 전부 시도)과 무관하게 boost가 3~6%로
+붕괴 — 클램프가 항상 지배적이라 아무것도 회복시키지 못함.
+
+**상태**: 코드/테스트(`tests/test_overshoot_clamp.py`)는 유지(기본 off, 안전) —
+`master_ring_extension_enabled`처럼 "구현·테스트됐지만 비권장" 패턴. config
+docstring에 "!! DO NOT ENABLE !!" 명시.
+
+### 시도 6~9: 웹 리서치 기반 대안 — bilateral(기존 옵션), guided filter, 하이브리드,
+### local-gradient-gating
+
+사용자 지시("웹에서 좋은 방법 찾아봐")로 리서치 에이전트를 띄워 halo/ringing 없는
+샤프닝의 표준 기법을 조사(Guided Filter, Local Laplacian Filters, Edge-Avoiding
+Wavelets, WLS 등 확인 — 전부 "선형 다중스케일 분해가 edge를 가로질러 섞이는 게
+원인, edge-aware 분해로 바꾸는 게 정답"이라는 진단에 동의하는 문헌).
+
+**시도 6 (bilateral, 실측 검증)**: `decompose()`에 이미 있던(이번 문제엔 한 번도
+적용 안 됐던) `filter_type='bilateral'` 옵션을 실제 `derotate_window()` →
+`wavelet_master.run()` 정식 경로로 검증(병렬 조사 워크플로우, 실제 profile 설정
+사용, 스크립트: `experiments/ringing_fix_validation/`):
+- **Jupiter window_03/IR (오늘 발견한 흰 윤곽선)**: 오버슈트 진폭 42~45% 감소 —
+  **완전히 없어지지 않음**, 확대하면 여전히 얇은 밝은 선이 보임.
+- **Saturn window_01/R (원래 있던 비대칭 링잉, `project_ring_limb_ringing_bug`)**:
+  오른쪽 ansa 오버슈트 79% 감소 — 두 케이스 중 훨씬 큰 개선.
+- **그러나 두 케이스 모두 디스크 내부의 진짜 선명도(Laplacian variance)가 78%
+  감소** — 벨트 무늬/Cassini Division이 육안으로도 뚜렷하게 뭉개짐. 이 프로젝트의
+  존재 목적 자체가 행성 표면/고리 디테일 보존이라, 이 트레이드오프는 **받아들일 수
+  없음** — bilateral을 기본값으로 바꾸는 건 기각.
+
+**시도 7 (guided filter, He/Sun/Tang)**: 직접 구현(`cv2.boxFilter` 기반, scipy
+불필요) 후 `sharpen()`에 monkeypatch로 대입해 여러 eps 조합 테스트 — **bilateral의
+(오버슈트=0, 디테일유지=26.4%) 지점을 두 축 모두에서 이기는 조합을 찾지 못함**.
+2차 평활화 단계(계수 a,b 자체를 다시 boxFilter)를 제거하는 ablation도 시도했으나
+동일하게 실패(민감도를 낮추면 오버슈트는 줄지만 유지율이 bilateral보다 더 나쁨).
+
+**시도 8 (bilateral + 클램프 하이브리드)**: 시도 5 참고, 실패.
+
+**시도 9 (local-gradient/local-range 기반 detail gating, Local Laplacian
+아이디어의 단순화 버전)**: 레벨별 detail 계수를 국소 gradient 크기로 게이팅(gradient
+큰 곳=edge로 간주해 게인 억제) — **모든 threshold 설정에서 오버슈트가 정확히 0.30000
+(gaussian과 동일)에 고정됨**, 개선 전혀 없음. 원인 규명: 이 프로젝트의 calibrated
+게인이 워낙 커서(29.15, 9.48), edge 픽셀에 남은 아주 작은 detail 누출(~0.13,
+gain 적용 전)만으로도 [0,1] clip 상한을 넘겨버림 — bilateral/guided filter처럼
+**커널 자체가 edge를 가로질러 섞이지 않게(구조적으로 zero cross-edge diffusion)**
+만드는 방식과 달리, 이미 계산된(오염된) 계수를 사후에 감쇠시키는 방식은 이 정도로
+과격한 게인 앞에서는 통하지 않음.
+
+### ✅ 유일하게 실측으로 남은 순(純) 개선: bilateral의 sigma_color 레벨별 튜닝
+
+시도 6~9 전부 "이 문제를 해결"하진 못했지만, 그 과정에서 **부작용 없는 작은
+개선**을 하나 발견: `_bilateral_smooth`의 `sigma_color`가 기존엔 모든 레벨에 고정
+0.08이었는데, 레벨별로 다르게(미세 레벨엔 낮게, 거친 레벨엔 높게) 주는 grid search를
+돌린 결과 **같은 오버슈트=0(정확히 동일)을 유지하면서 디테일 유지율이 26.4%→28.7%로
+개선**되는 지점(`sigma_fine=0.10, sigma_coarse=0.12`)을 발견 — `filter_type=
+'gaussian'`(기본값, 모든 기존 호출자)은 전혀 영향 없고, `'bilateral'`을 실제로
+선택하는 경우에만 순수하게 더 나은 값. 이 하나는 실제로 적용함
+(`pipeline/modules/wavelet.py`의 `_bilateral_smooth` 기본값 변경, 78개 테스트
+전부 통과 확인).
+
+### 최종 결론 (2026-08-15, 이 세션 전체에 대해)
+
+**halo와 white-rim을 동시에 없앤다는 원래 목표는 이번 세션에서 달성하지 못함.**
+Saturn/Jupiter 양쪽에서, 정확한 fitting(로버스트 리핏)이나 edge-aware 분해(bilateral/
+guided filter)나 사후 클램핑이나 gradient 기반 게이팅이나 — 시도한 9가지 방향
+전부 "오버슈트를 없애려면 진짜 디테일을 심각하게 희생해야 한다"는 같은 벽에
+부딪힘. 유일하게 실측으로 검증된 순수 이득은 `_bilateral_smooth`의 sigma_color
+재튜닝(작지만 부작용 없음, 이미 적용). 근본 원인은 이 프로젝트의 wavelet 게인
+calibration이 최고 두 레벨에 매우 강하게 집중돼 있어서(29.15, 9.48), "edge에서는
+게인을 죽이고 real detail에서는 살린다"는 구분이 근본적으로 어려운 것으로 보임 —
+다음에 이 문제를 다시 본다면 게인 calibration 자체를 재검토하거나(레벨당 게인을
+낮추고 레벨 수를 늘리는 등), Edge-Avoiding Wavelets(Fattal 2009, Photoshop
+"Protect Detail"의 실제 알고리즘 — wavelet 변환 자체를 content-adaptive하게
+만드는 더 근본적이지만 구현 비용이 큰 방법)를 검토할 가치가 있음. 지금은 halo만
+있고 white-rim은 없는 현재 상태(모든 신규 플래그 기본 off) 유지가 유일하게
+안전한 선택.
+
+**교훈**: (1) 합성 테스트를 만들 때 실제 코드의 calibration 상수(`_MAX_GAINS` 등)를
+반드시 실제로 import해서 쓸 것 — 손으로 근사한 값은 결론을 왜곡시킴(이번에 실제로
+발생, 병렬 워크플로우가 재검증해서 잡아냄). (2) "문헌에서 표준으로 통하는 기법"도
+이 코드베이스의 특정 calibration(극단적으로 미세 레벨 집중)에서는 기대만큼 안 통할
+수 있음 — 항상 실측으로 확인. (3) 9번의 실패에도 불구하고 매번 정직하게 "안 됐다"고
+기록한 덕에 최소한 다음 세션이 같은 9가지를 또 시도하지 않을 수 있음.

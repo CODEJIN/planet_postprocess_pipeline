@@ -32,7 +32,7 @@ References:
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -181,27 +181,65 @@ def _log_detail(image: np.ndarray, level: int) -> np.ndarray:
     return part_x + part_y
 
 
-def _bilateral_smooth(image: np.ndarray, level: int, sigma_color: float = 0.08) -> np.ndarray:
+def _bilateral_smooth(
+    image: np.ndarray,
+    level: int,
+    sigma_color: Optional[float] = None,
+    sigma_fine: float = 0.10,
+    sigma_coarse: float = 0.12,
+) -> np.ndarray:
     """Bilateral filter as the à trous smooth step (ZeroGauss/Bilateral type).
 
     Replaces the B3-spline convolution with an edge-preserving bilateral filter
     at the given à trous level.  The resulting detail (image - bilateral_smooth)
-    preserves edges without amplifying them, eliminating limb-overshoot artifacts.
+    preserves edges without amplifying them as much as a linear (gaussian)
+    smooth step would -- but does NOT eliminate limb-overshoot artifacts on
+    real planetary data at an acceptable cost (see the 2026-08-15 real-data
+    validation in SATURN_RING_WAVELET_STATUS_2026-08-15.md: filter_type=
+    'bilateral' cut Jupiter's white-rim ~42-45% and Saturn's asymmetric
+    ring-limb ringing ~79%, but at a ~78% loss of real disk-interior sharpness
+    -- belts / Cassini Division -- on both targets. Do not read this
+    docstring's original "eliminating" claim as validated; it wasn't tested
+    against real data until that investigation).
+
+    sigma_color was a single fixed 0.08 for every level until 2026-08-15, when
+    a grid search (using the real sharpen() pipeline, not a hand-reimplemented
+    approximation) found a per-level-scaled schedule is a strict Pareto
+    improvement at the SAME (zero) overshoot on the project's synthetic
+    hard-edge test: retained detail-enhancement boost rose from 26.4% (flat
+    0.08) to 28.7% of the unmasked-gaussian baseline. Fine levels (small
+    spatial support, level 0) keep a slightly lower sigma_color close to the
+    old default; coarser levels (level>=5) use a slightly higher one, since
+    by the time the smoothing kernel's spatial support is large enough to
+    span the disk's own hard edge, a marginally larger colour tolerance still
+    fully preserves that edge while recovering more real texture at that
+    scale. This is a within-'bilateral'-only tuning change -- filter_type=
+    'gaussian' (the default for every existing caller) is completely
+    unaffected either way.
 
     Args:
-        image:       2-D float64 array in [0, 1].
-        level:       À trous level; sigmaSpace ≈ 2^level.
-        sigma_color: Bilateral color-space sigma (0.08 ≈ fine edge preservation).
+        image:        2-D float64 array in [0, 1].
+        level:        À trous level; sigmaSpace ≈ 2^level.
+        sigma_color:  Explicit override -- if given, used for every level
+                      (bypasses sigma_fine/sigma_coarse interpolation).
+                      None (default): interpolate from sigma_fine to
+                      sigma_coarse across levels 0-5 (see below).
+        sigma_fine:   sigma_color at level 0 (finest spatial scale).
+        sigma_coarse: sigma_color at level >= 5 (coarsest active scale in
+                      this project's typical 6-level decomposition).
 
     Returns:
         Smoothed array (same shape as image, float64).
     """
     import cv2 as _cv2
+    if sigma_color is None:
+        t = min(level / 5.0, 1.0)
+        sigma_color = sigma_fine + (sigma_coarse - sigma_fine) * t
     sigma_space = float(1 << level) * 0.75
     # cv2.bilateralFilter requires float32; d=-1 lets sigmaSpace determine diameter.
     smoothed = _cv2.bilateralFilter(
         image.astype(np.float32), d=-1,
-        sigmaColor=sigma_color, sigmaSpace=sigma_space,
+        sigmaColor=float(sigma_color), sigmaSpace=sigma_space,
     )
     return smoothed.astype(np.float64)
 
@@ -365,7 +403,14 @@ def decompose(
             'zerogauss' — LoG-based detail extracted directly from the original
                           image at each scale (more aggressive, zero-sum).
             'bilateral' — Edge-preserving à trous (bilateral smooth step);
-                          reduces limb overshoot at planet boundaries.
+                          reduces limb overshoot at planet boundaries, but
+                          NOT a clean fix -- real-data validation
+                          (2026-08-15, see SATURN_RING_WAVELET_STATUS_
+                          2026-08-15.md) found it cuts overshoot 42-79%
+                          while costing ~78% of real disk-interior sharpness
+                          (belts/Cassini Division) on both Jupiter and
+                          Saturn. Do not switch master_filter_type to this
+                          as a default without accepting that trade-off.
 
     Returns:
         List of length ``levels + 1``:
@@ -509,6 +554,7 @@ def sharpen_color(
     sharpen_filter: float = 0.0,
     denoise_amounts: Optional[List[float]] = None,
     filter_type: str = 'gaussian',
+    overshoot_clamp_radius_px: float = 0.0,
 ) -> np.ndarray:
     """Sharpen a colour (H, W, 3) RGB float [0, 1] image via L-channel sharpening.
 
@@ -526,6 +572,9 @@ def sharpen_color(
         denoise_amounts: Per-level soft-threshold coefficient (0.0=off, 0.1=gentle, 1.0=strong).
         filter_type:     Decomposition kernel ('gaussian', 'zerogauss',
                          'bilateral').
+        overshoot_clamp_radius_px: See sharpen()'s docstring. 0.0 (default):
+                         bit-identical. Passed straight through to the
+                         L-channel sharpen() call (channel-agnostic).
 
     Returns:
         Float32 (H, W, 3) RGB array in [0, 1], with sharpened luminance.
@@ -537,7 +586,8 @@ def sharpen_color(
     L = lab[:, :, 0] / 100.0
     L_sharp = sharpen(L, levels=levels, amounts=amounts, weights=weights,
                       power=power, sharpen_filter=sharpen_filter,
-                      denoise_amounts=denoise_amounts, filter_type=filter_type)
+                      denoise_amounts=denoise_amounts, filter_type=filter_type,
+                      overshoot_clamp_radius_px=overshoot_clamp_radius_px)
     lab[:, :, 0] = np.clip(L_sharp * 100.0, 0.0, 100.0)
 
     bgr_sharp = _cv2.cvtColor(lab, _cv2.COLOR_Lab2BGR)
@@ -711,6 +761,35 @@ def _make_disk_weight_ellipse(
     # Cosine S-curve: smoother at both endpoints than linear fade,
     # making the disk-edge transition less perceptible.
     return (0.5 * (1.0 - np.cos(np.pi * t))).astype(np.float32)
+
+
+def _local_min_max(image: np.ndarray, radius_px: float) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-pixel local min/max of `image` over a circular neighborhood of
+    radius `radius_px`, via grayscale morphological erosion (=local min)
+    and dilation (=local max) with a flat structuring element.
+
+    Used to clamp sharpened output against unsharp-mask overshoot/ringing:
+    a pixel that ends up brighter (or darker) than every real pixel of the
+    ORIGINAL, unsharpened image within this neighborhood is definitionally
+    invented by the filter, not real detail. See `overshoot_clamp_radius_px`
+    on `sharpen()`/`sharpen_disk_aware()` for the caller-facing rationale
+    (2026-08-15 -- root-caused ringing at the disk limb after four
+    mask-domain attempts, documented in project_ring_limb_ringing_bug
+    memory, failed to escape the gray-halo/white-rim trade-off; this is an
+    output-domain mechanism instead).
+
+    No scipy dependency (this codebase deliberately avoids one -- see
+    `_convolve1d_reflect`'s "numpy drop-in for scipy.ndimage" comment);
+    `cv2`'s grayscale morphology ops give the same result on a flat
+    structuring element and `cv2` is already a heavy dependency elsewhere
+    in this module.
+    """
+    import cv2
+
+    k = max(1, int(round(radius_px)))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1, 2 * k + 1))
+    img32 = image.astype(np.float32)
+    return cv2.erode(img32, kernel), cv2.dilate(img32, kernel)
 
 
 def coverage_to_confidence(n: np.ndarray, floor: float = 0.0) -> np.ndarray:
@@ -1027,6 +1106,7 @@ def sharpen_disk_aware(
     extra_gap_px: Optional[float] = None,
     confidence_map: Optional[np.ndarray] = None,
     fill_outside_before_sharpen: bool = False,
+    overshoot_clamp_radius_px: float = 0.0,
 ) -> np.ndarray:
     """À trous wavelet sharpening with per-level spatial edge feathering.
 
@@ -1159,6 +1239,21 @@ def sharpen_disk_aware(
                               before this cap was added).
                               False (default): bit-identical, no second
                               decompose() call.
+        overshoot_clamp_radius_px: When > 0, clamps the final assembled
+                              result to the local min/max of the real input
+                              `image` within this pixel radius (see
+                              `_local_min_max`) -- suppresses unsharp-mask
+                              overshoot/ringing (the white-rim class of
+                              artifact) at any genuinely hard edge, most
+                              notably the disk limb, regardless of how the
+                              feather mask is shaped. A fundamentally
+                              different (output-domain) mechanism from
+                              edge_feather_factor/confidence_map/
+                              fill_outside_before_sharpen above (all
+                              input/mask-domain) -- see
+                              WaveletConfig.master_overshoot_clamp_radius_px
+                              for the full rationale. 0.0 (default):
+                              bit-identical, no clamp applied.
 
     Returns:
         Float32 array in [0, 1], same shape as input.
@@ -1191,6 +1286,7 @@ def sharpen_disk_aware(
                 extra_gap_px=extra_gap_px,
                 confidence_map=confidence_map,
                 fill_outside_before_sharpen=fill_outside_before_sharpen,
+                overshoot_clamp_radius_px=overshoot_clamp_radius_px,
             )
             for c in range(image.shape[2])
         ]
@@ -1349,6 +1445,10 @@ def sharpen_disk_aware(
 
         result = result + d_thr * gain * weight_map * _conf
 
+    if overshoot_clamp_radius_px > 0:
+        lo, hi = _local_min_max(image, overshoot_clamp_radius_px)
+        result = np.clip(result, lo, hi)
+
     return np.clip(result, 0.0, 1.0).astype(np.float32)
 
 
@@ -1374,6 +1474,7 @@ def sharpen_color_disk_aware(
     extra_gap_px: Optional[float] = None,
     confidence_map: Optional[np.ndarray] = None,
     fill_outside_before_sharpen: bool = False,
+    overshoot_clamp_radius_px: float = 0.0,
 ) -> np.ndarray:
     """Disk-aware sharpening for colour (H, W, 3) RGB float images via Lab L-channel.
 
@@ -1382,11 +1483,11 @@ def sharpen_color_disk_aware(
 
     Args and returns: same as :func:`sharpen_color` plus disk geometry args,
     the denoise_amounts / filter_type parameters, and the optional second-
-    ellipse extra_rx/extra_ry/extra_angle/extra_gap_px, confidence_map, and
-    fill_outside_before_sharpen (see sharpen_disk_aware's docstring) --
-    both are channel-agnostic (pure spatial signals) so they are passed
-    straight through to the single L-channel call, no per-channel handling
-    needed.
+    ellipse extra_rx/extra_ry/extra_angle/extra_gap_px, confidence_map,
+    fill_outside_before_sharpen, and overshoot_clamp_radius_px (see
+    sharpen_disk_aware's docstring) -- all channel-agnostic (pure spatial
+    signals) so they are passed straight through to the single L-channel
+    call, no per-channel handling needed.
     """
     import cv2 as _cv2
     bgr = _cv2.cvtColor(image.astype(np.float32), _cv2.COLOR_RGB2BGR)
@@ -1406,6 +1507,7 @@ def sharpen_color_disk_aware(
         extra_gap_px=extra_gap_px,
         confidence_map=confidence_map,
         fill_outside_before_sharpen=fill_outside_before_sharpen,
+        overshoot_clamp_radius_px=overshoot_clamp_radius_px,
     )
     lab[:, :, 0] = np.clip(L_sharp * 100.0, 0.0, 100.0)
 
@@ -1423,6 +1525,7 @@ def sharpen(
     sharpen_filter: float = 0.0,
     denoise_amounts: Optional[List[float]] = None,
     filter_type: str = 'gaussian',
+    overshoot_clamp_radius_px: float = 0.0,
 ) -> np.ndarray:
     """Apply à trous wavelet sharpening to *image*.
 
@@ -1441,6 +1544,12 @@ def sharpen(
         denoise_amounts: Per-level soft-threshold coefficient (0.0=off, 0.1=gentle, 1.0=strong).
         filter_type:     Decomposition kernel: 'gaussian' (default), 'zerogauss',
                          or 'bilateral'.
+        overshoot_clamp_radius_px: When > 0, clamps the result to the local
+                         min/max of *image* within this pixel radius --
+                         suppresses unsharp-mask overshoot/ringing at hard
+                         edges (see sharpen_disk_aware's docstring and
+                         WaveletConfig.master_overshoot_clamp_radius_px for
+                         the full rationale). 0.0 (default): bit-identical.
 
     Returns:
         Float32 array in [0, 1], mean-preserving.
@@ -1461,7 +1570,8 @@ def sharpen(
             sharpen(image[:, :, c], levels=levels, weights=gains,
                     sharpen_filter=sharpen_filter,
                     denoise_amounts=denoise_amounts,
-                    filter_type=filter_type)
+                    filter_type=filter_type,
+                    overshoot_clamp_radius_px=overshoot_clamp_radius_px)
             for c in range(image.shape[2])
         ]
         return np.stack(channels, axis=2).astype(np.float32)
@@ -1469,4 +1579,7 @@ def sharpen(
     coeffs = decompose(image.astype(np.float64), levels, filter_type=filter_type)
     result = reconstruct(coeffs, gains, sharpen_filter=sharpen_filter,
                          denoise_amounts=denoise_amounts)
+    if overshoot_clamp_radius_px > 0:
+        lo, hi = _local_min_max(image, overshoot_clamp_radius_px)
+        result = np.clip(result, lo, hi)
     return np.clip(result, 0.0, 1.0).astype(np.float32)

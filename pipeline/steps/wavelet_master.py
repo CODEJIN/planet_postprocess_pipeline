@@ -30,6 +30,7 @@ from pipeline.config import PipelineConfig
 from pipeline.modules import image_io, wavelet
 from pipeline.modules.derotation import (
     find_disk_center,
+    _robust_ellipse_refit,
     _SATURN_RING_INNER_REQ,
     _SATURN_RING_OUTER_REQ,
 )
@@ -125,11 +126,30 @@ def run(
             # preventing over-blur at the equatorial limb while still suppressing
             # ringing from de-rotation coverage gradients at the disk boundary.
             _lum = img.mean(axis=2) if img.ndim == 3 else img
+            _wlog = logs.get(filt, {})
             try:
                 _cx, _cy, _rx, _ry, _angle = find_disk_center(_lum)
                 _has_disk = _rx >= 5
             except Exception:
                 _has_disk = False
+
+            if _has_disk and config.wavelet.master_limb_fit_refinement_enabled \
+                    and not bool(_wlog.get("has_rings", False)):
+                # Robust disk-limb refit (2026-08-15, opt-in, ringless targets
+                # only): find_disk_center()'s ellipse fit has a measured
+                # ~0.5-0.9px ASYMMETRIC error vs. the true photometric limb,
+                # the root cause of the gray-halo/white-rim wavelet artifact
+                # trade-off -- see WaveletConfig.master_limb_fit_refinement_
+                # enabled's docstring and SATURN_RING_WAVELET_STATUS_2026-08-
+                # 15.md. Validated on real Jupiter data; NOT validated (and
+                # not applied) for has_rings=True targets, where ring-crossing
+                # ray contamination defeats this refit's outlier rejection --
+                # Saturn keeps today's fit unchanged.
+                _refit = _robust_ellipse_refit(_lum, _cx, _cy, _rx, _ry, _angle)
+                if _refit is not None:
+                    _cx, _cy, _rx, _ry, _angle, _n_kept = _refit
+                    print(f"    [{filt}] limb fit refined (kept {_n_kept}/72 rays): "
+                          f"rx={_rx:.2f} ry={_ry:.2f} angle={_angle:.2f}°")
 
             if _has_disk:
                 # find_disk_center returns angle in degrees; convert to radians
@@ -149,7 +169,6 @@ def run(
                 # Anchored on _rx -- this function's own fresh fit on the
                 # actual image being sharpened, not the de-rotation-time
                 # ref_semi_a from a different frame.
-                _wlog = logs.get(filt, {})
 
                 # Coverage-aware sharpening gain (2026-08-15, opt-in): reduce
                 # wavelet gain where derotate_filter()'s per-pixel de-rotation
@@ -282,6 +301,7 @@ def run(
                         extra_gap_px=_extra_gap_px,
                         confidence_map=_confidence_map,
                         fill_outside_before_sharpen=config.wavelet.master_edge_extension_enabled,
+                        overshoot_clamp_radius_px=config.wavelet.master_overshoot_clamp_radius_px,
                     )
                 else:
                     sharpened = wavelet.sharpen_disk_aware(
@@ -299,6 +319,7 @@ def run(
                         extra_gap_px=_extra_gap_px,
                         confidence_map=_confidence_map,
                         fill_outside_before_sharpen=config.wavelet.master_edge_extension_enabled,
+                        overshoot_clamp_radius_px=config.wavelet.master_overshoot_clamp_radius_px,
                     )
                 print(f"    [{filt}] ellipse rx={_rx:.1f} ry={_ry:.1f} angle={_angle:.1f}°")
             else:
@@ -311,6 +332,7 @@ def run(
                         sharpen_filter=config.wavelet.master_sharpen_filter,
                         denoise_amounts=config.wavelet.master_denoise_amounts,
                         filter_type=config.wavelet.master_filter_type,
+                        overshoot_clamp_radius_px=config.wavelet.master_overshoot_clamp_radius_px,
                     )
                 else:
                     sharpened = wavelet.sharpen(
@@ -321,6 +343,7 @@ def run(
                         sharpen_filter=config.wavelet.master_sharpen_filter,
                         denoise_amounts=config.wavelet.master_denoise_amounts,
                         filter_type=config.wavelet.master_filter_type,
+                        overshoot_clamp_radius_px=config.wavelet.master_overshoot_clamp_radius_px,
                     )
 
             out_path: Optional[Path] = None
