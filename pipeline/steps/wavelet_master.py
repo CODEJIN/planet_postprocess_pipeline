@@ -183,6 +183,24 @@ def run(
                 _extra_gap_px = None
                 if bool(_wlog.get("has_rings", False)):
                     _pole_pa_deg = float(_wlog.get("pole_pa_deg", 0.0))
+                    # Reuse pole_pa_deg for the PRIMARY ellipse's angle too
+                    # (overriding the noisy per-image Otsu fit _angle) so the
+                    # globe mask stays co-oriented with the ring geometry by
+                    # construction -- user-reported "abnormal line at the
+                    # ring/globe border" traced to this fit's angle (178.5 deg
+                    # here) diverging from pole_pa_deg (173.0 deg mod 180) by
+                    # ~5.5 deg on real data. The globe is close enough to
+                    # circular (ry/rx~0.9) that a few-degree orientation
+                    # change has no visible effect on its own limb feathering.
+                    # Kept regardless of master_ring_extension_enabled below --
+                    # this angle fix is independent of, and unaffected by, the
+                    # separate ring-extension-mask issue found 2026-08-15 (the
+                    # controlled A/B/C/D test that found it used this same
+                    # pole_pa-based angle in every case, including the clean
+                    # ones -- see master_ring_extension_enabled's docstring).
+                    _angle_rad = np.radians(_pole_pa_deg)
+
+                if bool(_wlog.get("has_rings", False)) and config.wavelet.master_ring_extension_enabled:
                     _sub_obs_lat_deg = float(_wlog.get("sub_observer_lat_deg", 0.0))
                     _sin_b = abs(np.sin(np.radians(_sub_obs_lat_deg)))
                     # User-reported real-data check (window_01/R): the visible
@@ -229,19 +247,6 @@ def run(
                     # Deferred until after _use_eff is known (a few lines
                     # down) since it depends on that.
                     _extra_gap_px = None  # set below once _use_eff is known
-                    # Reuse pole_pa_deg for the PRIMARY ellipse's angle too
-                    # (overriding the noisy per-image Otsu fit _angle) so the
-                    # globe mask and the ring mask are always co-oriented by
-                    # construction -- user-reported "abnormal line at the
-                    # ring/globe border" traced to this fit's angle (178.5 deg
-                    # here) diverging from pole_pa_deg (173.0 deg mod 180) by
-                    # ~5.5 deg on real data, which made the two independently-
-                    # feathered ellipse boundaries cross paths near the ansa,
-                    # producing a visible dip where both masks were
-                    # simultaneously mid-feather. The globe is close enough to
-                    # circular (ry/rx~0.9) that a few-degree orientation
-                    # change has no visible effect on its own limb feathering.
-                    _angle_rad = np.radians(_pole_pa_deg)
                     _extra_angle = _angle_rad
 
                 # Auto-estimate eff and expand_px from image data if requested

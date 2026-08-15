@@ -143,6 +143,48 @@ class WaveletConfig:
     # Default False: bit-identical, no second decompose() call.
     master_edge_extension_enabled: bool = False
 
+    # ── Ring-extension sharpening gain (default OFF as of 2026-08-15) ─────────
+    # Controls whether wavelet_master.py's `extra_rx`/`extra_gap_px` mechanism
+    # (a second, larger co-centred ellipse unioned into the sharpening mask so
+    # Saturn's ring system gets gain too, not just the globe) is used at all
+    # for has_rings=True targets. Previously this was unconditional whenever
+    # has_rings=True -- i.e. always on for every real Saturn session, since
+    # has_rings is itself gated on horizons_id=="699".
+    #
+    # BUG FOUND 2026-08-15 (real-Saturn-data, user-reported white rim / double
+    # limb / ring-cut illusion at the globe-ring boundary): a controlled A/B/C/D
+    # experiment on one FROZEN step04 ndarray (varying only the wavelet mask
+    # policy, nothing upstream) isolated the cause precisely:
+    #   A) no sharpening                          -> clean (trivially)
+    #   B) global uniform wavelet.sharpen(),
+    #      no disk-aware mask at all              -> artifact PRESENT
+    #   C) sharpen_disk_aware() primary ellipse
+    #      mask only, extra_rx=None               -> clean
+    #   D) primary + extra_rx (prior default)     -> artifact PRESENT
+    # The primary disk mask's own feather (fades to 0 approaching the true
+    # limb from inside) was already suppressing whatever this wavelet
+    # decomposition does at that boundary (visible once unmasked, in B) --
+    # extra_rx's job is specifically to push nonzero gain back INTO that same
+    # zone so the ring gets sharpened too, which reopens exactly the artifact
+    # the primary mask's feather was hiding. Two attempts to patch extra_rx's
+    # internals directly (a gain floor, and replacing its min/max combination
+    # with a differentiable soft-AND/OR) were tried first and had NO visual
+    # effect (see project_ring_limb_ringing_bug memory) -- consistent with the
+    # cause being this structural conflict, not an isolated implementation bug
+    # in extra_rx's own math.
+    #
+    # Default False: sharpen_disk_aware() is called without extra_rx/extra_ry/
+    # extra_angle/extra_gap_px for every target, including has_rings=True --
+    # the globe gets full disk-aware sharpening (case C above), the ring
+    # system itself is passed through at the primary mask's own feathered-to-0
+    # gain (i.e. essentially unsharpened, same as before this whole ring-aware
+    # subsystem existed). This is a conservative regression to known-clean
+    # behaviour, not a fix for wanting sharper ring/Cassini-Division detail --
+    # re-enable only after finding a mask design that doesn't reintroduce case
+    # D's artifact (see project_ring_occlusion_3d_reprojection_gap memory and
+    # SATURN_RING_WAVELET_STATUS_2026-08-15.md for the full investigation).
+    master_ring_extension_enabled: bool = False
+
     # When True, edge_feather_factor and disk_expand_px are estimated
     # automatically from each de-rotation stack image before sharpening.
     # The manual values above are ignored; auto-estimated values are printed.
