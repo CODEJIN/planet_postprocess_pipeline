@@ -1488,6 +1488,342 @@ def compute_ring_sharpening_mask(
     return _feather_ring_foreground_boundary(h, w, ring_footprint)
 
 
+def _ring_annulus_mask(
+    h: int,
+    w: int,
+    cx: float,
+    cy: float,
+    disk_semi_a: float,
+    pole_pa_deg: float,
+    sub_observer_lat_deg: float,
+    feather: bool = True,
+) -> np.ndarray:
+    """[0,1] weight over Saturn's analytic ring annulus (inner to outer
+    physical radius), with NO globe-overlap/depth distinction -- unlike
+    compute_ring_sharpening_mask()/compute_ring_occlusion_weight(), which
+    both care about foreground-vs-background where the ring crosses the
+    globe silhouette. This is deliberately simpler: added 2026-08-16
+    (project_ring_globe_layer_separation_roadmap Phase 1), originally for
+    use as a phase-correlation window so subpixel_align()'s measured
+    frame-to-frame shift is driven by the ring's own signal instead of the
+    globe's. Whether that shift lands in front of or behind the globe at
+    any given pixel is irrelevant for this purpose -- both are real ring
+    material moving together.
+
+    feather: when True (default -- suitable for compositing use, e.g. a
+    future Phase 3 blend weight), the boundary is smoothly ramped via
+    _feather_ring_foreground_boundary(), same convention as the other ring
+    masks in this module. When False, returns the RAW hard boolean mask
+    (cast to float) instead. **This matters, not just a cosmetic choice**:
+    empirically (synthetic tests, tests/test_ring_occlusion_weight.py),
+    multiplying phase-correlation input by the FEATHERED version measurably
+    corrupts subpixel_align()'s result for some shift magnitudes (verified
+    wrong by several pixels at (3,-2)px true shift, correct at (1,0)px and
+    (5,5)px -- not a simple monotonic degradation) -- the smooth amplitude
+    taper apparently interacts badly with phase correlation's frequency-
+    domain assumptions here. The hard mask, despite its sharp edge (usually
+    the thing a feather is meant to avoid), measured correctly across every
+    shift tested. Callers doing registration (not compositing) MUST pass
+    feather=False.
+
+    Same physical ratios/rotation convention as the other ring-geometry
+    helpers in this module (_SATURN_RING_INNER_REQ/_SATURN_RING_OUTER_REQ,
+    pole_pa-aligned ellipses) -- reuses that scaling, not a new geometry
+    model.
+    """
+    sin_b = abs(math.sin(math.radians(sub_observer_lat_deg)))
+    inner_semi_a = disk_semi_a * _SATURN_RING_INNER_REQ
+    inner_semi_b = inner_semi_a * sin_b
+    outer_semi_a = disk_semi_a * _SATURN_RING_OUTER_REQ
+    outer_semi_b = max(outer_semi_a * sin_b, 1e-6)
+
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+    ang = math.radians(pole_pa_deg)
+    cos_a, sin_a = math.cos(ang), math.sin(ang)
+    dx, dy = xx - cx, yy - cy
+    xr = dx * cos_a + dy * sin_a
+    yr = -dx * sin_a + dy * cos_a
+
+    in_outer = (xr / outer_semi_a) ** 2 + (yr / outer_semi_b) ** 2 <= 1.0
+    in_inner = (xr / inner_semi_a) ** 2 + (yr / max(inner_semi_b, 1e-6)) ** 2 <= 1.0
+    in_annulus = in_outer & ~in_inner
+    if not feather:
+        return in_annulus.astype(np.float32)
+    return _feather_ring_foreground_boundary(h, w, in_annulus)
+
+
+def _predicted_apparent_ratio(
+    true_polar_equatorial_ratio: float,
+    sub_observer_lat_deg: float,
+) -> float:
+    """Analytically predict a body-of-revolution's APPARENT (projected)
+    semi-minor/semi-major ratio from its TRUE physical oblateness and the
+    sub-observer latitude B -- no image, no ellipse fit, no rotation matrix.
+
+    2026-08-16, part of the navigation-constrained limb fit
+    (`_navigation_constrained_ellipse_fit`): standard result for the
+    orthographic silhouette of an oblate spheroid. Because the body is a
+    surface of revolution about its polar axis, the screen axis
+    PERPENDICULAR to the tilt plane is always exactly `Req` regardless of B
+    or sub-observer longitude (rotating the body about its own polar axis
+    doesn't change this axis's projected length) -- only the axis WITHIN the
+    tilt plane foreshortens, from `Rpol` at B=0 (edge-on) to `Req` at B=90
+    (pole-on). Derivation (envelope of the family of latitude circles'
+    projected ellipses as Z sweeps the polar axis, standard `p*Z +
+    q*sqrt(c^2-Z^2)` maximization): the tilt-plane semi-axis has apparent
+    length `sqrt(Rpol^2*cos(B)^2 + Req^2*sin(B)^2)`, so as a ratio to `Req`:
+
+        apparent_ratio = sqrt(true_ratio^2 * cos(B)^2 + sin(B)^2)
+
+    (checked against the stated limits above: B=0 -> true_ratio exactly,
+    B=90 -> 1.0 exactly.)
+
+    Deliberately NOT derived via `_oblate_ortho_forward`/`_oblate_ortho_
+    inverse` (correct but would require numerically tracing the silhouette
+    envelope) -- this closed form needs no rotation convention at all, so it
+    carries none of the sign/handedness risk that has bitten this module's
+    other B/pole_pa math before (see module docstring's `_oblate_ortho_*`
+    history). Symmetric in the sign of B by construction (only |sin|/|cos|
+    matter via the squares).
+    """
+    b_rad = math.radians(sub_observer_lat_deg)
+    return math.sqrt((true_polar_equatorial_ratio ** 2) * math.cos(b_rad) ** 2 + math.sin(b_rad) ** 2)
+
+
+def _ring_contaminated_theta_mask(
+    thetas_deg: np.ndarray,
+    cx: float,
+    cy: float,
+    disk_semi_a: float,
+    disk_semi_b: float,
+    pole_pa_deg: float,
+    sub_observer_lat_deg: float,
+    outer_safety_factor: float = 1.35,
+) -> np.ndarray:
+    """For each image-frame angle in `thetas_deg`, test whether the SEED
+    ellipse's own boundary point in that direction falls inside Saturn's
+    analytic ring annulus footprint -- i.e. which limb rays are expected to
+    be ring-contaminated and should be excluded before fitting.
+
+    Reuses the exact ellipse-membership tests already used by
+    `_ring_globe_overlap_ellipses`/`compute_ring_sharpening_mask` (same
+    `_SATURN_RING_INNER_REQ`/`_SATURN_RING_OUTER_REQ` physical ratios, same
+    `outer_safety_factor` convention), evaluated at 1-D boundary points
+    instead of over a full (h, w) pixel grid -- a thin wrapper, not a new
+    model. The seed `disk_semi_a`/`disk_semi_b` (from the current, possibly
+    ring-biased fit) only sets the SCALE of the ring geometry for exclusion
+    purposes, generously padded by `outer_safety_factor` -- the same
+    tolerance-to-seed-error the two functions above already rely on.
+
+    Returns a bool array (len == len(thetas_deg)), True where the ray at
+    that theta should be EXCLUDED (ring-contaminated).
+    """
+    sin_b = abs(math.sin(math.radians(sub_observer_lat_deg)))
+    inner_ring_semi_a = disk_semi_a * _SATURN_RING_INNER_REQ
+    inner_ring_semi_b = inner_ring_semi_a * sin_b
+    outer_ring_semi_a = disk_semi_a * _SATURN_RING_OUTER_REQ * outer_safety_factor
+    outer_ring_semi_b = max(outer_ring_semi_a * sin_b, 1e-6)
+
+    thetas = np.radians(np.asarray(thetas_deg, dtype=np.float64))
+    ang = math.radians(pole_pa_deg)
+    cos_a, sin_a = math.cos(ang), math.sin(ang)
+
+    # The globe-limb boundary point in image space at image-frame angle
+    # theta is the point at distance r_ell (same closed form `_ray_limb_
+    # edge` uses) from the centre along that direction; rotate it into the
+    # ellipse-aligned frame (xr, yr) the same way `_ring_globe_overlap_
+    # ellipses` rotates dx/dy, for the ring-membership test below.
+    dxu, dyu = np.cos(thetas), np.sin(thetas)
+    dxr = cos_a * dxu + sin_a * dyu
+    dyr = -sin_a * dxu + cos_a * dyu
+    r_ell = 1.0 / np.sqrt((dxr / disk_semi_a) ** 2 + (dyr / disk_semi_b) ** 2)
+    xr = dxr * r_ell
+    yr = dyr * r_ell
+
+    in_ring_outer = (xr / outer_ring_semi_a) ** 2 + (yr / outer_ring_semi_b) ** 2 <= 1.0
+    in_ring_inner = (xr / inner_ring_semi_a) ** 2 + (yr / max(inner_ring_semi_b, 1e-6)) ** 2 <= 1.0
+    return in_ring_outer & ~in_ring_inner
+
+
+def _fixed_shape_circle_fit(
+    points_xy: np.ndarray,
+    angle_deg: float,
+    ratio: float,
+) -> Optional[Tuple[float, float, float]]:
+    """Fit (cx, cy, semi_a) from boundary points, given a FIXED orientation
+    and FIXED semi_b/semi_a ratio -- i.e. the only unknowns are the centre
+    and one overall scale, not a free 5-parameter conic fit.
+
+    Method: rotate points into the ellipse-aligned frame by -angle_deg (same
+    convention as `_ray_limb_edge`/`_robust_ellipse_refit`), rescale the
+    rotated y-coordinate by 1/ratio -- this turns the known-oblate ellipse
+    into a circle -- then solve the standard linear (Kasa) least-squares
+    circle fit for (cx', cy', r) in that rescaled frame, and finally
+    un-rescale/un-rotate the centre back to image coordinates.
+
+    Returns None if fewer than 5 points are given or the linear system is
+    singular/ill-conditioned (near-collinear points).
+    """
+    pts = np.asarray(points_xy, dtype=np.float64)
+    if len(pts) < 5:
+        return None
+    ang = math.radians(angle_deg)
+    cos_a, sin_a = math.cos(ang), math.sin(ang)
+    x, y = pts[:, 0], pts[:, 1]
+    xr = x * cos_a + y * sin_a
+    yr = (-x * sin_a + y * cos_a) / ratio
+
+    # Kasa circle fit: minimize sum((xr-a)^2+(yr-b)^2-r^2)^2 via the linear
+    # system [2xr 2yr 1][a b c]^T = xr^2+yr^2, where c = a^2+b^2-r^2.
+    A = np.column_stack([2.0 * xr, 2.0 * yr, np.ones_like(xr)])
+    rhs = xr ** 2 + yr ** 2
+    solution, _residuals, rank, _sv = np.linalg.lstsq(A, rhs, rcond=None)
+    if rank < 3:
+        return None
+    a_fit, b_fit, c_fit = solution
+    r2 = c_fit + a_fit ** 2 + b_fit ** 2
+    if r2 <= 0:
+        return None
+    r_fit = math.sqrt(r2)
+
+    # Un-rescale/un-rotate the centre back to image coordinates.
+    cx_r, cy_r = a_fit, b_fit * ratio
+    cx_img = cx_r * cos_a - cy_r * sin_a
+    cy_img = cx_r * sin_a + cy_r * cos_a
+    return float(cx_img), float(cy_img), float(r_fit)
+
+
+def _navigation_constrained_ellipse_fit(
+    image: np.ndarray,
+    cx: float,
+    cy: float,
+    semi_a: float,
+    semi_b: float,
+    pole_pa_deg: float,
+    sub_observer_lat_deg: float,
+    true_polar_equatorial_ratio: float,
+    n_rays: int = 72,
+    search_frac: Tuple[float, float] = (0.90, 1.10),
+    n_samples: int = 300,
+    smooth_sigma: float = 1.5,
+    outlier_sigma: float = 2.5,
+    min_keep: int = 20,
+    min_arc_span_deg: float = 90.0,
+    ring_safety_factor: float = 1.35,
+) -> Optional[Tuple[float, float, float, float, float, int]]:
+    """Refine a seed ellipse against the true limb using EXTERNAL navigation
+    data (Horizons B, already-known true oblateness, already-measured
+    pole_pa_deg) instead of statistical outlier rejection -- the has_rings
+    counterpart to `_robust_ellipse_refit` (which is validated ringless-only
+    and a documented near-no-op on Saturn, see that function's docstring).
+
+    Added 2026-08-16 after `_robust_ellipse_refit` (MAD-based) and an
+    exclude-ring-rays-then-free-refit scratch experiment
+    (`experiments/scratch_globe_fit_asymmetry_diagnosis.py`) both proved
+    insufficient on Saturn: ring contamination is a large CONTIGUOUS ~40%
+    angular arc, not scattered points, so (a) point-wise robust statistics
+    can't tell "contaminated majority" from "consensus", and (b) even after
+    excluding that arc, asking a free 5-parameter conic fit to recover
+    orientation AND aspect ratio from the remaining ~60% is ill-conditioned
+    (the excluded arc sits near the major axis, exactly where that
+    information is most needed).
+
+    This function instead fixes orientation (pole_pa_deg, already measured
+    independent of any ellipse fit via `auto_detect_equator_pa()`) and
+    aspect ratio (analytically predicted by `_predicted_apparent_ratio()`
+    from Horizons B and the planet's TRUE physical oblateness) BEFORE
+    looking at any ray data -- leaving only (cx, cy, scale) to fit from the
+    ring-free ~60% of rays, a heavily over-determined, well-conditioned
+    problem regardless of which contiguous arc is missing.
+
+    Steps: (1) predict the apparent ratio; (2) sample `n_rays` image-frame
+    thetas and drop ring-contaminated ones via
+    `_ring_contaminated_theta_mask()`; (3) measure the true edge at each
+    surviving theta via the existing `_ray_limb_edge()` (unmodified reuse,
+    narrow-window gradient search around the seed); (4) one round of
+    MAD-based rejection (same scale/threshold convention as
+    `_robust_ellipse_refit`) to catch ordinary local-albedo outliers
+    (belt/zone features), now a much smaller, better-behaved problem since
+    the systematic ring block is already gone analytically; (5) fit
+    `(cx, cy, semi_a)` via `_fixed_shape_circle_fit()` with the fixed
+    angle/ratio.
+
+    Same "never worse than the seed" contract as `_robust_ellipse_refit`:
+    returns None (caller keeps the seed unchanged) if too few rays survive
+    or the surviving arc span collapses below `min_arc_span_deg`.
+
+    Returns (cx, cy, semi_a, semi_b, pole_pa_deg, n_kept), or None.
+    """
+    predicted_ratio = _predicted_apparent_ratio(true_polar_equatorial_ratio, sub_observer_lat_deg)
+
+    thetas_deg = np.arange(0.0, 360.0, 360.0 / n_rays)
+    excluded = _ring_contaminated_theta_mask(
+        thetas_deg, cx, cy, semi_a, semi_b, pole_pa_deg, sub_observer_lat_deg,
+        outer_safety_factor=ring_safety_factor,
+    )
+
+    pts = []
+    kept_thetas = []
+    for theta_deg, is_excluded in zip(thetas_deg, excluded):
+        if is_excluded:
+            continue
+        r_true = _ray_limb_edge(
+            image, cx, cy, semi_a, semi_b, pole_pa_deg, float(theta_deg),
+            search_frac=search_frac, n_samples=n_samples, smooth_sigma=smooth_sigma,
+        )
+        if r_true is None:
+            continue
+        theta = math.radians(float(theta_deg))
+        pts.append((cx + r_true * math.cos(theta), cy + r_true * math.sin(theta)))
+        kept_thetas.append(theta_deg)
+
+    if len(pts) < min_keep:
+        return None
+    pts = np.array(pts, dtype=np.float64)
+    kept_thetas = np.array(kept_thetas)
+
+    def _arc_span_ok(thetas: np.ndarray) -> bool:
+        bins = set(int(t) // 10 for t in thetas)
+        return len(bins) * 10 >= min_arc_span_deg
+
+    if not _arc_span_ok(kept_thetas):
+        return None
+
+    # One round of MAD-based rejection against the seed ellipse's own
+    # predicted boundary, to drop ordinary local-albedo outliers (belt/zone
+    # features) -- reuses the same scale/threshold convention as
+    # `_robust_ellipse_refit`, but against the FIXED seed geometry rather
+    # than an iteratively refit one, since there is no free-parameter fit
+    # loop here to iterate against.
+    dx = pts[:, 0] - cx
+    dy = pts[:, 1] - cy
+    ang = math.radians(pole_pa_deg)
+    cos_a, sin_a = math.cos(ang), math.sin(ang)
+    dxr = cos_a * dx + sin_a * dy
+    dyr = -sin_a * dx + cos_a * dy
+    pred_r = 1.0 / np.sqrt((dxr / semi_a) ** 2 + (dyr / semi_b) ** 2 + 1e-12)
+    actual_r = np.sqrt(dx ** 2 + dy ** 2)
+    resid = actual_r - pred_r
+    med = np.median(resid)
+    scale = 1.4826 * np.median(np.abs(resid - med))
+    keep_mask = np.abs(resid - med) < outlier_sigma * (scale + 0.3)
+    if keep_mask.sum() >= min_keep:
+        pts = pts[keep_mask]
+        kept_thetas = kept_thetas[keep_mask]
+        if not _arc_span_ok(kept_thetas):
+            return None
+
+    if len(pts) < min_keep:
+        return None
+
+    fit = _fixed_shape_circle_fit(pts, pole_pa_deg, predicted_ratio)
+    if fit is None:
+        return None
+    cx_fit, cy_fit, semi_a_fit = fit
+    semi_b_fit = semi_a_fit * predicted_ratio
+    return cx_fit, cy_fit, semi_a_fit, semi_b_fit, pole_pa_deg, len(pts)
+
+
 # ── Shared disk geometry across filters (shape/pose separation) ───────────────
 #
 # A ringed planet's per-filter disk fits disagree slightly (different SNR/
@@ -3338,6 +3674,7 @@ def derotate_filter(
     sharpness_keep_fraction: float = 1.0,
     compute_coverage_map: bool = False,
     s0_sl_blend_enabled: bool = False,
+    compute_ring_only_stack: bool = False,
 ) -> Tuple[np.ndarray, dict]:
     """De-rotate and stack a single filter's images for one time window.
 
@@ -3446,6 +3783,16 @@ def derotate_filter(
                         frame baseline there by construction. Both default
                         False: complete no-op, byte-identical to before
                         these parameters existed.
+        compute_ring_only_stack: Opt-in (see DerotationConfig.compute_ring_
+                        only_stack's docstring). Only meaningful when
+                        has_rings=True; silently inert otherwise. When both
+                        are True, a second per-filter stack is computed and
+                        returned via log_dict["ring_only_stack"] (raw
+                        ndarray, must be popped before JSON — same contract
+                        as coverage_map/ring_crossing_mask). Does not affect
+                        `stacked` (the atmosphere stack) at all. Default
+                        False: complete no-op, byte-identical to before this
+                        parameter existed.
 
     Returns:
         (stacked_image, log_dict)
@@ -3588,9 +3935,29 @@ def derotate_filter(
     # 3D reprojection warp (see compute_frame_coverage_mask's docstring).
     _do_coverage = compute_coverage_map and use_true_reprojection
 
+    # Ring-only stack (2026-08-16, opt-in, Phase 1 of
+    # project_ring_globe_layer_separation_roadmap) -- see DerotationConfig.
+    # compute_ring_only_stack's docstring. The annulus window depends only
+    # on the reference frame's own resolved geometry (same as ring_crossing_
+    # mask above), so it's built once here, not per frame.
+    _do_ring_only_stack = has_rings and compute_ring_only_stack
+    _ring_win: Optional[np.ndarray] = None
+    if _do_ring_only_stack:
+        _rh3, _rw3 = _ref_lum.shape[:2]
+        # feather=False: see _ring_annulus_mask's docstring -- the smoothly
+        # feathered version measurably corrupts subpixel_align()'s result
+        # here (empirically verified wrong by several px at some shift
+        # magnitudes); the hard mask measures correctly across every shift
+        # tested despite its sharp edge.
+        _ring_win = _ring_annulus_mask(
+            _rh3, _rw3, ref_cx, ref_cy, ref_semi_a, pole_pa_deg, sub_observer_lat_deg,
+            feather=False,
+        )
+
     warped_images: List[np.ndarray] = []
     weights: List[float] = []
     coverage_masks: List[np.ndarray] = []
+    ring_only_images: List[np.ndarray] = []
     log_frames: List[dict] = []
     # Pre-warp disk center shifts: measured from raw frame before any warp is
     # applied, so the shift is purely seeing-induced wobble and is not
@@ -3723,6 +4090,67 @@ def derotate_filter(
         # any stem with a pre-warp shift (kept only for the limb_center/
         # phase_correlate fallback chain, which inherently needs the warped
         # image to measure against).
+        # Ring-only registration (2026-08-16, opt-in, Phase 1 of
+        # project_ring_globe_layer_separation_roadmap) -- computed from the
+        # ORIGINAL raw `img` (before the atmosphere pre-warp reassignment
+        # right below), using a fresh subpixel_align() measurement windowed
+        # to the ring annulus (_ring_win, a HARD mask -- see
+        # _ring_annulus_mask's docstring for why the feathered version is
+        # wrong for this purpose) instead of the globe-based (_dx, _dy)
+        # above. Reuses that globe-based measurement's SCALE only (see
+        # DerotationConfig.compute_ring_only_stack's docstring for why scale
+        # isn't re-derived independently here).
+        #
+        # SANITY-CHECKED against the globe-based shift, not used blindly:
+        # empirically (synthetic tests), unwindowed phase correlation on
+        # this annulus mask is reliable for sub-~1px shifts but can lock
+        # onto a badly wrong value at larger ones (verified wrong by
+        # several px at some 3-5px true shifts, in both a real-ring-photo-
+        # like noise texture and a purely elliptical mask/content match --
+        # not just an unrealistic test scenario). Since the ring and globe
+        # physically move together (same seeing jitter), a large disagreement
+        # between the two measurements means the ring lock failed, not that
+        # the ring truly moved independently -- fall back to the (_globe_dx,
+        # _globe_dy) shift in that case.
+        #
+        # CAVEAT (found in adversarial review, not yet fixed): when this
+        # frame's own globe-based pre-warp measurement failed outright
+        # (_pre_warp_shifts.get(stem) is None -- low fit confidence, radius
+        # too small, |dx|/|dy| > 15px, or an exception), _globe_dx/_globe_dy
+        # below are a hardcoded (0.0, 0.0), NOT the atmosphere path's actual
+        # eventual correction for that frame -- the atmosphere path only
+        # resolves that case LATER, in a separate post-warp limb_center/
+        # phase_correlate fallback loop this block runs before and has no
+        # access to. So for exactly the hardest frames, ring_only_stack can
+        # silently fall back to an identity transform while the atmosphere
+        # stack gets a real (possibly large) correction for the same frame
+        # -- the "never worse than the atmosphere path" framing above is
+        # only guaranteed relative to the GLOBE'S OWN pre-warp measurement,
+        # not the atmosphere path's full fallback chain. Not fixed here
+        # (would need restructuring to share that later fallback value);
+        # flagging honestly since this feature has not yet shown a real-data
+        # benefit to justify the added complexity (see project_ring_globe_
+        # layer_separation_roadmap's Phase 1 real-data validation notes).
+        _RING_SHIFT_DISAGREEMENT_PX = 2.0
+        if _do_ring_only_stack:
+            _pw_for_ring = _pre_warp_shifts.get(row["stem"])
+            _globe_dx = _pw_for_ring[0] if _pw_for_ring is not None else 0.0
+            _globe_dy = _pw_for_ring[1] if _pw_for_ring is not None else 0.0
+            _ring_scale = _pw_for_ring[2] if _pw_for_ring is not None else 1.0
+            try:
+                _ring_dx, _ring_dy = subpixel_align(_ref_lum * _ring_win, _raw_lum * _ring_win)
+                _plausible = (
+                    abs(_ring_dx) <= 15.0 and abs(_ring_dy) <= 15.0
+                    and math.hypot(_ring_dx - _globe_dx, _ring_dy - _globe_dy) <= _RING_SHIFT_DISAGREEMENT_PX
+                )
+                if not _plausible:
+                    _ring_dx, _ring_dy = _globe_dx, _globe_dy
+            except Exception:
+                _ring_dx, _ring_dy = _globe_dx, _globe_dy
+            ring_only_images.append(apply_shift_and_scale(
+                img, ref_cx - _ring_dx, ref_cy - _ring_dy, ref_cx, ref_cy, _ring_scale,
+            ))
+
         if row["stem"] in _pre_warp_shifts:
             _, _, _pw_scale, _pw_target_cx, _pw_target_cy = _pre_warp_shifts[row["stem"]]
             img = apply_shift_and_scale(img, _pw_target_cx, _pw_target_cy, ref_cx, ref_cy, _pw_scale)
@@ -3793,6 +4221,8 @@ def derotate_filter(
             if fl["stem"] == reference_row["stem"]
         )
         warped_images = normalize_brightness_to_reference(warped_images, ref_idx)
+        if _do_ring_only_stack and len(ring_only_images) > 1:
+            ring_only_images = normalize_brightness_to_reference(ring_only_images, ref_idx)
 
     # ── Sub-pixel translation alignment (pre-warp center based) ─────────────
     # Disk centres measured from raw (pre-warp) frames are now applied BEFORE
@@ -3869,6 +4299,7 @@ def derotate_filter(
                 kept_images: List[np.ndarray] = []
                 kept_weights: List[float] = []
                 kept_coverage: List[np.ndarray] = []
+                kept_ring_only: List[np.ndarray] = []
                 for i, (img, wgt) in enumerate(zip(warped_images, weights)):
                     fl = log_frames[i]
                     if outlier[i]:
@@ -3884,10 +4315,14 @@ def derotate_filter(
                     kept_weights.append(wgt)
                     if _do_coverage:
                         kept_coverage.append(coverage_masks[i])
+                    if _do_ring_only_stack:
+                        kept_ring_only.append(ring_only_images[i])
                 warped_images = kept_images
                 weights = kept_weights
                 if _do_coverage:
                     coverage_masks = kept_coverage
+                if _do_ring_only_stack:
+                    ring_only_images = kept_ring_only
 
     # ── Raw-sharpness-based frame selection (opt-in, 2026-08-13) ──────────
     # See frame_sharpness_central()'s docstring for the real-data
@@ -3928,6 +4363,8 @@ def derotate_filter(
                 weights = [weights[i] for i in kept]
                 if _do_coverage:
                     coverage_masks = [coverage_masks[i] for i in kept]
+                if _do_ring_only_stack:
+                    ring_only_images = [ring_only_images[i] for i in kept]
 
     n_map: Optional[np.ndarray] = None
     if _do_coverage and coverage_masks:
@@ -3947,6 +4384,10 @@ def derotate_filter(
         n_map = np.clip(n_map, 0.0, 1.0).astype(np.float32)
 
     stacked = quality_weighted_stack(warped_images, weights, weight_power=weight_power)
+
+    ring_only_stacked: Optional[np.ndarray] = None
+    if _do_ring_only_stack and ring_only_images:
+        ring_only_stacked = quality_weighted_stack(ring_only_images, weights, weight_power=weight_power)
 
     _s0_sl_blend_applied = False
     if s0_sl_blend_enabled and use_true_reprojection and n_map is not None and ref_img is not None:
@@ -3988,6 +4429,25 @@ def derotate_filter(
         # direct callers of derotate_filter() (tests, scratch scripts) keep
         # working unchanged.
         "coverage_map":          n_map,
+        # RAW ndarray, same pop-before-JSON contract as coverage_map above
+        # (see derotate_window's ring-mask handling). Added 2026-08-16
+        # (project_ring_globe_layer_separation_roadmap Phase 0): this array
+        # was already computed above whenever has_rings=True (needed by the
+        # warp itself) but previously went out of scope unused once this
+        # function returned -- a future ring-only stacking/compositing stage
+        # needs it without recomputation, so it's persisted the same way
+        # coverage_map already is. None when has_rings=False (no extra cost
+        # in that case -- this is not a new computation, just retaining one
+        # that already happens).
+        "ring_crossing_mask":    ring_crossing_mask,
+        # RAW ndarray, same pop-before-JSON contract. Added 2026-08-16
+        # (project_ring_globe_layer_separation_roadmap Phase 1, opt-in via
+        # compute_ring_only_stack): a second per-filter stack registered by
+        # a fresh ring-annulus-windowed subpixel_align() measurement per
+        # frame instead of the globe-based pre-warp shift -- see
+        # DerotationConfig.compute_ring_only_stack's docstring. None unless
+        # both has_rings and compute_ring_only_stack are True.
+        "ring_only_stack":       ring_only_stacked,
         "frames":                log_frames,
     }
 
@@ -4018,6 +4478,7 @@ def derotate_window(
     sharpness_keep_fraction: float = 1.0,
     compute_coverage_map: bool = False,
     s0_sl_blend_enabled: bool = False,
+    compute_ring_only_stack: bool = False,
 ) -> Dict[str, Tuple[Optional[Path], dict]]:
     """De-rotate and stack all filters in a single time window.
 
@@ -4062,6 +4523,21 @@ def derotate_window(
                           is never left in log_dict — see the popping logic
                           below — since that dict is later spread wholesale
                           into a JSON file elsewhere in the pipeline).
+                          When has_rings is True and out_dir is provided, the
+                          ring_crossing_mask that derotate_filter() already
+                          computes for the warp is likewise saved as
+                          ``<filt>_ring_mask.tif``, path recorded in
+                          log_dict["ring_mask_file"] (2026-08-16,
+                          project_ring_globe_layer_separation_roadmap Phase 0
+                          — no new computation, just persisting a value that
+                          already existed transiently).
+        compute_ring_only_stack: Passed straight through to derotate_filter()
+                          — see its docstring. When True (and has_rings=True)
+                          and out_dir is provided, the second ring-registered
+                          stack is saved as ``<filt>_ring_only.tif``, path
+                          recorded in log_dict["ring_only_stack_file"]
+                          (2026-08-16, project_ring_globe_layer_separation_
+                          roadmap Phase 1). Default False: complete no-op.
 
     Returns:
         {filter: (output_path_or_None, log_dict)}
@@ -4191,6 +4667,7 @@ def derotate_window(
                 sharpness_keep_fraction=sharpness_keep_fraction,
                 compute_coverage_map=compute_coverage_map,
                 s0_sl_blend_enabled=s0_sl_blend_enabled,
+                compute_ring_only_stack=compute_ring_only_stack,
             )
         except Exception as exc:
             print(f" ERROR: {exc}")
@@ -4210,6 +4687,34 @@ def derotate_window(
             log["coverage_map_file"] = str(cov_path)
         else:
             log["coverage_map_file"] = None
+
+        # Same pop-before-JSON contract as coverage_map above. Added
+        # 2026-08-16 (project_ring_globe_layer_separation_roadmap Phase 0):
+        # persists the already-computed ring_crossing_mask (has_rings=True
+        # targets only, None/not-written otherwise) as a companion TIF so a
+        # future ring-only stacking/compositing stage can reuse it without
+        # recomputing the geometry.
+        _ring_mask_arr = log.pop("ring_crossing_mask", None)
+        if _ring_mask_arr is not None and out_dir is not None:
+            ring_mask_path = out_dir / f"{filt}_ring_mask.tif"
+            image_io.write_tif_16bit(_ring_mask_arr, ring_mask_path)
+            log["ring_mask_file"] = str(ring_mask_path)
+        else:
+            log["ring_mask_file"] = None
+
+        # Same pop-before-JSON contract, added 2026-08-16 (Phase 1 of
+        # project_ring_globe_layer_separation_roadmap, opt-in via
+        # compute_ring_only_stack).
+        _ring_only_arr = log.pop("ring_only_stack", None)
+        if _ring_only_arr is not None and out_dir is not None:
+            ring_only_path = out_dir / f"{filt}_ring_only.tif"
+            if color_mode:
+                image_io.write_tif_color_16bit(_ring_only_arr, ring_only_path)
+            else:
+                image_io.write_tif_16bit(_ring_only_arr, ring_only_path)
+            log["ring_only_stack_file"] = str(ring_only_path)
+        else:
+            log["ring_only_stack_file"] = None
 
         out_path: Optional[Path] = None
         if out_dir is not None:

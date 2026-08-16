@@ -31,6 +31,7 @@ from pipeline.modules import image_io, wavelet
 from pipeline.modules.derotation import (
     find_disk_center,
     _robust_ellipse_refit,
+    _navigation_constrained_ellipse_fit,
     compute_ring_sharpening_mask,
 )
 
@@ -216,6 +217,34 @@ def run(
                     # pole_pa-based angle in every case, including the clean
                     # ones -- see master_ring_extension_enabled's docstring).
                     _angle_rad = np.radians(_pole_pa_deg)
+
+                    if config.wavelet.master_navigation_limb_fit_enabled:
+                        # Navigation-constrained limb fit (2026-08-16, opt-in,
+                        # has_rings=True only -- the counterpart to master_
+                        # limb_fit_refinement_enabled above, which is
+                        # has_rings=False only): fixes orientation
+                        # (pole_pa_deg, already independent of any ellipse
+                        # fit) and apparent aspect ratio (analytically
+                        # predicted from Horizons B + the planet's TRUE
+                        # physical oblateness) before looking at any ray
+                        # data, then fits only (cx, cy, scale) from the
+                        # ring-free angular sectors -- see
+                        # derotation._navigation_constrained_ellipse_fit()'s
+                        # docstring for why this succeeds where the
+                        # statistical refit above and an earlier exclude-
+                        # ring-rays-then-free-refit experiment
+                        # (experiments/scratch_globe_fit_asymmetry_diagnosis.py)
+                        # did not.
+                        _sub_obs_lat_deg = float(_wlog.get("sub_observer_lat_deg", 0.0))
+                        _nav_fit = _navigation_constrained_ellipse_fit(
+                            _lum, _cx, _cy, _rx, _ry, _pole_pa_deg, _sub_obs_lat_deg,
+                            config.derotation.true_polar_equatorial_ratio,
+                        )
+                        if _nav_fit is not None:
+                            _cx, _cy, _rx, _ry, _pole_pa_deg, _n_kept = _nav_fit
+                            _angle_rad = np.radians(_pole_pa_deg)
+                            print(f"    [{filt}] navigation-constrained limb fit "
+                                  f"(kept {_n_kept} rays): rx={_rx:.2f} ry={_ry:.2f}")
 
                 if bool(_wlog.get("has_rings", False)) and config.wavelet.master_ring_extension_enabled:
                     _sub_obs_lat_deg = float(_wlog.get("sub_observer_lat_deg", 0.0))

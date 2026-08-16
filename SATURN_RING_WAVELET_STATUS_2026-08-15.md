@@ -361,3 +361,177 @@ calibration이 최고 두 레벨에 매우 강하게 집중돼 있어서(29.15, 
 이 코드베이스의 특정 calibration(극단적으로 미세 레벨 집중)에서는 기대만큼 안 통할
 수 있음 — 항상 실측으로 확인. (3) 9번의 실패에도 불구하고 매번 정직하게 "안 됐다"고
 기록한 덕에 최소한 다음 세션이 같은 9가지를 또 시도하지 않을 수 있음.
+
+---
+
+## 후속 (같은 날 저녁, cc69371/0d1abf7): `extra_rx` → true annulus mask 교체
+
+외부 리뷰가 `extra_rx`의 실체는 "ring annulus"가 아니라 "채워진 outer ellipse"라고
+재지적(globe 진짜 경계 ~ ring 진짜 inner edge 사이의 넓은 gap이 ring이 아니라 globe
+자신의 PSF limb tail/darkening tail인데, 여기에도 ring 수준 gain이 걸려 white-rim/
+dark-trough를 만든다는 논리). 코드 확인 결과 지적이 정확함 —
+`_make_disk_weight_ellipse`는 이름과 달리 내부 전체를 채우는 함수였음.
+
+**구현**: `compute_ring_sharpening_mask()`(`derotation.py`) 신규 추가 — 진짜
+annulus(`in_ring_outer & ~in_ring_inner`), globe와 겹치는 부분만 `depth_ring>0`
+(전경) 게이팅, 그 외 영역은 전체 커버. `wavelet.sharpen_disk_aware()`에
+`extra_weight_map`(사전 계산된 (H,W) 배열, 매 레벨 동일하게 max-결합) 파라미터
+추가해 배선 — `extra_rx` 자체는 다른 호출자 호환을 위해 유지, Saturn은
+`extra_weight_map` 경로로 전환.
+
+**실측(rigorous, same-stretch diff heatmap)**: 구조적으로는 맞는 수정(ring-globe
+접합부에서 이음매 없음, heatmap상 고리 선이 더 잘 이어짐)이지만, **이 window의
+지배적인 링잉 아티팩트에 대한 실질 영향은 제한적** — old vs new 전체 |diff| 1029
+vs 1041, disk 밖 |diff| 622.8 vs 621.6, max |diff| 소수점까지 동일. 처음에
+"개선됐다"고 성급히 판단했다가(percentile 개별 스트레치 비교 탓) 사용자 지적으로
+철회·재검증함. 결론: 이 fix는 정확하지만, 아래에서 재확인되듯 **주요 아티팩트의
+진짜 원인은 이 mask가 아니라 원래 있던 ellipse-fit 비대칭 링잉**이었음. 기본값
+`master_ring_extension_enabled=False` 유지(annulus 방식이 구현됐지만 기본 on으로
+전환할 근거는 아직 없음).
+
+---
+
+## 2026-08-16: 독립 진단으로 재확인 — "이건 새 globe-limb 버그가 아니라 이미 문서화된 ansa fitting 버그다"
+
+외부 리뷰가 "radial 1D monotonicity(dip-then-rise) 위반을 극지방 sector부터
+검증해보자"고 제안. 실제 frozen window_01/R 스택(현재 프로덕션 기본값, 모든 신규
+플래그 off)에서 극지방(ring-free, ±70~95°)과 ansa 인접(ring-adjacent, -15~15°/
+165~195°) 두 그룹의 radial 프로파일을 비교:
+
+```
+극지방(ring-free):      max|sharpened-raw| ≈ 0.0000 (사실상 전무)
+ansa 인접(ring-adjacent): max|sharpened-raw| ≈ 0.03~0.09 (뚜렷)
+```
+
+sign-reversal(딥-후-회복) 자체는 raw/sharpened 어느 쪽에서도 검출 안 됨 — 즉
+"wavelet이 새 극값을 만들었다"는 좁은 의미의 증거는 아니고, "ansa 방향에서만
+sharpening 변화량이 집중된다"는 공간적 증거임.
+
+**이 결과는 이 문서 이전 절인 `project_ring_limb_ringing_bug`(2026-08-13 최초
+발견)의 결론과 정확히 일치함**: ring 오염이 `find_disk_center()`의 타원 피팅을
+ansa 방향(우측 +0.86px, 좌측 -0.53px)으로만 비대칭하게 끌어당기고, 극지방은 ring
+오염이 없어 피팅이 정확함. 즉 오늘 아침의 "새 발견"은 **9가지 시도 전부 실패로
+끝난, 어제 이미 완전히 조사된 문제의 독립적 재확인**이었음 — 새로운 globe-limb
+버그가 아님.
+
+**결론 및 정책**:
+- 이 아티팩트는 generic de-rotation 버그도, generic wavelet 버그도 아니고,
+  **ring-contaminated ellipse fit(ansa 방향)** × **최상위 2개 레벨에 극단적으로
+  집중된 wavelet gain**의 결합 결과로 재확정.
+- gain mask / smooth blend / clamp / bilateral / guided filter / gradient
+  gating 계열은 **9종 모두 실패**로 이미 소진됨 — 같은 계열의 10번째 변형(오늘
+  제안됐던 polar-sector monotonic limiter, coefficient-attribution 재분해,
+  ring-adjacent ablation 포함)은 반복 조사가 될 가능성이 커서 보류.
+- 이 실패 계열을 다시 열 가치가 있으려면 **같은 이미지의 mask/gain 변형이 아니라
+  질적으로 다른 정보원**이 필요함 — 예: 외부 ephemeris 기반 독립 navigation, ring
+  오염이 적은 다른 필터/프레임의 globe limb 참조, 또는 `project_saturn_ring_globe_
+  separation`/`project_map_space_lucky_imaging_idea`에 기록된 globe/ring 물리적
+  레이어 분리(둘 다 별도 프로젝트 규모, 미착수).
+- 현재 안전한 프로덕션 상태(모든 신규 플래그 기본 off: `master_ring_extension_
+  enabled`, `master_limb_fit_refinement_enabled`, `master_overshoot_clamp_
+  radius_px=0.0`, `master_coverage_aware_sharpening` 등)를 "알려진 한계"로
+  유지 — globe interior/ring annulus는 강한 wavelet을 유지하되, ansa 근방의
+  옅은 halo는 감수하고, 이를 더 강한 white-rim/dark-trough/이중 limb로 바꾸는
+  거래는 하지 않음([[feedback_white_rim_is_critical_defect]]).
+
+---
+
+## 2026-08-16 (새 세션): "질적으로 다른 정보원" 시도 — navigation/ephemeris 기반
+## 타원 피팅 재설계. 구현·테스트 완료, 실측에서 R 채널에 새 결함 발견 → 기본 off 유지
+
+위 2026-08-16 절의 정책("재개 조건: mask/gain 변형이 아니라 질적으로 다른 정보원 —
+외부 ephemeris 기반 독립 navigation, ring 오염 적은 필터/프레임의 limb 참조, 또는
+globe/ring 물리적 레이어 분리")에 따라, 사용자가 이번 세션에서 첫 번째 옵션(독립
+navigation/ephemeris 기반 재설계)을 지정. 코드베이스 서베이(3-agent 병렬 조사)로
+핵심을 발견: 이 프로젝트는 이미 (a) `pole_pa_deg`를 `auto_detect_equator_pa()`(벨트
+그래디언트 기반, 타원 피팅과 무관)로 독립 측정하고, (b) Horizons에서 sub-observer
+latitude B를 조회하며, (c) 행성의 진짜 물리적 편평률(`true_polar_equatorial_ratio`,
+Saturn=0.9021)을 이미 알고 있음 — 이 세 스칼라를 표준 oblate-spheroid 겉보기 형상
+공식(apparent_ratio = sqrt(true_ratio²·cos²B + sin²B), 회전체의 대칭축 성질로 유도,
+`_oblate_ortho_forward`의 실측 수치 envelope와 오차<1e-3으로 교차검증 완료)에
+대입하면 이미지를 전혀 보지 않고 겉보기 종횡비를 정확히 예측할 수 있음.
+
+### 설계: 방향+종횡비 고정 → (cx,cy,scale) 3-param 피팅
+
+기존 실패한 "ring-ray 제외 후 자유 5-param 재피팅"(`experiments/scratch_globe_fit_
+asymmetry_diagnosis.py`)의 문제는, 제외된 ~40% 연속 호(ansa 부근)가 하필 장축
+스케일을 결정하는 데 가장 중요한 정보를 담고 있어서, 나머지 ~60%만으로 방향+종횡비
++중심+스케일을 전부 자유롭게 재피팅하는 게 조건이 나쁘다는 것. 새 설계는 방향
+(pole_pa_deg, 독립측정)과 종횡비(위 공식으로 예측, 이미지 무관)를 미리 고정하고
+고리 오염 섹터를 제외한 나머지 ray로 (cx, cy, scale) 3개만 피팅 — 훨씬 과결정된
+문제.
+
+**구현** (`pipeline/modules/derotation.py`): `_predicted_apparent_ratio()`(닫힌 공식,
+회전 행렬 없음), `_ring_contaminated_theta_mask()`(기존 `_ring_globe_overlap_
+ellipses`/`compute_ring_sharpening_mask`와 동일한 고리 멤버십 판정을 seed 타원의
+경계점에 적용), `_fixed_shape_circle_fit()`(고정 각도/비율로 좌표 회전+리스케일 후
+Kåsa 원 피팅), `_navigation_constrained_ellipse_fit()`(위 3개 조합 + MAD 이상치 제거
+1회, `_robust_ellipse_refit`과 동일한 "seed보다 나쁘게 만들지 않는다" 계약).
+`WaveletConfig.master_navigation_limb_fit_enabled`(기본 **False**) 신설,
+`has_rings=True`일 때만 적용(has_rings=False 전용인 기존 `master_limb_fit_
+refinement_enabled`과 상호 배타적). 신규 테스트 16개(합성 기하 복원,
+`_oblate_ortho_forward` 실측 envelope 교차검증, 게이팅 3케이스) 전부 통과, 기존
+106개 전체 테스트 회귀 없음.
+
+### 실측 검증 (실제 derotate_window()→wavelet_master.run() 정식 경로, window_01
+### IR/R, 실제 Horizons B=-11.07°/pole_pa=-7~4°)
+
+**진단적으로 흥미로운 확인**: seed(`find_disk_center`)의 종횡비(IR: 0.844, R: 0.879)가
+예측된 겉보기 비율(0.906)보다 눈에 띄게 더 찌그러져 있고, 링과 무관한 각도(35°~135°
+등)에서 seed 대비 실측 limb이 일관되게 +3~+5px 바깥에 있음(반면 장축 근처에서는
+거의 0) — 즉 seed 자체가 이미 고리 오염으로 종횡비가 눌려있다는 정황이 실측으로도
+확인됨, 이 방향의 진단 자체는 타당했음.
+
+**그러나 이 피팅을 실제로 sharpening mask 경계로 사용한 결과**:
+- `_navigation_constrained_ellipse_fit`는 seed보다 유의미하게 큰 반지름을 산출
+  (IR: rx 66.2→67.0, ry 55.8→60.7 / R: rx 68.2→71.4, ry 60.9→64.7).
+- 정량 비교(극지방 vs ansa 인접 sharpening delta, 2026-08-16 앞 절과 동일 방법론):
+  개선/악화가 혼재하고 뚜렷한 개선 없음 — IR polar mean +10%(악화), ansa-right mean
+  +1%, ansa-left mean +18%(악화); R polar mean +38%(악화), ansa-right mean +19%
+  (악화), ansa-left만 -7%(소폭 개선). 전반적으로 "개선"이라 부를 근거 부족.
+- **육안 확인(6x/10x crop)에서 R 채널 우측 ansa에 새로운 결함 발견**: OFF에는 없던
+  뚜렷한 어두운 톱니 모양 세로선이 globe-ring 접합부에 ON에서 새로 나타남
+  (`experiments/navigation_limb_fit_validation/R_right_ansa_TIGHT2_10x.png`).
+  IR 채널은 육안상 OFF/ON 거의 구분 안 됨(뚜렷한 신규 결함 없음). 원인 미확정이나,
+  반지름이 커지면서 disk mask feather 경계가 이전과 다른 지점(globe true edge와
+  ring true inner edge 사이 gap, `compute_ring_sharpening_mask` 문서가 지적한
+  "고리 아님, globe PSF tail" 영역)과 새로 겹치며 seam이 생긴 것으로 추정 — 미검증.
+
+**결론**: 이 세션의 진단(seed 종횡비가 고리 오염으로 눌려있다는 것)은 실측으로 뒷받침
+되지만, 그 진단을 교정한 결과를 곧바로 sharpening mask에 쓰는 건 R 채널에서 새로운
+가시적 결함(어두운 선)을 만듦 — feedback_white_rim_is_critical_defect의 원칙
+("어떤 형태든 새 가시적 윤곽선/선은 트레이드오프가 아니라 결함")을 white-rim이
+아니라 dark-line에도 동일하게 적용해 기본값 False 유지, 사용 비권장으로 판정.
+
+### 후속 확인: "고리에도 wavelet을 걸면 없어지지 않나?" — 아니었음
+
+사용자 가설(ring extension도 같이 켜면 새 dark-line이 없어질 것)을 실측으로 확인:
+`master_navigation_limb_fit_enabled` × `master_ring_extension_enabled` 2×2 조합
+전부 실제 파이프라인으로 렌더링(스크립트 하단 참고). 결과:
+- **A(둘 다 off, baseline)**: 결함 없음.
+- **B(nav만 on)**: 앞서 발견한 어두운 노치.
+- **C(ring extension만 on, nav off)**: B와는 **다른** 결함 — 우측 하단에 고리 재질이
+  갑자기 샤프닝 gain을 받기 시작하는 밝은 대각선 띠 + 접합부 crease.
+- **D(둘 다 on)**: B의 어두운 노치가 **그대로 남고**, 거기에 C의 밝은 띠까지 겹쳐
+  나타남 — 두 아티팩트가 상쇄되지 않고 공존.
+
+즉 "고리도 sharpening 받아야 한다"는 방향으로는 이 특정 노치가 해결되지 않음 —
+원인은 고리 자체의 gain 유무가 아니라 **확대된 disk 반지름 자체가 primary disk
+mask의 feather 경계 위치를 진짜 limb 구조(Cassini Division 인근)를 가로지르는
+곳으로 옮겨놓는 것**으로 추정(미검증). 1x 전체 프레임에서는 A/B/C/D 넷 다 육안상
+거의 구분 안 됨(`experiments/navigation_limb_fit_validation/combo_{A_baseline,
+B_nav_only,C_ring_only,D_both}_FULL_1x.png`) — 즉 이 아티팩트들은 서브픽셀~수픽셀
+규모이나, 이 프로젝트 기준(새 윤곽선은 미세해도 결함)으로는 여전히 채택 불가.
+
+이 문서에 기록된 9번의 mask/gain 계열 실패, 그리고 "질적으로 다른 정보원"이라는
+새로운 시도 축(및 그 축 위에서의 ring-extension 조합까지) 포함해 **총 10번째
+시도도 halo/white-rim/ring-cut 착시를 동시에 해결하는 데 실패**. 코드/테스트는
+정확하고 안전(has_rings=False에 완전 무영향, 회귀 없음)하므로 유지할 가치는
+있음 — 사용자가 이 트랙을 여기서 종료하고 다른 접근(레이어 분리 등, 아래 참고)으로
+전환하기로 결정.
+
+**검증 스크립트**: `experiments/scratch_navigation_limb_fit_validation.py`
+(byte-identical 게이팅 확인, 정량 섹터 비교, 시각 crop/heatmap 생성 전부 포함).
+2×2 콤보 실험은 별도 인라인 스크립트로 실행(파일로 저장 안 됨) — 산출물은
+`experiments/navigation_limb_fit_validation/combo_*.png`(각 조합별 `_FULL_1x.png`
+전체 프레임 + `_crop14x.png` 확대본).

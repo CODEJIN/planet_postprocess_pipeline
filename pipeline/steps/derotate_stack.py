@@ -796,6 +796,7 @@ def run(
             sharpness_keep_fraction=config.derotation.sharpness_keep_fraction,
             compute_coverage_map=compute_coverage_map,
             s0_sl_blend_enabled=config.derotation.s0_sl_blend_enabled,
+            compute_ring_only_stack=config.derotation.compute_ring_only_stack and has_rings,
         )
 
         # ── Satellite compositing (exp9 method) ───────────────────────────────

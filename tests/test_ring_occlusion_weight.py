@@ -32,13 +32,18 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import cv2
+
+from pipeline.config import DerotationConfig
 from pipeline.modules import image_io
 from pipeline.modules.derotation import (
     _SATURN_RING_INNER_REQ,
     _SATURN_RING_OUTER_REQ,
     _feather_ring_foreground_boundary,
+    _laplacian_var_central,
     _oblate_ortho_forward,
     _oblate_ortho_inverse,
+    _ring_annulus_mask,
     compute_ring_occlusion_weight,
     compute_ring_occlusion_weight_3d,
     derotate_filter,
@@ -519,6 +524,350 @@ def test_derotate_filter_applies_ring_occlusion_in_3d_path():
         )
 
 
+# ── ring_crossing_mask persistence (2026-08-16, Phase 0 of
+# project_ring_globe_layer_separation_roadmap) ─────────────────────────────
+#
+# derotate_filter() already computes ring_crossing_mask internally whenever
+# has_rings=True (needed by the warp itself); this just stops it from being
+# discarded once the function returns, so a future ring-only stacking/
+# compositing stage can reuse it without recomputing the geometry. No new
+# computation, no change to `stacked`/existing log fields -- verified by the
+# byte-identical stack assertion above already covering that. derotate_
+# window()'s companion-file-writing side of this (mirrors the existing,
+# itself-untested-at-the-unit-level coverage_map_file mechanism) is
+# validated against the real pipeline instead, per feedback_ab_test_via_
+# real_pipeline -- see experiments/ for that run.
+
+def test_ring_crossing_mask_present_in_log_when_has_rings():
+    size = 300
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        t0 = datetime(2026, 1, 1, 0, 0, 0)
+        dt_sec = 9.9281 * 3600.0 * 0.05
+        rows = _write_ring_crossing_window(tmp, size, r=100.0, n_non_ref=3, dt_sec=dt_sec, t0=t0)
+        common_kw = dict(
+            period_hours=9.9281,
+            use_true_reprojection=True,
+            sub_observer_lat_deg=-11.07,
+            pole_pa_deg=-7.0,
+            true_polar_equatorial_ratio=RATIO_TRUE,
+        )
+        _, log_with_rings = derotate_filter(rows, t0, align=True, has_rings=True, **common_kw)
+        _, log_no_rings = derotate_filter(rows, t0, align=True, has_rings=False, **common_kw)
+
+        mask = log_with_rings["ring_crossing_mask"]
+        assert isinstance(mask, np.ndarray)
+        assert mask.shape == (size, size)
+        assert mask.min() >= 0.0 and mask.max() <= 1.0
+        assert log_no_rings["ring_crossing_mask"] is None
+
+
+# ── Ring-only stack (2026-08-16, Phase 1 of
+# project_ring_globe_layer_separation_roadmap) ─────────────────────────────
+
+def test_ring_annulus_mask_covers_only_the_annulus():
+    """Sanity check on the new helper: nonzero only between the inner/outer
+    ring radii, zero at the globe centre and zero well outside the ring."""
+    disk_semi_a = 50.0
+    mask = _ring_annulus_mask(H, W, CX, CY, disk_semi_a, 0.0, -25.0)
+    assert mask.shape == (H, W)
+    assert mask[int(CY), int(CX)] == 0.0, "expected zero at the globe centre"
+    inner_r = disk_semi_a * _SATURN_RING_INNER_REQ
+    outer_r = disk_semi_a * _SATURN_RING_OUTER_REQ
+    mid_r = (inner_r + outer_r) / 2.0
+    assert mask[int(CY), int(CX + mid_r)] > 0.9, "expected full weight mid-annulus along the major axis"
+    assert mask[int(CY), int(CX + outer_r + 20)] == 0.0, "expected zero well outside the ring"
+    # feather=False must return an exact hard boolean (only 0.0/1.0 values).
+    hard = _ring_annulus_mask(H, W, CX, CY, disk_semi_a, 0.0, -25.0, feather=False)
+    assert set(np.unique(hard).tolist()) <= {0.0, 1.0}
+
+
+def _ring_textured_frame(size, cx, cy, disk_r, inner_semi_a, outer_semi_a, sub_observer_lat_deg,
+                          ring_dx=0.0, ring_dy=0.0, seed=1):
+    """Synthetic frame with a flat, STATIONARY globe disk (no texture, so
+    the globe-based pre-warp registration always measures ~zero shift) and
+    a textured ring ANNULUS ELLIPSE -- foreshortened by sin(|B|) exactly
+    like _ring_annulus_mask()'s own geometry (pole_pa=0, so semi-major=x,
+    semi-minor=y*sin(|B|)) -- so the real mask actually lines up with where
+    the synthetic ring is. **A first version of this fixture drew a plain
+    CIRCULAR annulus and silently failed to exercise the real (elliptical)
+    mask at all** -- confirmed by direct debugging: _ring_annulus_mask's
+    hard-mask pixel count (an ellipse) differed by more than 2x from a
+    naive circular annulus at the same B, so a circular test ring and the
+    real elliptical mask barely overlapped, and the measured shift was
+    garbage as a result. Keep this elliptical, not circular.
+
+    Band-limited noise (not a periodic pattern like sin(theta*N), which is
+    a known-degenerate case for phase correlation independent of any
+    masking, confirmed separately while debugging this test) can be
+    independently shifted by (ring_dx, ring_dy) via cv2.remap resampling of
+    the SAME underlying noise field (fixed seed) -- an exact, known
+    ground-truth translation of the ring content, isolating whether the
+    ring-only stack's registration is actually driven by the ring's own
+    content, not the globe's.
+
+    Globe brightness (0.9) is deliberately well above the ring's (peak
+    ~0.5) -- confirmed by direct find_disk_center() debugging that making
+    them comparable makes the Otsu-based fit latch onto the ring's OUTER
+    edge as "the disk" instead of the globe (both are circular/elliptical
+    around the same centre here, so the ring/disk squashed-aspect-ratio
+    disambiguation in _find_disk_center_impl never triggers) -- exactly the
+    brightness contrast real Saturn images have between globe and rings,
+    which is what that fit relies on.
+    """
+    yy, xx = np.mgrid[0:size, 0:size].astype(np.float64)
+    rr_globe = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    globe = (rr_globe < disk_r).astype(np.float64) * 0.9
+
+    rng = np.random.default_rng(seed)
+    field = rng.standard_normal((size, size)).astype(np.float32)
+    field = cv2.GaussianBlur(field, (0, 0), sigmaX=1.5)
+    map_x = (xx - ring_dx).astype(np.float32)
+    map_y = (yy - ring_dy).astype(np.float32)
+    shifted_field = cv2.remap(field, map_x, map_y, interpolation=cv2.INTER_LINEAR,
+                               borderMode=cv2.BORDER_REFLECT)
+
+    sin_b = abs(math.sin(math.radians(sub_observer_lat_deg)))
+    inner_semi_b = inner_semi_a * sin_b
+    outer_semi_b = max(outer_semi_a * sin_b, 1e-6)
+    xs, ys = xx - ring_dx - cx, yy - ring_dy - cy
+    in_outer = (xs / outer_semi_a) ** 2 + (ys / outer_semi_b) ** 2 <= 1.0
+    in_inner = (xs / inner_semi_a) ** 2 + (ys / max(inner_semi_b, 1e-6)) ** 2 <= 1.0
+    in_annulus = in_outer & ~in_inner
+    texture = 0.35 + 0.15 * shifted_field
+    ring = np.where(in_annulus, texture, 0.0)
+    return np.clip(np.maximum(globe, ring), 0.0, 1.0).astype(np.float32)
+
+
+def _annulus_laplacian_var(image, cx, cy, inner_semi_a, outer_semi_a, sub_observer_lat_deg):
+    sin_b = abs(math.sin(math.radians(sub_observer_lat_deg)))
+    inner_semi_b = inner_semi_a * sin_b
+    outer_semi_b = max(outer_semi_a * sin_b, 1e-6)
+    yy, xx = np.mgrid[0:image.shape[0], 0:image.shape[1]].astype(np.float64)
+    xr, yr = xx - cx, yy - cy
+    margin = 5.0  # avoid the annulus's own hard edges
+    in_outer = (xr / (outer_semi_a - margin)) ** 2 + (yr / max(outer_semi_b - margin, 1e-6)) ** 2 <= 1.0
+    in_inner = (xr / (inner_semi_a + margin)) ** 2 + (yr / max(inner_semi_b + margin, 1e-6)) ** 2 <= 1.0
+    band = in_outer & ~in_inner
+    lap = cv2.Laplacian(image.astype(np.float32), cv2.CV_32F, ksize=3)
+    return float(np.var(lap[band]))
+
+
+def test_ring_only_stack_improves_on_modest_ring_specific_shift():
+    """Realistic-magnitude test that the ring-only stack's registration is
+    actually driven by the RING's own content, not just inheriting the
+    globe's shift: the globe is IDENTICAL (stationary, textureless) in
+    every frame, so the existing globe-based pre-warp registration measures
+    ~zero shift -- but the ring's own texture is offset by a modest, known
+    1px shift in every non-reference frame (deliberately kept small --
+    empirically, unwindowed phase correlation on this annulus mask is only
+    reliable up to about this magnitude; see the sanity-check fallback in
+    derotate_filter()'s ring-only registration block and its comment for
+    the larger-shift failure mode this test does NOT exercise). The plain
+    atmosphere stack (registered only via the globe) therefore stacks
+    slightly-misaligned copies of the ring texture (a bit blurred there),
+    while ring_only_stack should measurably improve on that."""
+    size = 300
+    disk_r = 60.0
+    inner_r = disk_r * _SATURN_RING_INNER_REQ
+    outer_r = disk_r * _SATURN_RING_OUTER_REQ
+    ring_dx, ring_dy = 1.0, 0.0
+    B = -25.0
+
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        t0 = datetime(2026, 1, 1, 0, 0, 0)
+        ref_img = _ring_textured_frame(size, size / 2.0, size / 2.0, disk_r, inner_r, outer_r, B)
+        ref_path = tmp / "ref.tif"
+        image_io.write_tif_16bit(ref_img, ref_path)
+        rows = [{"path": str(ref_path), "stem": "ref", "timestamp": t0, "norm_score": 0.9}]
+        for i in range(3):
+            img = _ring_textured_frame(
+                size, size / 2.0, size / 2.0, disk_r, inner_r, outer_r, B,
+                ring_dx=ring_dx, ring_dy=ring_dy,
+            )
+            path = tmp / f"frame_{i}.tif"
+            image_io.write_tif_16bit(img, path)
+            rows.append({
+                "path": str(path), "stem": f"frame_{i}",
+                "timestamp": t0 + timedelta(seconds=60.0), "norm_score": 0.9,
+            })
+
+        stacked, log = derotate_filter(
+            rows, t0, align=True, has_rings=True, compute_ring_only_stack=True,
+            sub_observer_lat_deg=B, pole_pa_deg=0.0,
+        )
+        ring_only = log["ring_only_stack"]
+        assert ring_only is not None
+
+        cx, cy = size / 2.0, size / 2.0
+        var_atmosphere = _annulus_laplacian_var(stacked, cx, cy, inner_r, outer_r, B)
+        var_ring_only = _annulus_laplacian_var(ring_only, cx, cy, inner_r, outer_r, B)
+
+        assert var_ring_only > 1.1 * var_atmosphere, (
+            f"expected ring-only registration to measurably improve on the "
+            f"globe-registered atmosphere stack at this modest shift: "
+            f"ring_only={var_ring_only:.4f} atmosphere={var_atmosphere:.4f}"
+        )
+
+
+def test_ring_only_stack_falls_back_to_globe_shift_when_ring_measurement_implausible(monkeypatch):
+    """If the ring-annulus phase correlation returns a value that disagrees
+    wildly with the (trusted) globe-based shift, the code must fall back to
+    the globe-based shift rather than trust it -- this is the actual
+    empirically-motivated safety net (see derotate_filter()'s ring-only
+    registration block): unwindowed phase correlation on this annulus mask
+    was found, via synthetic testing, to occasionally lock onto a badly
+    wrong value at larger true shifts. Since ring and globe physically move
+    together, a large disagreement means the ring lock failed, not that the
+    ring truly moved independently -- ring_only_stack must never be worse
+    than simply reusing the globe's own registration."""
+    size = 300
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        t0 = datetime(2026, 1, 1, 0, 0, 0)
+        # Identical content in every frame -- true shift is exactly zero
+        # for both globe and ring.
+        rows = _write_ring_crossing_window(tmp, size, r=60.0, n_non_ref=2, dt_sec=60.0, t0=t0)
+
+        def _bogus_align(reference, target):
+            return (37.0, -41.0)  # absurd; must never be used verbatim
+
+        monkeypatch.setattr(
+            "pipeline.modules.derotation.subpixel_align", _bogus_align,
+        )
+        stacked, log = derotate_filter(
+            rows, t0, align=True, has_rings=True, compute_ring_only_stack=True,
+            sub_observer_lat_deg=-25.0, pole_pa_deg=0.0,
+        )
+        ring_only = log["ring_only_stack"]
+        assert ring_only is not None
+        # Compare only OUTSIDE the globe disk: the atmosphere stack applies
+        # real rotation-warp physics inside the disk (dt_sec != 0, matching
+        # a realistic window), which ring_only never does by design (shift+
+        # scale only) -- that's an intentional, expected difference there,
+        # not a bug. Outside the disk there's no drawn ring material either
+        # (this fixture has none), so a plausible (near-zero) fallback shift
+        # should leave that region matching the plain stack, while an
+        # un-clamped 37px "correction" would visibly shift border-replicated
+        # content into it instead.
+        yy, xx = np.mgrid[0:size, 0:size].astype(np.float64)
+        outside_disk = np.sqrt((xx - size / 2.0) ** 2 + (yy - size / 2.0) ** 2) > 65.0
+        assert np.allclose(ring_only[outside_disk], stacked[outside_disk], atol=0.05)
+
+
+def test_ring_only_fallback_uses_genuine_nonzero_globe_shift_not_hardcoded_zero(monkeypatch):
+    """Closes a gap an adversarial review found in the test above: with
+    IDENTICAL content in every frame, the true globe shift is (0,0), so
+    that test can't tell "fell back to the globe's real shift" apart from
+    "fell back to a hardcoded (0.0, 0.0) default" -- both look the same.
+    Here the globe (and ring, moving with it) has a REAL, known, NONZERO
+    shift in every non-reference frame, the ring measurement is forced
+    implausible (monkeypatched to an absurd constant), and the fallback
+    must reproduce alignment consistent with the genuine globe shift, not
+    an identity transform."""
+    size = 300
+    disk_r = 60.0
+    inner_r = disk_r * _SATURN_RING_INNER_REQ
+    outer_r = disk_r * _SATURN_RING_OUTER_REQ
+    globe_dx, globe_dy = 4.0, 3.0  # real, nonzero, shared by globe+ring
+    B = -25.0
+
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        t0 = datetime(2026, 1, 1, 0, 0, 0)
+        ref_img = _ring_textured_frame(size, size / 2.0, size / 2.0, disk_r, inner_r, outer_r, B)
+        ref_path = tmp / "ref.tif"
+        image_io.write_tif_16bit(ref_img, ref_path)
+        rows = [{"path": str(ref_path), "stem": "ref", "timestamp": t0, "norm_score": 0.9}]
+        for i in range(3):
+            # Globe AND ring both drawn shifted by the same (globe_dx, globe_dy)
+            # -- physically realistic (both move together on the sky).
+            img = _ring_textured_frame(
+                size, size / 2.0 + globe_dx, size / 2.0 + globe_dy, disk_r, inner_r, outer_r, B,
+                ring_dx=globe_dx, ring_dy=globe_dy,
+            )
+            path = tmp / f"frame_{i}.tif"
+            image_io.write_tif_16bit(img, path)
+            rows.append({
+                "path": str(path), "stem": f"frame_{i}",
+                "timestamp": t0 + timedelta(seconds=60.0), "norm_score": 0.9,
+            })
+
+        def _bogus_align(reference, target):
+            return (99.0, -99.0)  # absurd; forces the plausibility check to fail
+
+        monkeypatch.setattr("pipeline.modules.derotation.subpixel_align", _bogus_align)
+        stacked, log = derotate_filter(
+            rows, t0, align=True, has_rings=True, compute_ring_only_stack=True,
+            sub_observer_lat_deg=B, pole_pa_deg=0.0,
+        )
+        ring_only = log["ring_only_stack"]
+        assert ring_only is not None
+
+        # If the fallback correctly used the genuine (~-4,-3 in apply_shift_
+        # and_scale's target-center convention) globe shift, ring_only_stack
+        # should closely resemble a single well-aligned frame (the reference
+        # itself) in the ring band -- an identity-transform fallback would
+        # instead leave the un-recentred content misaligned by (4,3)px
+        # relative to the reference, visibly different.
+        cx, cy = size / 2.0, size / 2.0
+        diff_if_fallback_worked = np.abs(ring_only - ref_img)
+        # An unshifted (identity) composite of frames each offset by (4,3)px
+        # would show a large, structured residual against the reference
+        # specifically in the ring band (ghosting); a correct globe-shift
+        # fallback should not.
+        sin_b = math.sin(math.radians(B))
+        band_yy, band_xx = np.mgrid[0:size, 0:size].astype(np.float64)
+        rr = np.sqrt(((band_xx - cx)) ** 2 + ((band_yy - cy) / max(abs(sin_b), 1e-6)) ** 2)
+        ring_band = (rr >= inner_r + 4) & (rr <= outer_r - 4)
+        mean_diff_in_band = float(diff_if_fallback_worked[ring_band].mean())
+        assert mean_diff_in_band < 0.05, (
+            f"expected the fallback to use the genuine ({-globe_dx},{-globe_dy})px globe shift "
+            f"(ring_only closely matching the reference in the ring band), not an identity "
+            f"transform -- mean|diff|={mean_diff_in_band:.4f}"
+        )
+
+
+def test_ring_only_stack_absent_when_disabled_or_ringless():
+    size = 300
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        t0 = datetime(2026, 1, 1, 0, 0, 0)
+        rows = _write_ring_crossing_window(tmp, size, r=60.0, n_non_ref=2, dt_sec=60.0, t0=t0)
+
+        _, log_disabled = derotate_filter(
+            rows, t0, align=True, has_rings=True, compute_ring_only_stack=False,
+            sub_observer_lat_deg=-25.0, pole_pa_deg=0.0,
+        )
+        assert log_disabled["ring_only_stack"] is None
+
+        _, log_ringless = derotate_filter(
+            rows, t0, align=True, has_rings=False, compute_ring_only_stack=True,
+            sub_observer_lat_deg=-25.0, pole_pa_deg=0.0,
+        )
+        assert log_ringless["ring_only_stack"] is None
+
+
+def test_ring_only_stack_does_not_change_atmosphere_stack():
+    """compute_ring_only_stack=True must not alter `stacked` at all --
+    byte-identical to the flag being off."""
+    size = 300
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        t0 = datetime(2026, 1, 1, 0, 0, 0)
+        rows = _write_ring_crossing_window(tmp, size, r=60.0, n_non_ref=2, dt_sec=60.0, t0=t0)
+        common_kw = dict(has_rings=True, sub_observer_lat_deg=-25.0, pole_pa_deg=0.0)
+
+        stacked_off, _ = derotate_filter(rows, t0, align=True, compute_ring_only_stack=False, **common_kw)
+        stacked_on, _ = derotate_filter(rows, t0, align=True, compute_ring_only_stack=True, **common_kw)
+        assert np.array_equal(stacked_off, stacked_on)
+
+
+def test_compute_ring_only_stack_defaults_false():
+    assert DerotationConfig().compute_ring_only_stack is False
+
+
 if __name__ == "__main__":
     test_low_tilt_has_both_foreground_and_background()
     print("low tilt has both foreground and background: OK")
@@ -550,4 +899,17 @@ if __name__ == "__main__":
     print("feather smooth even with no background within overlap: OK")
     test_derotate_filter_applies_ring_occlusion_in_3d_path()
     print("integration: derotate_filter applies ring occlusion in 3D path: OK")
+    test_ring_crossing_mask_present_in_log_when_has_rings()
+    print("ring_crossing_mask present in log when has_rings: OK")
+    test_ring_annulus_mask_covers_only_the_annulus()
+    print("ring annulus mask covers only the annulus: OK")
+    test_ring_only_stack_improves_on_modest_ring_specific_shift()
+    print("ring-only stack improves on modest ring-specific shift: OK")
+    test_ring_only_stack_absent_when_disabled_or_ringless()
+    print("ring-only stack absent when disabled or ringless: OK")
+    test_ring_only_stack_does_not_change_atmosphere_stack()
+    print("ring-only stack does not change atmosphere stack: OK")
+    test_compute_ring_only_stack_defaults_false()
+    print("compute_ring_only_stack defaults False: OK")
+    print("(ring-only fallback monkeypatch test requires pytest -- run via pytest)")
     print("\nAll checks passed.")

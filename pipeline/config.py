@@ -335,6 +335,38 @@ class WaveletConfig:
     # Default False: byte-identical to today's fit for every target.
     master_limb_fit_refinement_enabled: bool = False
 
+    # has_rings=True counterpart to master_limb_fit_refinement_enabled above
+    # (2026-08-16). That refinement is statistical (MAD-based outlier
+    # rejection) and a documented near-no-op on Saturn: ring contamination
+    # is a large CONTIGUOUS ~40% angular arc, not scattered points, so
+    # point-wise robust statistics can't tell "contaminated majority" from
+    # "consensus" -- see that field's own comment and
+    # SATURN_RING_WAVELET_STATUS_2026-08-15.md's "Saturn root cause" section.
+    #
+    # This refinement is NAVIGATION-based instead: it fixes the ellipse's
+    # orientation (pole_pa_deg, already measured independent of any ellipse
+    # fit) and its apparent aspect ratio (analytically predicted from
+    # Horizons sub-observer latitude B and the planet's TRUE physical
+    # oblateness, true_polar_equatorial_ratio above -- NOT the apparent
+    # fitted ratio) BEFORE looking at any ray data, then excludes the
+    # ring-contaminated angular sectors (computed analytically, same
+    # physical ring/Req ratios as compute_ring_sharpening_mask) and fits
+    # only (cx, cy, scale) from what's left -- a heavily over-determined,
+    # well-conditioned problem regardless of which contiguous arc is
+    # missing, unlike a free 5-parameter conic fit on the same reduced ray
+    # set (tried and found insufficient in
+    # experiments/scratch_globe_fit_asymmetry_diagnosis.py).
+    #
+    # wavelet_master.py only applies this when has_rings is True (mutually
+    # exclusive with master_limb_fit_refinement_enabled above, which is
+    # has_rings=False only). See
+    # derotation._navigation_constrained_ellipse_fit()'s docstring for the
+    # full algorithm and derivation.
+    #
+    # Default False: byte-identical to today's fit until validated on real
+    # Saturn data (see SATURN_RING_WAVELET_STATUS_2026-08-15.md).
+    master_navigation_limb_fit_enabled: bool = False
+
     # When True, edge_feather_factor and disk_expand_px are estimated
     # automatically from each de-rotation stack image before sharpening.
     # The manual values above are ignored; auto-estimated values are printed.
@@ -547,6 +579,65 @@ class DerotationConfig:
     # targets — always comes from the planet preset, never left at default
     # for Jupiter/Saturn/etc.
     true_polar_equatorial_ratio: float = 1.0
+
+    # ── Ring-only stack (2026-08-16, opt-in) ──────────────────────────────────
+    # Phase 1 of project_ring_globe_layer_separation_roadmap: Saturn's rings
+    # are a rigid, non-rotating structure -- they need only translation+scale
+    # registration between frames, never the atmosphere de-rotation warp
+    # (spherical_derotation_warp[_3d] already applies zero displacement
+    # outside the globe's own radius, since depth(x,y)=sqrt(max(0, R^2-...))
+    # is 0 there by construction -- but frame-to-frame registration for that
+    # untouched content still comes from the GLOBE's own pre-warp shift
+    # estimate, whose precision at the globe's radius doesn't necessarily
+    # carry over to the ring's much larger radius, where the same angular
+    # error is magnified -- see apply_shift_and_scale()'s docstring for the
+    # 2026-08-11 Cassini-Division-washout bug this exact mechanism was
+    # already built to address, just not yet applied independently for a
+    # ring-only stack).
+    #
+    # When True (and has_rings=True), derotate_filter() additionally computes
+    # a SECOND per-filter stack: each frame registered via a fresh
+    # subpixel_align() measurement restricted to a HARD (non-feathered)
+    # ring-annulus window (so the ring's own signal drives the shift
+    # estimate, not the globe's -- see _ring_annulus_mask()'s docstring for
+    # why the mask must be hard, not feathered, for this purpose), reusing
+    # the SAME scale factor the existing globe-based pre-warp step already
+    # computes (no new scale model). This stack is saved as a companion file
+    # ("<filt>_ring_only.tif") -- it does NOT yet replace or composite into
+    # the main output (see Phase 2/3 of the roadmap); this phase only
+    # validates whether the ring layer itself comes out sharper (e.g.
+    # Cassini Division) than what's implicitly baked into the single
+    # combined stack today.
+    #
+    # KNOWN LIMITATION (found via synthetic testing): unwindowed phase
+    # correlation on this annulus mask is only reliable up to roughly 1-2px
+    # true shift -- at larger shifts it can lock onto a badly wrong value.
+    # Since the ring and globe physically move together (same seeing
+    # jitter), derotate_filter() sanity-checks the ring measurement against
+    # the globe-based one and falls back to the globe's shift on a large
+    # disagreement -- but that fallback is only as good as the globe's OWN
+    # pre-warp measurement; on the rare frame where even that fails outright,
+    # the fallback is a hardcoded identity (0,0), not the atmosphere path's
+    # own eventual (separately-computed) correction for that frame -- see
+    # the "CAVEAT" comment at derotate_filter()'s ring-only registration
+    # block. Found in adversarial review, not fixed (would need
+    # restructuring); low real-world impact so far since this feature has
+    # not yet shown a benefit worth that cost (next point).
+    #
+    # REAL-DATA RESULT (2026-08-16, Saturn window_01 IR/R, real Horizons
+    # B=-11.07 deg -- see project_ring_globe_layer_separation_roadmap):
+    # Cassini-band Laplacian variance came out slightly WORSE with this flag
+    # on than the existing atmosphere stack (ratio 0.78-0.85, not the hoped-
+    # for improvement), and visually indistinguishable in 4x crops. Gating
+    # itself is correct (flag off is a byte-identical no-op for the
+    # atmosphere stack). Not recommended to enable; kept for the roadmap's
+    # own record and as a base for a future, better-conditioned registration
+    # approach (e.g. a windowed/tapered correlation, or per-frame instead of
+    # reference-only annulus geometry).
+    #
+    # Default False: no extra computation, byte-identical to before this
+    # field existed. Meaningless (silently inert) when has_rings=False.
+    compute_ring_only_stack: bool = False
 
 
 
