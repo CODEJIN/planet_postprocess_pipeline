@@ -626,15 +626,35 @@ class DerotationConfig:
     # step02 TIF -- a metric distinct from, and much better correlated with
     # real per-frame sharpness than, norm_score (see frame_sharpness_
     # central()'s docstring) -- and excludes the least-sharp fraction of
-    # non-reference frames from the stack. Confirmed on 51 real window x
-    # filter combos (mixed Saturn/Jupiter, 2026-08-13): median (stack/best-
-    # raw-frame) sharpness ratio rose from 0.733 (all frames, norm_score-
-    # weighted, current default) to 0.878 (top-half by this metric).
+    # non-reference frames from the stack.
+    #
+    # !! DO NOT ENABLE -- confirmed 2026-08-17 to introduce a new visible
+    # limb-ringing artifact (a thin bright concentric arc just inside the
+    # limb) on BOTH Jupiter and Saturn at keep_fraction=0.5, found by direct
+    # visual inspection of real wavelet-sharpened crops (missed at first
+    # pass at low zoom -- only visible on close crop + 10x amplified diff,
+    # see experiments/scratch_sharpness_selection_wavelet_crops/comparisons/
+    # {Jupiter_R_UPPERLEFT,Saturn_R_LEFT}_*). This is the same class of
+    # defect as project_ring_limb_ringing_bug's ~11 prior mask/gain/
+    # subtraction-based attempts (feedback_white_rim_is_critical_defect: a
+    # new visible rim/arc is a disqualifying defect, not a trade-off against
+    # the real sharpness improvement) -- this time triggered by changing
+    # WHICH frames get stacked (and therefore the stack's noise/coverage
+    # character near the limb) rather than by any mask/gain change. The
+    # underlying raw-sharpness diagnosis (project_frame_sharpness_selection,
+    # project_saturn_step05_sharpness_gap's 2026-08-17 root-cause finding:
+    # intrinsic per-frame seeing/quality variance dilutes the stack, r=-0.55
+    # to -0.64 correlation) is correct and real, but excluding frames is not
+    # a safe way to act on it. Confirmed on 51 real window x filter combos
+    # (mixed Saturn/Jupiter, 2026-08-13) that the median (stack/best-raw-
+    # frame) sharpness ratio rises from 0.733 to 0.878 at keep_fraction=0.5
+    # -- the numeric improvement is real, just not shippable this way.
+    #
     # Default False / keep_fraction=1.0 leaves every existing session's
-    # stacking byte-identical to before this feature existed -- not yet
-    # validated widely enough to become the default; enable explicitly
-    # per-session (same posture as stack_weight_power: confirmed useful,
-    # not auto-defaulted) after checking wavelet-sharpened crops.
+    # stacking byte-identical to before this feature existed. Kept in the
+    # codebase (tested, safe when off) as a documented dead end rather than
+    # removed, matching this project's convention for validated-but-
+    # unshippable opt-in features.
     sharpness_selection_enabled: bool = False
     sharpness_keep_fraction: float = 1.0
 
