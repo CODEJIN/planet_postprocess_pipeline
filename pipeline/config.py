@@ -264,10 +264,20 @@ class WaveletConfig:
     # direct sharpen_disk_aware call and the full wavelet_master.run()
     # pipeline path): white-rim gone, ring band detail sharpened right up to
     # the globe's own halo, zoomed crops in experiments/ringing_fix_
-    # validation/realpipe_ON_*. Kept default False pending validation across
-    # more windows/filters -- one window is not enough to flip a production
-    # default per this session's own established discipline.
-    master_ring_extension_enabled: bool = False
+    # validation/realpipe_ON_*.
+    #
+    # Promoted to default True 2026-08-17 (user request: rings were coming
+    # out essentially unsharpened in real GUI renders and that's not the
+    # intended look) after re-checking windows 01-03 x IR/R/G/B (previously
+    # only window_01/R had been checked -- see experiments/scratch_ring_
+    # extension_default_check.py, images in experiments/ring_extension_
+    # default_check/). Every combo shows the same thin bright limb-following
+    # line + resolved ring banding as the original approved window_01/R
+    # reference (experiments/ringing_fix_validation/realpipe_ON_right6x.png)
+    # -- consistent, not a new artifact -- and no checkerboard/double-edge/
+    # dark-trough anywhere. Still opt-OUT-able (set False) if a future
+    # window/filter combination does show a problem.
+    master_ring_extension_enabled: bool = True
 
     # ── Overshoot clamp: output-domain ringing suppression (2026-08-15) ──────
     # When > 0.0 (default 0.0, off), clamps each sharpened pixel to the local
@@ -675,21 +685,29 @@ class DerotationConfig:
     # Default False: complete no-op, byte-identical stacking.
     s0_sl_blend_enabled: bool = False
 
-    # ── True 3D oblate-spheroid reprojection (WinJUPOS-style, opt-in) ─────────
-    # When True, spherical_derotation_warp_3d() replaces the linear
-    # spherical_derotation_warp() for this session — see derotation.py's
-    # "True oblate-spheroid reprojection" section for the derivation. The
-    # linear warp is a valid small-angle approximation for an equatorial
-    # view but has no notion of sub-observer latitude B (how far the
-    # rotation axis tilts toward/away from the observer); this models it
-    # explicitly via a full unproject/shift-longitude/reproject per pixel.
-    # Default False: the linear warp remains the validated default for both
-    # Jupiter and Saturn. Turn this on only after confirming via
-    # _measure_derot_confidence's NCC sweep (use_true_reprojection=True vs
-    # False) that it measurably helps on your actual session data — the
-    # expected benefit is small (~1-2px at the limb) and shouldn't be
-    # assumed without checking.
-    use_true_reprojection: bool = False
+    # ── True 3D oblate-spheroid reprojection (WinJUPOS-style) ─────────────────
+    # spherical_derotation_warp_3d() replaces the linear spherical_
+    # derotation_warp() for this session — see derotation.py's "True
+    # oblate-spheroid reprojection" section for the derivation. The linear
+    # warp is a valid small-angle approximation for an equatorial view but
+    # has no notion of sub-observer latitude B (how far the rotation axis
+    # tilts toward/away from the observer); this models it explicitly via a
+    # full unproject/shift-longitude/reproject per pixel.
+    #
+    # Promoted to the permanent, always-on default 2026-08-17 (was opt-in,
+    # off by default, with a GUI checkbox) -- project_derotation_winjupos_
+    # evaluation memory: this resolved the long-standing Saturn ring-effect
+    # artifact (user-confirmed "거의 해결", i.e. essentially resolved) and
+    # every real Saturn/Jupiter session in this project's history has run
+    # with this on for a long time regardless of the field's own default.
+    # The GUI checkbox is removed; gui/main_window.py now always constructs
+    # DerotationConfig with this True regardless of what an old session.json
+    # has saved, so there is no remaining way to fall back to the linear
+    # warp from the GUI. The field itself is kept (not deleted) since
+    # pipeline/modules/derotation.py's linear-warp code path is still real,
+    # tested, reachable code (e.g. some experiments/ scratch scripts still
+    # exercise it directly) -- only the GUI's ability to select it is gone.
+    use_true_reprojection: bool = True
     # NOTE: the reprojection's own sign ambiguity (flip_pole_axis) is NOT a
     # config field — like flip_direction/derot_flip, it's auto-detected once
     # per session from real atmospheric feature drift (see

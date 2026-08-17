@@ -192,8 +192,6 @@
   "step04.normalize": "Brightness normalization",
   "step04.satellite_composite": "Satellite composite (multi-rate)",
   "step04.satellite_composite.tooltip": "Blend planet-derotated and satellite-tracking stacks to\neliminate satellite streak artifacts (Europa transit, shadow).\nRequires satellite tracking (satellite.enabled) to be on.\n\nExp9 method: motion-based Gaussian mask blend\nσ = max(max_motion, apparent_radius) × 2.5",
-  "step04.use_true_reprojection": "True 3D reprojection (experimental)",
-  "step04.use_true_reprojection.tooltip": "Replace the linear de-rotation warp with a true oblate-spheroid 3D reprojection that models sub-observer latitude B (how far the rotation axis tilts toward/away from you) — the default linear warp assumes an equatorial view and only approximates this.\nExpected benefit is small (roughly 1-2px at the disk limb) and has NOT been empirically validated with an NCC sweep yet — off by default. Also see 'True Polar/Equatorial Ratio' in Settings, which this mode uses instead of the disk's apparent aspect ratio.\nThe reprojection's own rotation-axis sign ambiguity is auto-detected from real atmospheric drift when this is on — same principle as the existing automatic de-rotation direction detection, no manual toggle needed.",
   "step04.mask_shape": "Blend mask shape",
   "step04.mask_shape.capsule": "Capsule",
   "step04.mask_shape.circular": "Circular",

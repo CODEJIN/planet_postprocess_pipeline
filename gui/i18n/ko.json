@@ -193,8 +193,6 @@
   "step04.normalize": "밝기 정규화",
   "step04.satellite_composite": "위성 합성 (다중-속도 역회전)",
   "step04.satellite_composite.tooltip": "행성 역회전 스택과 위성 추적 스택을 합성하여\n위성 스트리크 아티팩트를 제거합니다.\n위성 추적(satellite.enabled)이 켜져 있어야 작동합니다.\n\nExp9 방식: 모션 기반 가우시안 마스크\nσ = max(최대이동량, 겉보기반경) × 2.5",
-  "step04.use_true_reprojection": "True 3D reprojection (실험적)",
-  "step04.use_true_reprojection.tooltip": "선형 de-rotation 워프 대신 sub-observer latitude B(자전축이 관측자 쪽으로/반대쪽으로 얼마나 기울어졌는지)를 정확히 반영하는 진짜 3D 타원체 reprojection을 사용합니다 — 기본 선형 워프는 적도시점을 가정하고 이를 근사만 합니다.\n기대 효과는 작습니다(원반 림 근처에서 대략 1~2px). 아직 NCC sweep으로 실측 검증하지 않았습니다 — 기본값 꺼짐. Settings의 '실제 극/적도 반경비'도 이 모드에서 원반의 겉보기 종횡비 대신 사용됩니다.\n이 모드의 자전축 방향 부호는 켜져 있을 때 실제 대기 drift로부터 자동 탐지됩니다 — 기존 de-rotation 방향 자동탐지와 동일한 원칙이며, 수동으로 토글할 필요 없습니다.",
   "step04.mask_shape": "블렌드 마스크 형태",
   "step04.mask_shape.capsule": "캡슐형",
   "step04.mask_shape.circular": "원형",
