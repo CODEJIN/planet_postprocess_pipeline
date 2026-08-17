@@ -33,6 +33,13 @@ from pipeline.modules.derotation import (
     _robust_ellipse_refit,
     _navigation_constrained_ellipse_fit,
     compute_ring_sharpening_mask,
+    _ring_annulus_mask,
+    estimate_ring_scatter_leak,
+)
+from pipeline.modules.limb_darkening import (
+    measure_radial_brightness_profile,
+    fit_limb_darkening_curve,
+    build_confidence_map,
 )
 
 
@@ -271,6 +278,79 @@ def run(
                         img.shape[0], img.shape[1], _cx, _cy, _rx, _ry,
                         _pole_pa_deg, _sub_obs_lat_deg,
                     )
+
+                # Limb-darkening confidence gain (2026-08-16, opt-in): see
+                # WaveletConfig.master_limb_darkening_confidence_enabled's
+                # docstring. Fits a Minnaert-law curve to THIS image's own
+                # measured radial brightness profile (pipeline.modules.
+                # limb_darkening, using the geometry finalized above --
+                # including any nav-fit refinement for has_rings targets),
+                # then uses the fitted curve's SHAPE (not the geometric
+                # feather) to further scale gain down where real signal is
+                # intrinsically dim, matching WinJUPOS's explicit LD
+                # correction instead of relying on projection geometry
+                # alone. Combined multiplicatively with the coverage-based
+                # confidence map above when both are active. Placed after
+                # the has_rings/nav-fit block above (not alongside the
+                # coverage confidence map earlier) so it always uses the
+                # FINAL geometry, not the raw pre-nav-fit ellipse.
+                if (config.wavelet.master_limb_darkening_confidence_enabled
+                        or config.wavelet.master_ring_scatter_subtraction_enabled):
+                    try:
+                        _has_rings_ld = bool(_wlog.get("has_rings", False))
+                        _ld_angle_deg = _pole_pa_deg if _has_rings_ld else _angle
+                        _ld_exclude = None
+                        if _has_rings_ld:
+                            _sub_obs_lat_deg_ld = float(_wlog.get("sub_observer_lat_deg", 0.0))
+                            _ld_exclude = _ring_annulus_mask(
+                                img.shape[0], img.shape[1], _cx, _cy, _rx,
+                                _ld_angle_deg, _sub_obs_lat_deg_ld, feather=False,
+                            )
+                        _ld_profile = measure_radial_brightness_profile(
+                            _lum, _cx, _cy, _rx, _ry, _ld_angle_deg, exclude_mask=_ld_exclude,
+                        )
+                        _ld_fit = fit_limb_darkening_curve(_ld_profile)
+
+                        if config.wavelet.master_limb_darkening_confidence_enabled:
+                            _ld_conf_raw = build_confidence_map(
+                                _lum.shape, _cx, _cy, _rx, _ry, _ld_angle_deg, _ld_fit,
+                            )
+                            _ld_confidence_map = wavelet.coverage_to_confidence(
+                                _ld_conf_raw, floor=config.wavelet.master_limb_darkening_confidence_floor,
+                            )
+                            print(f"    [{filt}] limb-darkening fit: I0={_ld_fit.i0:.3f} "
+                                  f"m={_ld_fit.exponent:.3f} residual_rms={_ld_fit.residual_rms:.4f}")
+                            _confidence_map = (
+                                _ld_confidence_map if _confidence_map is None
+                                else _confidence_map * _ld_confidence_map
+                            )
+
+                        # Ring optical-scatter leak subtraction (2026-08-17,
+                        # opt-in, has_rings=True only) -- see WaveletConfig.
+                        # master_ring_scatter_subtraction_enabled's
+                        # docstring. Physically distinct from every mask/
+                        # gain/filter-on-top-of-frozen-input approach above
+                        # (project_ring_limb_ringing_bug memory): modifies
+                        # the INPUT pixel values themselves, before wavelet
+                        # decomposition, instead of reshaping gain/
+                        # confidence around a frozen input. Reuses the SAME
+                        # _ld_fit just computed above -- no re-fitting.
+                        if config.wavelet.master_ring_scatter_subtraction_enabled and _has_rings_ld:
+                            if img.ndim == 2:
+                                _leak = estimate_ring_scatter_leak(
+                                    img, _cx, _cy, _rx, _ry, _ld_angle_deg, _ld_fit,
+                                )
+                                _strength = config.wavelet.master_ring_scatter_subtraction_strength
+                                img = np.clip(img - _strength * _leak, 0.0, 1.0).astype(np.float32)
+                                print(f"    [{filt}] ring-scatter leak subtraction: "
+                                      f"max_leak={_leak.max():.4f} strength={_strength:.2f}")
+                            else:
+                                print(f"    [{filt}] master_ring_scatter_subtraction_enabled "
+                                      f"but img.ndim==3 (color_mode) -- not yet validated for "
+                                      f"color targets, skipping correction")
+                    except Exception as exc:
+                        print(f"    [{filt}] limb-darkening fit failed ({exc}) -- sharpening "
+                              f"without LD confidence weighting/ring-scatter subtraction")
 
                 # Auto-estimate eff and expand_px from image data if requested
                 if config.wavelet.auto_params:

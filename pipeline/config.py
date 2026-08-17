@@ -129,6 +129,50 @@ class WaveletConfig:
     # Ignored when master_coverage_aware_sharpening=False.
     master_coverage_confidence_floor: float = 0.3
 
+    # ── Limb-darkening confidence gain (2026-08-16, opt-in) ───────────────────
+    # Multiplies each wavelet level's gain by a per-pixel confidence map built
+    # from a Minnaert-law fit to the image's OWN measured radial brightness
+    # profile (pipeline.modules.limb_darkening), instead of (or alongside)
+    # master_coverage_aware_sharpening's coverage-based one.
+    #
+    # Motivation: this project's repeated white-rim/ringing artifacts near
+    # the disk limb (master_ring_extension_enabled's history below,
+    # master_limb_fit_refinement_enabled, this session's abandoned map-space
+    # de-rotation redesign -- see project_map_space_derotation_roadmap
+    # memory) all trace back to the same root cause: sharpen_disk_aware's
+    # edge feathering is a purely GEOMETRIC ramp (pixel distance from an
+    # ellipse), while the real brightness falloff at a planet's limb is a
+    # PHOTOMETRIC phenomenon (limb darkening) plus optical/seeing PSF blur --
+    # a hand-tuned geometric ramp keeps leaving small value/derivative
+    # mismatches that wavelet sharpening amplifies into visible defects.
+    # Directly inspired by WinJUPOS (this project's own reference tool),
+    # whose "Image measurement" module exposes an explicit, user-adjustable
+    # LD (limb darkening) value/angle correction rather than relying on
+    # geometric projection alone (see project_limb_darkening_confidence_map
+    # memory for the research and Phase A validation).
+    #
+    # The fit is filter-agnostic by construction (fit directly from each
+    # window/filter's own stacked image, no hardcoded per-filter constant),
+    # so it naturally handles a methane-absorption band's different
+    # radiative behaviour with no special-casing (project_filter_agnostic_
+    # design) -- though Phase A's real-data validation did NOT find the
+    # expected CH4 limb-brightening signature in this project's own data;
+    # see that memory for the honest caveat.
+    #
+    # Default False: complete no-op (confidence_map=None everywhere, same as
+    # today), matching every other opt-in flag in this file.
+    master_limb_darkening_confidence_enabled: bool = False
+
+    # Floor for the confidence multiplier (wavelet.coverage_to_confidence,
+    # reused as-is for its smoothstep reshaping) -- gain never drops below
+    # this fraction even where the fitted curve predicts near-zero relative
+    # brightness. Same halo-avoidance rationale as master_coverage_
+    # confidence_floor above (a hard 0-floor reads as a new artifact, a flat
+    # unsharpened patch right at the limb). 0.3 mirrors that flag's own
+    # unvalidated initial choice -- tune after real-data verification.
+    # Ignored when master_limb_darkening_confidence_enabled=False.
+    master_limb_darkening_confidence_floor: float = 0.3
+
     # ── Edge extension before sharpening (2026-08-15, opt-in) ─────────────────
     # Extends the disk signal past the fitted boundary (wavelet.
     # _fill_outside_ellipse -- dead code since commit a8db01a until this flag
@@ -366,6 +410,55 @@ class WaveletConfig:
     # Default False: byte-identical to today's fit until validated on real
     # Saturn data (see SATURN_RING_WAVELET_STATUS_2026-08-15.md).
     master_navigation_limb_fit_enabled: bool = False
+
+    # ── Ring optical-scatter leak subtraction (2026-08-17, opt-in, has_rings-only) ──
+    # Physically estimates and subtracts Saturn ring optical/PSF scattered
+    # light leaking onto the globe near the ring ansae, from the INPUT pixel
+    # values themselves, BEFORE wavelet decomposition -- see derotation.
+    # estimate_ring_scatter_leak()'s docstring for the mechanism and
+    # project_limb_darkening_confidence_map memory's "PSF 산란광 가설"
+    # investigation (reproduced 2026-08-17 across 9 independent same-night
+    # Saturn stacks, IR/R/G/B) for the validated background.
+    #
+    # THIS IS A DIFFERENT PHENOMENON from the ellipse-fit-asymmetry ringing
+    # bug this file's other has_rings flags target (project_ring_limb_
+    # ringing_bug memory, ~10 previously-tried and rejected mask/gain/
+    # filter-on-top-of-frozen-input approaches) -- a real, separately-
+    # diagnosed photometric excess on the globe over its own symmetric
+    # limb-darkening model, reproducibly confined to the narrow angular
+    # window aligned with pole_pa_deg (the ansae). Enabling this is NOT
+    # expected to fix that older bug and should not be evaluated against it.
+    #
+    # Shares the SAME limb-darkening fit as master_limb_darkening_
+    # confidence_enabled above when both are enabled (wavelet_master.py
+    # widens that block's gating condition instead of re-fitting) -- the two
+    # flags are independently toggleable; this one has no functional
+    # dependency on that one also being on.
+    #
+    # Not yet validated on real data for color_mode targets (camera_mode=
+    # "color" + has_rings=True) -- wavelet_master.py logs and skips the
+    # correction in that case rather than guessing at an unvalidated
+    # per-channel design. Every real Saturn dataset in this repo is mono.
+    #
+    # Default False: byte-identical to today's output for every target.
+    master_ring_scatter_subtraction_enabled: bool = False
+
+    # Multiplier in [0, 1] on the estimated leak field (see derotation.
+    # estimate_ring_scatter_leak()'s docstring -- the returned field is a
+    # pure physical estimate with no strength baked in). 1.0 removes the
+    # full estimated leak; the correction is bounded regardless of strength
+    # (corrected pixel value never drops below the disk's own limb-
+    # darkening model prediction, by construction -- see that function's
+    # "SAFETY CLAMP"). A separate tunable rather than hardcoded at 1.0
+    # because the excess magnitude was found to be methodology/frame-
+    # dependent, not a fixed physical constant, in the validating
+    # investigation -- start real-data validation at 1.0 and dial down only
+    # if visual inspection finds the correction introducing any artifact
+    # (see feedback_white_rim_is_critical_defect memory's bar: ANY new
+    # visible white-rim/dark-line/halo at the correction's own spatial
+    # boundary is a reject, not a trade-off to tune around).
+    # Ignored when master_ring_scatter_subtraction_enabled=False.
+    master_ring_scatter_subtraction_strength: float = 1.0
 
     # When True, edge_feather_factor and disk_expand_px are estimated
     # automatically from each de-rotation stack image before sharpening.

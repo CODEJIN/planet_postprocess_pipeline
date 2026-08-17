@@ -91,6 +91,7 @@ import numpy as np
 from pipeline.modules import image_io
 from pipeline.modules.wavelet import sharpen as _wavelet_sharpen
 from pipeline.modules.wavelet import coverage_to_confidence
+from pipeline.modules.limb_darkening import evaluate_limb_darkening_curve, LimbDarkeningFit
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -1552,6 +1553,177 @@ def _ring_annulus_mask(
     return _feather_ring_foreground_boundary(h, w, in_annulus)
 
 
+def _raised_cosine_falloff(value: np.ndarray, inner: float, outer: float) -> np.ndarray:
+    """1.0 for value<=inner, 0.0 for value>=outer, smooth (C1, zero-derivative
+    at both ends) cosine interpolation between. Distinct from
+    _feather_ring_foreground_boundary's LINEAR distance-transform ramp above,
+    which feathers a BOOLEAN mask's pixel-distance-to-boundary, not a
+    continuous scalar field's own value (r_norm, angular distance) -- no
+    existing helper in this module does the latter, hence this one.
+    """
+    if outer <= inner:
+        return (value <= inner).astype(np.float64)
+    t = np.clip((value - inner) / (outer - inner), 0.0, 1.0)
+    return 0.5 * (1.0 + np.cos(np.pi * t))
+
+
+def _raised_cosine_rise(value: np.ndarray, inner: float, outer: float) -> np.ndarray:
+    """0.0 for value<=inner, 1.0 for value>=outer -- rising counterpart to
+    _raised_cosine_falloff (same cosine shape, mirrored)."""
+    return 1.0 - _raised_cosine_falloff(value, inner, outer)
+
+
+def estimate_ring_scatter_leak(
+    image: np.ndarray,
+    cx: float,
+    cy: float,
+    rx: float,
+    ry: float,
+    pole_pa_deg: float,
+    ld_fit: LimbDarkeningFit,
+    ansa_half_width_deg: float = 15.0,
+    ansa_feather_to_deg: float = 25.0,
+    r_norm_core: Tuple[float, float] = (0.90, 0.95),
+    r_norm_feather_in: float = 0.80,
+    r_norm_feather_out: float = 0.98,
+    blur_sigma_px: float = 2.5,
+) -> np.ndarray:
+    """Estimate Saturn ring optical/PSF scattered light leaking onto the
+    globe near the ring ansae (phi=0/180 in the pole_pa_deg-aligned frame),
+    as a per-pixel field to SUBTRACT from `image` BEFORE wavelet
+    decomposition -- see project_limb_darkening_confidence_map memory's "PSF
+    산란광 가설" investigation (reproduced across 9 independent same-night
+    Saturn stacks, IR/R/G/B, 2026-08-17) for the validated background.
+
+    DIFFERENT FROM EVERY OTHER RING/LIMB FIX IN THIS MODULE
+    (compute_ring_sharpening_mask, _ring_annulus_mask, compute_ring_
+    occlusion_weight*): those reshape sharpening GAIN or de-rotation WEIGHT
+    around a frozen input. This estimates a real photometric contamination
+    IN the input signal and removes it before anything downstream (gain
+    maps, confidence maps, wavelet decomposition) sees the pixel values --
+    it composes with, rather than competes against, all of the above. It is
+    also NOT expected to fix the unrelated ellipse-fit-asymmetry ringing bug
+    (project_ring_limb_ringing_bug memory, ~10 previously-tried and rejected
+    mask/gain/filter-on-top-of-frozen-input approaches) -- that is a
+    separate, already-diagnosed phenomenon; do not evaluate this feature
+    against it.
+
+    Method: `image - evaluate_limb_darkening_curve(r_norm, ld_fit)` is the
+    residual over the disk's own symmetric Minnaert baseline (fit EXCLUDING
+    ring pixels, so it is ring-contamination-free by construction). Only
+    POSITIVE residual ("excess") is ever removed -- a pixel at or below the
+    model's prediction is left alone. The excess is lightly Gaussian-blurred
+    (removing only the smooth "glow" component, not pixel noise/real fine
+    detail) and multiplied by a window that is 1.0 only in the
+    r_norm~[0.90,0.95] band nearest the ansae (in the pole_pa_deg-aligned
+    frame, matching how this project's ring geometry is measured throughout)
+    and fades smoothly to 0.0 both radially and angularly away from there.
+
+    RADIAL RANGE IS DELIBERATELY KEPT WELL SHORT OF r_norm=1.0 (the fitted
+    disk boundary), not just short of the ring annulus at r_norm~1.239 (see
+    _SATURN_RING_INNER_REQ): the Minnaert model's cos(theta)^m term goes to
+    exactly 0 at r_norm=1.0 by construction (theta=90deg), so `excess` grows
+    explosively as r_norm approaches/crosses 1.0 for a reason that has
+    nothing to do with any real leak -- confirmed on real Saturn data
+    (window_01/R, 2026-08-17): max excess in [0.90,0.95] was 0.056-0.096
+    (matches the validated ~0.03-0.08 finding), but including up to
+    r_norm=1.0 inflated it to 0.26, and up to 1.05 to 0.34 -- because at
+    r_norm just past 1.0 near the ansa, the pixel is no longer globe at all,
+    it is the ring itself (exactly the validated "ring projects outside the
+    disk near the ansae" geometry) showing through, and "correcting" an
+    actual ring pixel down to the globe model's ~0 prediction there is not
+    the intended effect. The default r_norm_core/r_norm_feather_out values
+    stay at/under 0.98, matching fit_limb_darkening_curve's own
+    r_norm_fit_max=0.98 convention for excluding this same unstable region.
+
+    SAFETY CLAMP: the returned leak is clamped to `<= excess` POINTWISE, not
+    just windowed/blurred. Gaussian blur can, at any pixel, produce a value
+    larger than that pixel's own raw excess (mixing in a neighbour's larger
+    excess) -- without this clamp, `image - strength*leak` (strength<=1)
+    could push a pixel BELOW the model's own prediction, inventing a new
+    local dark trough at the correction's own boundary -- the exact failure
+    mode 3 of this project's ~10 previously-rejected approaches hit (see
+    project_ring_limb_ringing_bug memory), which the critical-defect bar
+    (feedback_white_rim_is_critical_defect memory) does not tolerate. With
+    the clamp, `image - strength*leak` is bounded
+    `predicted <= corrected <= image` for every pixel, every
+    strength in [0, 1] -- by construction, not by tuning.
+
+    Args:
+        image:        Float array in [0, 1], 2-D (single channel/luminance)
+                       ONLY. Raises ValueError on a 3-D input -- callers with
+                       a color image must pass a luminance plane and decide
+                       separately how to redistribute the correction across
+                       channels (not yet designed/validated -- see
+                       WaveletConfig.master_ring_scatter_subtraction_enabled).
+        cx, cy, rx, ry: The disk's FINAL fitted ellipse geometry (after any
+                       nav-fit refinement), same convention as
+                       limb_darkening._ellipse_normalized_radius.
+        pole_pa_deg:  Ring/pole position angle -- ansae (phi=0/180) are
+                       defined in THIS frame, matching wavelet_master.py's
+                       own reorientation of the globe mask to pole_pa_deg
+                       for has_rings targets (NOT the disk ellipse's own,
+                       possibly mod-180-degenerate, fitted angle).
+        ld_fit:       A LimbDarkeningFit already fit from this SAME image
+                       (limb_darkening.fit_limb_darkening_curve), ideally
+                       with ring pixels excluded from the fit. Not re-fit or
+                       validated here.
+        ansa_half_width_deg / ansa_feather_to_deg:
+                       Angular window (degrees from the nearest ansa, 0 or
+                       180, pole_pa_deg frame): full weight within
+                       ansa_half_width_deg, smoothly to zero by
+                       ansa_feather_to_deg.
+        r_norm_core / r_norm_feather_in / r_norm_feather_out:
+                       Radial window (ellipse-normalized radius): full
+                       weight within r_norm_core, ramped from 0 at
+                       r_norm_feather_in up to full at r_norm_core[0], back
+                       to 0 at r_norm_feather_out.
+        blur_sigma_px: Gaussian blur sigma (pixels), applied to the raw
+                       excess field before windowing/clamping.
+
+    Returns:
+        Float32 (H, W) array, same shape as `image`, always >= 0 -- the
+        amount to subtract, scaled by the caller's own `strength` in [0, 1].
+        This function has no strength knob itself -- the physical estimate
+        and the "how much to trust it" scaling decision stay separate, same
+        as confidence_map vs. gain elsewhere in this codebase.
+    """
+    if image.ndim != 2:
+        raise ValueError(
+            f"estimate_ring_scatter_leak expects a 2-D luminance plane, got ndim={image.ndim}"
+        )
+
+    h, w = image.shape
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+    ang = math.radians(pole_pa_deg)
+    cos_a, sin_a = math.cos(ang), math.sin(ang)
+    dx, dy = xx - cx, yy - cy
+    xr = dx * cos_a + dy * sin_a
+    yr = -dx * sin_a + dy * cos_a
+    r_norm = np.sqrt((xr / rx) ** 2 + (yr / ry) ** 2)
+    phi_deg = np.degrees(np.arctan2(yr / ry, xr / rx))
+
+    predicted = evaluate_limb_darkening_curve(r_norm, ld_fit)
+    excess = np.maximum(0.0, image.astype(np.float64) - predicted)
+
+    excess_smooth = cv2.GaussianBlur(
+        excess.astype(np.float32), (0, 0), sigmaX=blur_sigma_px,
+    ).astype(np.float64)
+
+    d0 = np.abs(((phi_deg - 0.0 + 180.0) % 360.0) - 180.0)
+    d180 = np.abs(((phi_deg - 180.0 + 180.0) % 360.0) - 180.0)
+    d_ansa = np.minimum(d0, d180)
+    w_phi = _raised_cosine_falloff(d_ansa, ansa_half_width_deg, ansa_feather_to_deg)
+
+    w_r = (
+        _raised_cosine_rise(r_norm, r_norm_feather_in, r_norm_core[0])
+        * _raised_cosine_falloff(r_norm, r_norm_core[1], r_norm_feather_out)
+    )
+
+    leak = np.minimum(w_phi * w_r * excess_smooth, excess)
+    return leak.astype(np.float32)
+
+
 def _predicted_apparent_ratio(
     true_polar_equatorial_ratio: float,
     sub_observer_lat_deg: float,
@@ -2620,6 +2792,299 @@ def _reprojection_point_shift(
     if not bool(valid):
         return 0.0, 0.0
     return float(new_x) - x, float(new_y) - y
+
+
+# ── Map-space (lat/lon) projection primitives (2026-08-16, Phase A of ────────
+# project_map_space_derotation_roadmap) ───────────────────────────────────────
+#
+# Reuses _oblate_ortho_forward/_oblate_ortho_inverse exactly as-is (no new
+# geometry math) -- these two functions just wrap them in the same
+# "vectorize the whole grid, sample via cv2.remap, use depth>0 for validity"
+# pattern _reprojected_position()/spherical_derotation_warp_3d() already use
+# for disk-pixel-space de-rotation, applied instead to disk<->map conversion.
+# Callers are responsible for the 5% req_px/rpol_px padding convention (same
+# split of responsibility as _oblate_ortho_forward/inverse themselves --
+# _reprojected_position applies the padding once and passes req_px/rpol_px
+# down; these two functions do the same).
+#
+# Map grid convention (fixed by these two functions together -- a caller
+# must use the same n_lat/n_lon for both the _disk_to_map() call that
+# produced a map and any _map_to_disk() call consuming it):
+#   phi (latitude):  row 0 = -90 deg, row n_lat-1 = +90 deg, linspace
+#   lam (longitude): col 0 = -180 deg, col n_lon-1 = +180-360/n_lon deg,
+#                    linspace with endpoint=False (col n_lon wraps to col 0)
+#
+# KNOWN LIMITATION (Phase A, not yet addressed): _map_to_disk()'s cv2.remap
+# uses BORDER_WRAP so longitude (the column axis) wraps correctly at the
+# +-180 deg seam -- but BORDER_WRAP applies to BOTH axes, and latitude (the
+# row axis) is NOT physically periodic (the poles are hard edges, not
+# adjacent to each other). In practice this only matters within <1px of
+# phi=+-90 deg (bilinear interpolation's kernel support reaching past
+# row 0 / row n_lat-1), since a real (phi,lam) from _oblate_ortho_inverse
+# always lands in [0, n_lat-1] by construction (arcsin's range) -- a real
+# defect, but a narrow one; not fixed here (would need two remap calls with
+# different border modes, one per axis, combined -- deferred until Phase A's
+# round-trip validation shows whether it matters in practice).
+
+
+def _disk_to_map(
+    disk_image: np.ndarray,
+    cx: float,
+    cy: float,
+    req_px: float,
+    rpol_px: float,
+    pole_pa_deg: float,
+    sub_observer_lat_deg: float,
+    n_lat: int = 180,
+    n_lon: int = 360,
+    flip_pole_axis: bool = False,
+    lam_shift: float = 0.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Project a disk-space image into an equirectangular (phi, lam) map.
+
+    For every map cell (phi, lam), computes the screen position that
+    body-fixed point projects to (via _oblate_ortho_forward) -- with one
+    twist for multi-frame combination (2026-08-16, Phase B of
+    project_map_space_derotation_roadmap): `lam` in the returned map's own
+    indexing is always the REQUESTED grid value (unshifted) -- lam_shift
+    only affects which screen position gets SAMPLED for that cell, via
+    `lam_source = lam + lam_shift` fed to _oblate_ortho_forward. This lets a
+    caller treat the map as expressed in one fixed (e.g. reference-time)
+    orientation while sourcing each frame's own pixels at that frame's own
+    sub-observer-meridian-relative longitude -- lam_shift must be computed
+    exactly the way _reprojected_position() computes its `sign*scale*
+    delta_lambda` term (same sign convention; this project has a history of
+    exactly this kind of sign error, do not re-derive it independently).
+    Default 0.0: byte-identical to before this parameter existed (a single
+    frame's own map, no time-shift).
+
+    Returns (map_image, valid_mask): valid_mask is 1.0 where that map cell
+    is visible (near side, i.e. depth>0) AND its screen position falls
+    inside the source image, 0.0 elsewhere (far side / off-image) --
+    map_image is 0.0 wherever valid_mask is 0.0 (not a real sample, must be
+    excluded by any caller combining multiple maps, not blended in).
+    """
+    h, w = disk_image.shape[:2]
+    phi_vals = np.linspace(-math.pi / 2.0, math.pi / 2.0, n_lat)
+    lam_vals = np.linspace(-math.pi, math.pi, n_lon, endpoint=False)
+    lam_grid, phi_grid = np.meshgrid(lam_vals, phi_vals)  # both (n_lat, n_lon)
+
+    dx, dy, depth = _oblate_ortho_forward(
+        phi_grid, lam_grid + lam_shift, sub_observer_lat_deg, pole_pa_deg, req_px, rpol_px,
+        flip_pole_axis=flip_pole_axis,
+    )
+    map_x = (cx + dx).astype(np.float32)
+    map_y = (cy + dy).astype(np.float32)
+
+    src = disk_image.astype(np.float32)
+    sampled = cv2.remap(
+        src, map_x, map_y, interpolation=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0.0,
+    )
+    in_bounds = (map_x >= 0) & (map_x <= w - 1) & (map_y >= 0) & (map_y <= h - 1)
+    valid = (depth > 0.0) & in_bounds
+    if sampled.ndim == 3:
+        valid_b = valid[:, :, np.newaxis]
+    else:
+        valid_b = valid
+    map_image = np.where(valid_b, sampled, 0.0).astype(np.float32)
+    valid_mask = valid.astype(np.float32)
+    return map_image, valid_mask
+
+
+def _map_to_disk(
+    map_image: np.ndarray,
+    valid_mask: np.ndarray,
+    output_shape: Tuple[int, int],
+    cx: float,
+    cy: float,
+    req_px: float,
+    rpol_px: float,
+    pole_pa_deg: float,
+    sub_observer_lat_deg: float,
+    flip_pole_axis: bool = False,
+    lam_shift: float = 0.0,
+) -> np.ndarray:
+    """Inverse of _disk_to_map(): render a disk-space image from a (phi, lam)
+    map, at the SAME orientation (sub_observer_lat_deg/pole_pa_deg) the map's
+    (phi, lam) grid is expressed in -- a caller wanting the disk view at a
+    DIFFERENT reference time must shift the map's own longitude coordinate
+    (or, equivalently, shift lam before the _disk_to_map() calls that built
+    it) the same way _reprojected_position()'s delta_lambda shift does; this
+    function itself does no time/rotation handling.
+
+    lam_shift (radians) is added to the recovered lam before sampling
+    map_image, mirroring _disk_to_map()'s own lam_shift parameter exactly
+    (same sign convention) -- used by tests to synthesize "what a frame
+    captured at some other time would look like" from a single reference
+    map, by applying the negation of the shift map_space_window_stack()
+    would use to undo it.
+
+    For every output disk pixel, unprojects to (phi, lam) (via
+    _oblate_ortho_inverse), converts to map pixel coordinates using the
+    SAME linspace convention _disk_to_map() uses, and samples map_image
+    there (only where valid_mask says that map cell was real). Output
+    pixels with no near-side (phi,lam) solution, or whose map cell has
+    valid_mask<0.5, are 0.0.
+    """
+    h, w = output_shape
+    n_lat, n_lon = map_image.shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+    dx0 = xx - cx
+    dy0 = yy - cy
+    phi, lam, depth = _oblate_ortho_inverse(
+        dx0, dy0, sub_observer_lat_deg, pole_pa_deg, req_px, rpol_px,
+        flip_pole_axis=flip_pole_axis,
+    )
+    lam = lam + lam_shift
+
+    # Map the recovered (phi, lam) to fractional map-pixel coordinates,
+    # inverse of _disk_to_map()'s linspace(-pi/2, pi/2, n_lat) /
+    # linspace(-pi, pi, n_lon, endpoint=False).
+    row = (phi + math.pi / 2.0) / math.pi * (n_lat - 1)
+    col = ((lam + math.pi) % (2.0 * math.pi)) / (2.0 * math.pi) * n_lon
+    map_x = col.astype(np.float32)
+    map_y = row.astype(np.float32)
+
+    src = map_image.astype(np.float32)
+    sampled = cv2.remap(src, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
+    valid_sampled = cv2.remap(
+        valid_mask.astype(np.float32), map_x, map_y,
+        interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP,
+    )
+
+    out_valid = np.isfinite(phi) & (depth > 0.0) & (valid_sampled > 0.5)
+    if sampled.ndim == 3:
+        out_valid_b = out_valid[:, :, np.newaxis]
+    else:
+        out_valid_b = out_valid
+    disk_image = np.where(out_valid_b, sampled, 0.0).astype(np.float32)
+    return disk_image
+
+
+_MAP_SPACE_LIMB_FEATHER_PX = 12.0  # same feather-width convention as
+# _interp_feather_px (spherical_derotation_warp_3d) and _RING_DEPTH_FEATHER_PX
+# (ring occlusion) -- not re-derived, reused for consistency.
+
+
+def map_space_window_stack(
+    included_rows: List[dict],
+    t_reference: datetime,
+    period_hours: float,
+    cx: float,
+    cy: float,
+    disk_radius_px: float,
+    pole_pa_deg: float,
+    sub_observer_lat_deg: float,
+    polar_equatorial_ratio_true: float,
+    flip_direction: bool = False,
+    flip_pole_axis: bool = False,
+    n_lat: int = 180,
+    n_lon: int = 360,
+) -> Tuple[np.ndarray, dict]:
+    """Phase B of project_map_space_derotation_roadmap: reconstruct a
+    de-rotated disk view by projecting each frame into a COMMON (phi, lam)
+    map expressed at t_reference's orientation, combining with a SIMPLE
+    (unweighted, per-cell) average, then reprojecting the combined map back
+    to a disk view at t_reference.
+
+    Deliberately the simplest possible map-space combination -- no quality
+    weighting (Phase C), no ring exclusion (Phase D: has_rings targets
+    should NOT use this yet, ring pixels would get unprojected as if they
+    were globe surface and produce nonsense). This function exists to test
+    the core hypothesis (does map-space combination alone produce a
+    sensible result?) before adding complexity on top of it. Not wired into
+    derotate_filter()/derotate_window() (Phase E) -- call directly.
+
+    Each frame's own longitude shift relative to t_reference is computed
+    EXACTLY the way _reprojected_position() computes its lam shift (same
+    formula, same sign convention, scale fixed at 1.0 -- per spherical_
+    derotation_warp_3d's own documented finding that the true reprojection
+    has no first-order approximation error for a `scale` parameter to
+    absorb, unlike the linear warp): `lam_shift = sign*delta_lambda`,
+    `sign = 1.0 if flip_direction else -1.0`. This is passed to _disk_to_map()
+    as `lam_shift` so lam_shift=0 exactly reproduces the reference frame's
+    own map, and other frames sample their own sub-observer-meridian-
+    relative longitude for the same map cell.
+
+    Limb feathering (added after Phase A's real-data validation found a
+    hard, unfeathered cutoff at the limb in the naive round-trip -- see
+    project_map_space_derotation_roadmap memory): the combined disk output
+    is tapered to 0 over _MAP_SPACE_LIMB_FEATHER_PX pixels approaching
+    disk_radius_px, the same feather-width convention already used by
+    spherical_derotation_warp_3d's cubic/linear blend and the ring-occlusion
+    feathering -- this is a fixed-radius approximation to the true
+    (oblate, occlusion-shaped) valid-region boundary, matching how
+    spherical_derotation_warp_3d's own limb feather already uses a plain
+    radial distance rather than the exact silhouette shape.
+
+    Returns (disk_image, info): info carries `n_stacked` (frames actually
+    combined) and `coverage_mean`/`coverage_min` (the combined per-map-cell
+    coverage fraction, analogous to compute_frame_coverage_mask's n(x) for
+    the disk-pixel-space path) for diagnostic/logging parity with the
+    existing pipeline.
+    """
+    req_px = disk_radius_px * 1.05
+    rpol_px = req_px * polar_equatorial_ratio_true
+    period_sec = period_hours * 3600.0
+    sign = 1.0 if flip_direction else -1.0
+
+    accum: Optional[np.ndarray] = None
+    weight_sum: Optional[np.ndarray] = None
+    out_shape: Optional[Tuple[int, int]] = None
+    n_stacked = 0
+
+    for row in included_rows:
+        img = image_io.read_tif(row["path"])
+        # Mono only for Phase B (proving the core hypothesis) -- color/mono
+        # handling parity with derotate_filter() is a Phase E concern.
+        lum = img.mean(axis=2) if img.ndim == 3 else img
+        if out_shape is None:
+            out_shape = lum.shape[:2]
+
+        dt_sec = (row["timestamp"] - t_reference).total_seconds()
+        delta_lambda = (dt_sec / period_sec) * 2.0 * math.pi
+        lam_shift = sign * delta_lambda
+
+        map_img, valid_mask = _disk_to_map(
+            lum.astype(np.float32), cx, cy, req_px, rpol_px,
+            pole_pa_deg, sub_observer_lat_deg,
+            n_lat=n_lat, n_lon=n_lon, flip_pole_axis=flip_pole_axis,
+            lam_shift=lam_shift,
+        )
+        if accum is None:
+            accum = np.zeros(map_img.shape, dtype=np.float64)
+            weight_sum = np.zeros(valid_mask.shape, dtype=np.float64)
+        accum += map_img.astype(np.float64) * valid_mask
+        weight_sum += valid_mask.astype(np.float64)
+        n_stacked += 1
+
+    if accum is None or out_shape is None:
+        raise ValueError("No images to stack")
+
+    combined_map = np.where(weight_sum > 1e-9, accum / np.maximum(weight_sum, 1e-9), 0.0).astype(np.float32)
+    combined_valid = (weight_sum > 1e-9).astype(np.float32)
+
+    disk_out = _map_to_disk(
+        combined_map, combined_valid, out_shape, cx, cy, req_px, rpol_px,
+        pole_pa_deg, sub_observer_lat_deg, flip_pole_axis=flip_pole_axis,
+    )
+
+    h, w = out_shape
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+    dist_from_center = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    limb_alpha = np.clip(
+        (disk_radius_px + _MAP_SPACE_LIMB_FEATHER_PX - dist_from_center) / _MAP_SPACE_LIMB_FEATHER_PX,
+        0.0, 1.0,
+    ).astype(np.float32)
+    disk_out = (disk_out * limb_alpha).astype(np.float32)
+
+    info = {
+        "n_stacked": n_stacked,
+        "coverage_mean": round(float(combined_valid.mean()), 4),
+        "coverage_min": round(float(combined_valid.min()), 4),
+    }
+    return disk_out, info
 
 
 def spherical_derotation_warp_3d(
