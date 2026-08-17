@@ -49,6 +49,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from _fixtures import textured_disk as _textured_disk_base
 from pipeline.modules import image_io
 from pipeline.modules.derotation import (
     compute_frame_coverage_mask,
@@ -57,6 +58,10 @@ from pipeline.modules.derotation import (
 from pipeline.modules.wavelet import coverage_to_confidence, sharpen_disk_aware
 
 SIZE = 300
+
+
+def _textured_disk(cx: float, cy: float, r: float, amp: float = 0.15, seed: int = 0) -> np.ndarray:
+    return _textured_disk_base(SIZE, cx, cy, r, amp=amp, seed=seed)
 
 
 # ── (a) compute_frame_coverage_mask() correctness ───────────────────────────
@@ -112,14 +117,6 @@ def test_compute_frame_coverage_mask_off_domain_always_valid():
 
 
 # ── (b) sharpen_disk_aware's confidence_map ─────────────────────────────────
-
-def _textured_disk(cx: float, cy: float, r: float, amp: float = 0.15, seed: int = 0) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    yy, xx = np.mgrid[0:SIZE, 0:SIZE].astype(np.float64)
-    rr = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
-    disk = (rr < r).astype(np.float64) * 0.6
-    texture = amp * rng.standard_normal((SIZE, SIZE)) * (rr < r)
-    return np.clip(disk + texture, 0.0, 1.0).astype(np.float32)
 
 
 def test_confidence_map_none_matches_omitted():

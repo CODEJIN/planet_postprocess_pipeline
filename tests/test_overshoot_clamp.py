@@ -39,6 +39,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from _fixtures import textured_disk as _textured_disk_base
 from pipeline.modules.wavelet import sharpen, sharpen_disk_aware, sharpen_color_disk_aware
 
 H, W = 200, 200
@@ -61,14 +62,8 @@ def _textured_disk(seed: int = 0, amp: float = 0.12) -> np.ndarray:
     """Softly-blurred disk with fine random texture -- real, legitimate
     graded detail (not a hard edge) that sharpening is SUPPOSED to enhance,
     used to confirm the clamp doesn't defeat real detail enhancement."""
-    import cv2
-    rng = np.random.default_rng(seed)
-    yy, xx = np.mgrid[0:H, 0:W].astype(np.float64)
-    r = np.sqrt((xx - CX) ** 2 + (yy - CY) ** 2)
-    disk = (r <= DISK_RADIUS).astype(np.float64) * 0.6
-    texture = amp * rng.standard_normal((H, W)) * (r <= DISK_RADIUS)
-    img = np.clip(disk + texture, 0.0, 1.0).astype(np.float32)
-    return cv2.GaussianBlur(img, (5, 5), 1.2)
+    return _textured_disk_base(H, CX, CY, DISK_RADIUS, amp=amp, seed=seed,
+                                inclusive=True, blur_sigma=1.2)
 
 
 def test_radius_zero_is_unchanged_default_behaviour():

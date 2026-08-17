@@ -42,6 +42,20 @@ class WaveletConfig:
     power:          WaveSharp 'power function' exponent (1.0 = linear).
     sharpen_filter: WaveSharp 'sharpen filter' — soft-threshold coefficient
                     per layer.  0.0 = no noise gate (matches WaveSharp default).
+
+    Status index of the opt-in Saturn/Jupiter wavelet flags accumulated
+    across the ansa-ringing investigation (2026-08-15 onward, all default
+    False/0 -- see each flag's own section below for the full writeup this
+    one-liner summarizes; do not treat this index as a substitute for
+    reading the flag's own comment before touching it):
+      master_coverage_aware_sharpening      -- unresolved: measured negligible real effect
+      master_limb_darkening_confidence_enabled -- unresolved: Phase A validated, motivating hypothesis (CH4 brightening) not confirmed in real data
+      master_edge_extension_enabled         -- unresolved: only synthetic-test coverage, no real-data verdict
+      master_ring_extension_enabled         -- tentatively recommended: clean on one window/filter, default off pending broader validation
+      master_overshoot_clamp_radius_px      -- DO NOT ENABLE: confirmed to crush 92-98% of real detail
+      master_limb_fit_refinement_enabled    -- DO NOT ENABLE: confirmed new white-rim overshoot on Jupiter
+      master_navigation_limb_fit_enabled    -- unresolved: byte-identical until validated, no verdict yet
+      master_ring_scatter_subtraction_enabled -- DO NOT ENABLE: correction introduces a new dark-line/bright-arc artifact (11th failed ansa-ringing attempt, see project_ring_limb_ringing_bug memory)
     """
     levels: int = 6
 
@@ -379,6 +393,7 @@ class WaveletConfig:
     # Default False: byte-identical to today's fit for every target.
     master_limb_fit_refinement_enabled: bool = False
 
+    # ── Navigation-constrained limb fit (2026-08-16, opt-in, has_rings-only) ──
     # has_rings=True counterpart to master_limb_fit_refinement_enabled above
     # (2026-08-16). That refinement is statistical (MAD-based outlier
     # rejection) and a documented near-no-op on Saturn: ring contamination

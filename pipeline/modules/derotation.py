@@ -1051,6 +1051,32 @@ _SATURN_RING_OUTER_REQ = 136_780.0 / 60_268.0  # ~2.269
 _RING_DEPTH_FEATHER_PX = 12.0
 
 
+def _pole_pa_rotated_grid(
+    h: int, w: int, cx: float, cy: float, angle_deg: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Shared rotation idiom for every per-pixel Saturn ring/disk ellipse
+    mask in this module (previously duplicated identically in
+    _ring_globe_overlap_ellipses, compute_ring_sharpening_mask,
+    _ring_annulus_mask, and estimate_ring_scatter_leak -- unified 2026-08-17,
+    pure refactor, no behavior change).
+
+    Returns (dx, dy, xr, yr): dx/dy are RAW screen offsets from (cx, cy);
+    xr/yr are the SAME offsets rotated by angle_deg (typically pole_pa_deg).
+    A caller needing _oblate_ortho_inverse's own depth MUST use the raw
+    dx/dy, never xr/yr -- that function performs its own internal pole_pa
+    un-rotation, so feeding it the already-rotated xr/yr would double-rotate
+    (invisible at pole_pa=0, which is exactly why this note exists -- see
+    compute_ring_occlusion_weight_3d()).
+    """
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+    dx, dy = xx - cx, yy - cy
+    ang = math.radians(angle_deg)
+    cos_a, sin_a = math.cos(ang), math.sin(ang)
+    xr = dx * cos_a + dy * sin_a
+    yr = -dx * sin_a + dy * cos_a
+    return dx, dy, xr, yr
+
+
 def _ring_globe_overlap_ellipses(
     h: int,
     w: int,
@@ -1085,12 +1111,7 @@ def _ring_globe_overlap_ellipses(
     outer_ring_semi_a = disk_semi_a * _SATURN_RING_OUTER_REQ
     outer_ring_semi_b = outer_ring_semi_a * sin_b
 
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
-    ang = math.radians(pole_pa_deg)
-    cos_a, sin_a = math.cos(ang), math.sin(ang)
-    dx, dy = xx - cx, yy - cy
-    xr = dx * cos_a + dy * sin_a
-    yr = -dx * sin_a + dy * cos_a
+    dx, dy, xr, yr = _pole_pa_rotated_grid(h, w, cx, cy, pole_pa_deg)
 
     in_globe = (xr / disk_semi_a) ** 2 + (yr / disk_semi_b) ** 2 <= 1.0
     in_ring_outer = (xr / outer_ring_semi_a) ** 2 + (yr / max(outer_ring_semi_b, 1e-6)) ** 2 <= 1.0
@@ -1464,12 +1485,7 @@ def compute_ring_sharpening_mask(
     outer_ring_semi_a = disk_semi_a * _SATURN_RING_OUTER_REQ * outer_safety_factor
     outer_ring_semi_b = max(outer_ring_semi_a * sin_b, 1e-6)
 
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
-    ang = math.radians(pole_pa_deg)
-    cos_a, sin_a = math.cos(ang), math.sin(ang)
-    dx, dy = xx - cx, yy - cy
-    xr = dx * cos_a + dy * sin_a
-    yr = -dx * sin_a + dy * cos_a
+    _dx, _dy, xr, yr = _pole_pa_rotated_grid(h, w, cx, cy, pole_pa_deg)
 
     in_ring_outer = (xr / outer_ring_semi_a) ** 2 + (yr / outer_ring_semi_b) ** 2 <= 1.0
     in_ring_inner = (xr / inner_ring_semi_a) ** 2 + (yr / max(inner_ring_semi_b, 1e-6)) ** 2 <= 1.0
@@ -1538,12 +1554,7 @@ def _ring_annulus_mask(
     outer_semi_a = disk_semi_a * _SATURN_RING_OUTER_REQ
     outer_semi_b = max(outer_semi_a * sin_b, 1e-6)
 
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
-    ang = math.radians(pole_pa_deg)
-    cos_a, sin_a = math.cos(ang), math.sin(ang)
-    dx, dy = xx - cx, yy - cy
-    xr = dx * cos_a + dy * sin_a
-    yr = -dx * sin_a + dy * cos_a
+    _dx, _dy, xr, yr = _pole_pa_rotated_grid(h, w, cx, cy, pole_pa_deg)
 
     in_outer = (xr / outer_semi_a) ** 2 + (yr / outer_semi_b) ** 2 <= 1.0
     in_inner = (xr / inner_semi_a) ** 2 + (yr / max(inner_semi_b, 1e-6)) ** 2 <= 1.0
@@ -1694,12 +1705,7 @@ def estimate_ring_scatter_leak(
         )
 
     h, w = image.shape
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
-    ang = math.radians(pole_pa_deg)
-    cos_a, sin_a = math.cos(ang), math.sin(ang)
-    dx, dy = xx - cx, yy - cy
-    xr = dx * cos_a + dy * sin_a
-    yr = -dx * sin_a + dy * cos_a
+    _dx, _dy, xr, yr = _pole_pa_rotated_grid(h, w, cx, cy, pole_pa_deg)
     r_norm = np.sqrt((xr / rx) ** 2 + (yr / ry) ** 2)
     phi_deg = np.degrees(np.arctan2(yr / ry, xr / rx))
 

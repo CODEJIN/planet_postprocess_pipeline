@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import cv2
 
+from _fixtures import textured_disk as _textured_disk
 from pipeline.config import DerotationConfig
 from pipeline.modules import image_io
 from pipeline.modules.derotation import (
@@ -456,15 +457,6 @@ def test_feather_smooth_even_with_no_background_within_overlap():
 
 
 # ── Integration: derotate_filter actually applies the 3D ring mask ─────────
-
-def _textured_disk(size, cx, cy, r, amp=0.15, seed=0):
-    rng = np.random.default_rng(seed)
-    yy, xx = np.mgrid[0:size, 0:size].astype(np.float64)
-    rr = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
-    disk = (rr < r).astype(np.float64) * 0.6
-    texture = amp * rng.standard_normal((size, size)) * (rr < r)
-    return np.clip(disk + texture, 0.0, 1.0).astype(np.float32)
-
 
 def _write_ring_crossing_window(tmp: Path, size: int, r: float, n_non_ref: int, dt_sec: float, t0: datetime):
     """A circular (non-oblate -- keeps the geometry simple) textured disk,
