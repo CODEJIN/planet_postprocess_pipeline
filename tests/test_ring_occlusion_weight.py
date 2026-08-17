@@ -29,6 +29,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -45,6 +46,7 @@ from pipeline.modules.derotation import (
     _oblate_ortho_forward,
     _oblate_ortho_inverse,
     _ring_annulus_mask,
+    _ring_registration_crop,
     compute_ring_occlusion_weight,
     compute_ring_occlusion_weight_3d,
     derotate_filter,
@@ -818,6 +820,158 @@ def test_ring_only_fallback_uses_genuine_nonzero_globe_shift_not_hardcoded_zero(
             f"expected the fallback to use the genuine ({-globe_dx},{-globe_dy})px globe shift "
             f"(ring_only closely matching the reference in the ring band), not an identity "
             f"transform -- mean|diff|={mean_diff_in_band:.4f}"
+        )
+
+
+# ── Ring registration crop+taper fix (2026-08-17, fixes the ~1-2px-only
+# reliability limit above by cropping tightly to the ring and applying a
+# smooth taper instead of multiplying a hard mask against the full image)
+# ────────────────────────────────────────────────────────────────────────
+
+def test_ring_registration_crop_returns_none_when_geometry_degenerate():
+    """Disk too close to the frame edge for the ideal crop half-size
+    (outer_semi_a * margin_factor) to fit with at least a 20px margin --
+    must return None (this module's standard "unmeasurable" convention),
+    never a garbage-sized or badly-clipped array."""
+    # Center placed far outside the image entirely (not just near an edge)
+    # so the clamped crop window has essentially zero/negative overlap with
+    # the actual image bounds.
+    image = np.zeros((400, 400), dtype=np.float32)
+    crop = _ring_registration_crop(image, cx=-500.0, cy=200.0, disk_semi_a=50.0,
+                                    pole_pa_deg=0.0, sub_observer_lat_deg=-25.0)
+    assert crop is None
+
+
+def test_ring_registration_crop_is_zero_outside_the_annulus():
+    """The crop must taper to (near-)zero both at the inner cavity and well
+    outside the outer ring edge -- i.e. it must actually isolate ring
+    content, not just be an arbitrary rectangular crop."""
+    disk_semi_a = 60.0
+    image = np.ones((400, 400), dtype=np.float32)
+    crop = _ring_registration_crop(image, cx=200.0, cy=200.0, disk_semi_a=disk_semi_a,
+                                    pole_pa_deg=0.0, sub_observer_lat_deg=-25.0)
+    assert crop is not None
+    cy0, cx0 = crop.shape[0] // 2, crop.shape[1] // 2
+    assert crop[cy0, cx0] == 0.0, "expected ~zero at the crop centre (inner cavity)"
+    assert crop[2, 2] == 0.0, "expected ~zero near the crop's own corner (outside the ring)"
+    assert crop.max() > 0.5, "expected substantial nonzero weight somewhere in the annulus"
+
+
+@pytest.mark.parametrize("ring_dx,ring_dy", [(3.0, -2.0), (5.0, 5.0)])
+def test_ring_only_stack_improves_on_larger_ring_specific_shift(ring_dx, ring_dy):
+    """Same scenario as test_ring_only_stack_improves_on_modest_ring_specific_shift
+    (1px) but at the larger shift magnitudes the OLD full-image hard-mask
+    approach was documented to get wrong at (3,-2)px specifically (see
+    _ring_annulus_mask's docstring history) -- the crop+taper fix
+    (_ring_registration_crop) must handle these too, not just 1px."""
+    size = 300
+    disk_r = 60.0
+    inner_r = disk_r * _SATURN_RING_INNER_REQ
+    outer_r = disk_r * _SATURN_RING_OUTER_REQ
+    B = -25.0
+
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        t0 = datetime(2026, 1, 1, 0, 0, 0)
+        ref_img = _ring_textured_frame(size, size / 2.0, size / 2.0, disk_r, inner_r, outer_r, B)
+        ref_path = tmp / "ref.tif"
+        image_io.write_tif_16bit(ref_img, ref_path)
+        rows = [{"path": str(ref_path), "stem": "ref", "timestamp": t0, "norm_score": 0.9}]
+        for i in range(3):
+            img = _ring_textured_frame(
+                size, size / 2.0, size / 2.0, disk_r, inner_r, outer_r, B,
+                ring_dx=ring_dx, ring_dy=ring_dy,
+            )
+            path = tmp / f"frame_{i}.tif"
+            image_io.write_tif_16bit(img, path)
+            rows.append({
+                "path": str(path), "stem": f"frame_{i}",
+                "timestamp": t0 + timedelta(seconds=60.0), "norm_score": 0.9,
+            })
+
+        stacked, log = derotate_filter(
+            rows, t0, align=True, has_rings=True, compute_ring_only_stack=True,
+            sub_observer_lat_deg=B, pole_pa_deg=0.0,
+        )
+        ring_only = log["ring_only_stack"]
+        assert ring_only is not None
+
+        cx, cy = size / 2.0, size / 2.0
+        var_atmosphere = _annulus_laplacian_var(stacked, cx, cy, inner_r, outer_r, B)
+        var_ring_only = _annulus_laplacian_var(ring_only, cx, cy, inner_r, outer_r, B)
+
+        assert var_ring_only > 1.1 * var_atmosphere, (
+            f"expected ring-only registration to measurably improve on the "
+            f"globe-registered atmosphere stack at shift=({ring_dx},{ring_dy}): "
+            f"ring_only={var_ring_only:.4f} atmosphere={var_atmosphere:.4f}"
+        )
+
+
+def test_ring_only_stack_excludes_frame_with_no_reliable_globe_prewarp():
+    """2026-08-17 fix: when a frame's own globe-based pre-warp measurement
+    fails outright (here: its globe center is drawn >15px from the
+    reference's, so derotate_filter()'s own pre-warp sanity gate rejects
+    it -- see the `abs(_dx) <= 15.0` checks), that frame must get WEIGHT
+    ZERO in the ring-only stack (previously: a silent hardcoded identity
+    (0,0,1.0) transform, contaminating the average with a badly misaligned
+    copy). Verified by comparing against a stack built from only the two
+    well-behaved frames -- if the bad frame were still contributing, the
+    two stacks would visibly differ."""
+    size = 300
+    disk_r = 60.0
+    inner_r = disk_r * _SATURN_RING_INNER_REQ
+    outer_r = disk_r * _SATURN_RING_OUTER_REQ
+    B = -25.0
+
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        t0 = datetime(2026, 1, 1, 0, 0, 0)
+        ref_img = _ring_textured_frame(size, size / 2.0, size / 2.0, disk_r, inner_r, outer_r, B)
+        ref_path = tmp / "ref.tif"
+        image_io.write_tif_16bit(ref_img, ref_path)
+
+        good_rows = [{"path": str(ref_path), "stem": "ref", "timestamp": t0, "norm_score": 0.9}]
+        for i in range(2):
+            img = _ring_textured_frame(size, size / 2.0, size / 2.0, disk_r, inner_r, outer_r, B)
+            path = tmp / f"good_{i}.tif"
+            image_io.write_tif_16bit(img, path)
+            good_rows.append({
+                "path": str(path), "stem": f"good_{i}",
+                "timestamp": t0 + timedelta(seconds=60.0), "norm_score": 0.9,
+            })
+
+        # A third, "bad" frame: globe drawn 25px off from the reference (>
+        # the 15px pre-warp sanity gate) AND its ring texture shifted by a
+        # large, different amount -- if it silently got an identity
+        # transform + full weight (the old bug), it would visibly
+        # contaminate the ring-only stack with ghosting.
+        bad_img = _ring_textured_frame(
+            size, size / 2.0 + 25.0, size / 2.0, disk_r, inner_r, outer_r, B,
+            ring_dx=20.0, ring_dy=-15.0, seed=2,
+        )
+        bad_path = tmp / "bad.tif"
+        image_io.write_tif_16bit(bad_img, bad_path)
+        bad_row = {"path": str(bad_path), "stem": "bad",
+                   "timestamp": t0 + timedelta(seconds=60.0), "norm_score": 0.9}
+
+        _, log_good_only = derotate_filter(
+            good_rows, t0, align=True, has_rings=True, compute_ring_only_stack=True,
+            sub_observer_lat_deg=B, pole_pa_deg=0.0,
+        )
+        ring_only_good = log_good_only["ring_only_stack"]
+
+        _, log_with_bad = derotate_filter(
+            good_rows + [bad_row], t0, align=True, has_rings=True, compute_ring_only_stack=True,
+            sub_observer_lat_deg=B, pole_pa_deg=0.0,
+        )
+        ring_only_with_bad = log_with_bad["ring_only_stack"]
+
+        assert ring_only_good is not None and ring_only_with_bad is not None
+        diff = np.abs(ring_only_good - ring_only_with_bad)
+        assert float(diff.max()) < 0.02, (
+            f"expected the bad frame (no reliable globe pre-warp) to contribute "
+            f"~nothing (weight 0) to the ring-only stack -- max|diff| vs the "
+            f"good-frames-only stack was {float(diff.max()):.4f}"
         )
 
 

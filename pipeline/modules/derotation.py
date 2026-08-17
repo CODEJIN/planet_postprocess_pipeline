@@ -1564,6 +1564,83 @@ def _ring_annulus_mask(
     return _feather_ring_foreground_boundary(h, w, in_annulus)
 
 
+def _ring_registration_crop(
+    image: np.ndarray,
+    cx: float,
+    cy: float,
+    disk_semi_a: float,
+    pole_pa_deg: float,
+    sub_observer_lat_deg: float,
+    margin_factor: float = 1.15,
+    feather_frac: float = 0.12,
+) -> Optional[np.ndarray]:
+    """Crop+taper the ring annulus region for use as `subpixel_align()`
+    input -- fixes the ring-only-stack registration accuracy problem
+    documented in project_ring_globe_layer_separation_roadmap memory
+    (2026-08-16): `_ring_annulus_mask(..., feather=False)` multiplied
+    against the FULL image (as `derotate_filter()`'s ring-only block did)
+    leaves most of the array an exact-zero region with sharp edges at the
+    annulus boundary -- a severe spectral-leakage source for FFT-based
+    phase correlation (cv2.phaseCorrelate has no windowing of its own, see
+    subpixel_align()). This is NOT the same comparison as `_ring_annulus_
+    mask`'s own feather=True/False finding above (that compared two FULL-
+    IMAGE masks -- a hard boundary vs `_feather_ring_foreground_boundary`'s
+    distance-transform ramp -- and found the hard one less bad of those two;
+    neither of those crops the image down or applies a proper apodization
+    window, which is the standard fix for phase-correlation edge leakage
+    and is what this function does instead).
+
+    Returns a small square crop (not full-image-sized) centered on
+    (cx, cy), tapered to exactly 0 at both the inner and outer ring
+    boundary via `_raised_cosine_falloff`/`_raised_cosine_rise` (smooth,
+    C1 -- unlike the distance-transform ramp already found unsuitable for
+    this purpose), with a small additional Hann window applied on top as
+    cheap, standard insurance against any residual crop-boundary leakage
+    (redundant in the common case, since the ring taper already reaches 0
+    well inside the crop with `margin_factor`'s slack, but harmless).
+
+    Returns None if the ideal crop half-size can't fit at least a 20px
+    margin inside the image bounds (degenerate geometry -- e.g. disk too
+    close to the frame edge) -- callers must treat this the same as any
+    other "unmeasurable" case in this module (fall back, don't guess).
+    """
+    sin_b = abs(math.sin(math.radians(sub_observer_lat_deg)))
+    inner_semi_a = disk_semi_a * _SATURN_RING_INNER_REQ
+    outer_semi_a = disk_semi_a * _SATURN_RING_OUTER_REQ
+    outer_semi_b = max(outer_semi_a * sin_b, 1e-6)
+    inner_semi_b = max(inner_semi_a * sin_b, 1e-6)
+
+    h_img, w_img = image.shape[:2]
+    half = int(round(outer_semi_a * margin_factor))
+    x0, x1 = int(round(cx)) - half, int(round(cx)) + half
+    y0, y1 = int(round(cy)) - half, int(round(cy)) + half
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(w_img, x1), min(h_img, y1)
+    if (x1 - x0) < 20 or (y1 - y0) < 20:
+        return None
+
+    crop = image[y0:y1, x0:x1].astype(np.float64)
+    h, w = crop.shape
+    # cx/cy relative to the crop's own origin.
+    crop_cx, crop_cy = cx - x0, cy - y0
+
+    _dx, _dy, xr, yr = _pole_pa_rotated_grid(h, w, crop_cx, crop_cy, pole_pa_deg)
+    r_outer = np.sqrt((xr / outer_semi_a) ** 2 + (yr / outer_semi_b) ** 2)
+    r_inner = np.sqrt((xr / inner_semi_a) ** 2 + (yr / inner_semi_b) ** 2)
+
+    feather_w = max(feather_frac, 1e-3)
+    taper = (
+        _raised_cosine_rise(r_inner, 1.0 - feather_w, 1.0 + feather_w)
+        * _raised_cosine_falloff(r_outer, 1.0 - feather_w, 1.0 + feather_w)
+    )
+
+    win1d_y = np.hanning(max(h, 2))
+    win1d_x = np.hanning(max(w, 2))
+    hann2d = np.outer(win1d_y, win1d_x)
+
+    return (crop * taper * hann2d).astype(np.float32)
+
+
 def _raised_cosine_falloff(value: np.ndarray, inner: float, outer: float) -> np.ndarray:
     """1.0 for value<=inner, 0.0 for value>=outer, smooth (C1, zero-derivative
     at both ends) cosine interpolation between. Distinct from
@@ -4412,23 +4489,24 @@ def derotate_filter(
     # on the reference frame's own resolved geometry (same as ring_crossing_
     # mask above), so it's built once here, not per frame.
     _do_ring_only_stack = has_rings and compute_ring_only_stack
-    _ring_win: Optional[np.ndarray] = None
+    _ring_ref_crop: Optional[np.ndarray] = None
     if _do_ring_only_stack:
-        _rh3, _rw3 = _ref_lum.shape[:2]
-        # feather=False: see _ring_annulus_mask's docstring -- the smoothly
-        # feathered version measurably corrupts subpixel_align()'s result
-        # here (empirically verified wrong by several px at some shift
-        # magnitudes); the hard mask measures correctly across every shift
-        # tested despite its sharp edge.
-        _ring_win = _ring_annulus_mask(
-            _rh3, _rw3, ref_cx, ref_cy, ref_semi_a, pole_pa_deg, sub_observer_lat_deg,
-            feather=False,
+        # 2026-08-17 fix: multiplying subpixel_align()'s input by a full-
+        # image annulus mask (hard OR feathered -- see _ring_annulus_mask's
+        # docstring for that earlier, narrower comparison) leaves most of
+        # the array an exact-zero region with sharp edges, a severe
+        # spectral-leakage source for FFT-based phase correlation. Crop
+        # tightly to the ring + apply a proper smooth taper instead -- see
+        # _ring_registration_crop()'s docstring.
+        _ring_ref_crop = _ring_registration_crop(
+            _ref_lum, ref_cx, ref_cy, ref_semi_a, pole_pa_deg, sub_observer_lat_deg,
         )
 
     warped_images: List[np.ndarray] = []
     weights: List[float] = []
     coverage_masks: List[np.ndarray] = []
     ring_only_images: List[np.ndarray] = []
+    ring_only_weights: List[float] = []
     log_frames: List[dict] = []
     # Pre-warp disk center shifts: measured from raw frame before any warp is
     # applied, so the shift is purely seeing-induced wobble and is not
@@ -4562,65 +4640,70 @@ def derotate_filter(
         # phase_correlate fallback chain, which inherently needs the warped
         # image to measure against).
         # Ring-only registration (2026-08-16, opt-in, Phase 1 of
-        # project_ring_globe_layer_separation_roadmap) -- computed from the
-        # ORIGINAL raw `img` (before the atmosphere pre-warp reassignment
-        # right below), using a fresh subpixel_align() measurement windowed
-        # to the ring annulus (_ring_win, a HARD mask -- see
-        # _ring_annulus_mask's docstring for why the feathered version is
-        # wrong for this purpose) instead of the globe-based (_dx, _dy)
+        # project_ring_globe_layer_separation_roadmap; registration fixed
+        # 2026-08-17) -- computed from the ORIGINAL raw `img` (before the
+        # atmosphere pre-warp reassignment right below), using a fresh
+        # subpixel_align() measurement on a cropped+tapered ring window
+        # (_ring_registration_crop() -- fixes the full-image hard-mask
+        # spectral-leakage problem the earlier version had, see that
+        # function's docstring) instead of the globe-based (_dx, _dy)
         # above. Reuses that globe-based measurement's SCALE only (see
         # DerotationConfig.compute_ring_only_stack's docstring for why scale
         # isn't re-derived independently here).
         #
         # SANITY-CHECKED against the globe-based shift, not used blindly:
-        # empirically (synthetic tests), unwindowed phase correlation on
-        # this annulus mask is reliable for sub-~1px shifts but can lock
-        # onto a badly wrong value at larger ones (verified wrong by
-        # several px at some 3-5px true shifts, in both a real-ring-photo-
-        # like noise texture and a purely elliptical mask/content match --
-        # not just an unrealistic test scenario). Since the ring and globe
-        # physically move together (same seeing jitter), a large disagreement
-        # between the two measurements means the ring lock failed, not that
-        # the ring truly moved independently -- fall back to the (_globe_dx,
-        # _globe_dy) shift in that case.
+        # since the ring and globe physically move together (same seeing
+        # jitter), a large disagreement between the two measurements means
+        # the ring lock failed, not that the ring truly moved independently
+        # -- fall back to the (_globe_dx, _globe_dy) shift in that case.
         #
-        # CAVEAT (found in adversarial review, not yet fixed): when this
-        # frame's own globe-based pre-warp measurement failed outright
-        # (_pre_warp_shifts.get(stem) is None -- low fit confidence, radius
-        # too small, |dx|/|dy| > 15px, or an exception), _globe_dx/_globe_dy
-        # below are a hardcoded (0.0, 0.0), NOT the atmosphere path's actual
-        # eventual correction for that frame -- the atmosphere path only
-        # resolves that case LATER, in a separate post-warp limb_center/
-        # phase_correlate fallback loop this block runs before and has no
-        # access to. So for exactly the hardest frames, ring_only_stack can
-        # silently fall back to an identity transform while the atmosphere
-        # stack gets a real (possibly large) correction for the same frame
-        # -- the "never worse than the atmosphere path" framing above is
-        # only guaranteed relative to the GLOBE'S OWN pre-warp measurement,
-        # not the atmosphere path's full fallback chain. Not fixed here
-        # (would need restructuring to share that later fallback value);
-        # flagging honestly since this feature has not yet shown a real-data
-        # benefit to justify the added complexity (see project_ring_globe_
-        # layer_separation_roadmap's Phase 1 real-data validation notes).
+        # 2026-08-17 fix (previously a CAVEAT, found in adversarial review):
+        # when this frame's own globe-based pre-warp measurement failed
+        # outright (_pre_warp_shifts.get(stem) is None -- low fit
+        # confidence, radius too small, |dx|/|dy| > 15px, or an exception),
+        # there is no trustworthy reference to sanity-check the ring
+        # measurement against and no reliable scale to reuse -- previously
+        # this silently fell back to a hardcoded identity (0.0, 0.0, 1.0)
+        # transform, NOT the atmosphere path's actual eventual correction
+        # for that frame (computed later, in a separate post-warp fallback
+        # loop this block has no access to). Now gives this frame WEIGHT 0
+        # in the ring-only stack instead (via the new parallel
+        # ring_only_weights list, kept index-aligned with ring_only_images
+        # exactly like weights is with warped_images) -- functionally
+        # excluded (contributes nothing to quality_weighted_stack's
+        # average) without breaking the index-alignment invariant the
+        # outlier-rejection/sharpness-selection blocks below both rely on
+        # (they filter ring_only_images using indices computed from
+        # warped_images, so it must stay the same length/order).
         _RING_SHIFT_DISAGREEMENT_PX = 2.0
-        if _do_ring_only_stack:
+        if _do_ring_only_stack and _ring_ref_crop is not None:
             _pw_for_ring = _pre_warp_shifts.get(row["stem"])
-            _globe_dx = _pw_for_ring[0] if _pw_for_ring is not None else 0.0
-            _globe_dy = _pw_for_ring[1] if _pw_for_ring is not None else 0.0
-            _ring_scale = _pw_for_ring[2] if _pw_for_ring is not None else 1.0
-            try:
-                _ring_dx, _ring_dy = subpixel_align(_ref_lum * _ring_win, _raw_lum * _ring_win)
-                _plausible = (
-                    abs(_ring_dx) <= 15.0 and abs(_ring_dy) <= 15.0
-                    and math.hypot(_ring_dx - _globe_dx, _ring_dy - _globe_dy) <= _RING_SHIFT_DISAGREEMENT_PX
+            if _pw_for_ring is None:
+                ring_only_images.append(img)
+                ring_only_weights.append(0.0)
+            else:
+                _globe_dx, _globe_dy, _ring_scale = _pw_for_ring[0], _pw_for_ring[1], _pw_for_ring[2]
+                _tgt_crop = _ring_registration_crop(
+                    _raw_lum, ref_cx, ref_cy, ref_semi_a, pole_pa_deg, sub_observer_lat_deg,
                 )
-                if not _plausible:
-                    _ring_dx, _ring_dy = _globe_dx, _globe_dy
-            except Exception:
-                _ring_dx, _ring_dy = _globe_dx, _globe_dy
-            ring_only_images.append(apply_shift_and_scale(
-                img, ref_cx - _ring_dx, ref_cy - _ring_dy, ref_cx, ref_cy, _ring_scale,
-            ))
+                if _tgt_crop is None:
+                    ring_only_images.append(img)
+                    ring_only_weights.append(0.0)
+                else:
+                    try:
+                        _ring_dx, _ring_dy = subpixel_align(_ring_ref_crop, _tgt_crop)
+                        _plausible = (
+                            abs(_ring_dx) <= 15.0 and abs(_ring_dy) <= 15.0
+                            and math.hypot(_ring_dx - _globe_dx, _ring_dy - _globe_dy) <= _RING_SHIFT_DISAGREEMENT_PX
+                        )
+                        if not _plausible:
+                            _ring_dx, _ring_dy = _globe_dx, _globe_dy
+                    except Exception:
+                        _ring_dx, _ring_dy = _globe_dx, _globe_dy
+                    ring_only_images.append(apply_shift_and_scale(
+                        img, ref_cx - _ring_dx, ref_cy - _ring_dy, ref_cx, ref_cy, _ring_scale,
+                    ))
+                    ring_only_weights.append(float(row["norm_score"]))
 
         if row["stem"] in _pre_warp_shifts:
             _, _, _pw_scale, _pw_target_cx, _pw_target_cy = _pre_warp_shifts[row["stem"]]
@@ -4771,6 +4854,7 @@ def derotate_filter(
                 kept_weights: List[float] = []
                 kept_coverage: List[np.ndarray] = []
                 kept_ring_only: List[np.ndarray] = []
+                kept_ring_only_weights: List[float] = []
                 for i, (img, wgt) in enumerate(zip(warped_images, weights)):
                     fl = log_frames[i]
                     if outlier[i]:
@@ -4788,12 +4872,14 @@ def derotate_filter(
                         kept_coverage.append(coverage_masks[i])
                     if _do_ring_only_stack:
                         kept_ring_only.append(ring_only_images[i])
+                        kept_ring_only_weights.append(ring_only_weights[i])
                 warped_images = kept_images
                 weights = kept_weights
                 if _do_coverage:
                     coverage_masks = kept_coverage
                 if _do_ring_only_stack:
                     ring_only_images = kept_ring_only
+                    ring_only_weights = kept_ring_only_weights
 
     # ── Raw-sharpness-based frame selection (opt-in, 2026-08-13) ──────────
     # See frame_sharpness_central()'s docstring for the real-data
@@ -4836,6 +4922,7 @@ def derotate_filter(
                     coverage_masks = [coverage_masks[i] for i in kept]
                 if _do_ring_only_stack:
                     ring_only_images = [ring_only_images[i] for i in kept]
+                    ring_only_weights = [ring_only_weights[i] for i in kept]
 
     n_map: Optional[np.ndarray] = None
     if _do_coverage and coverage_masks:
@@ -4858,7 +4945,7 @@ def derotate_filter(
 
     ring_only_stacked: Optional[np.ndarray] = None
     if _do_ring_only_stack and ring_only_images:
-        ring_only_stacked = quality_weighted_stack(ring_only_images, weights, weight_power=weight_power)
+        ring_only_stacked = quality_weighted_stack(ring_only_images, ring_only_weights, weight_power=weight_power)
 
     _s0_sl_blend_applied = False
     if s0_sl_blend_enabled and use_true_reprojection and n_map is not None and ref_img is not None:
