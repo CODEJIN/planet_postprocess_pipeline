@@ -475,16 +475,40 @@ def _measure_derot_confidence(
 
     for scale in sweep_scales:
         if use_true_reprojection:
-            warped = spherical_derotation_warp_3d(
-                lum_e, dt, cx, cy, semi_a,
-                period_hours=config.derotation.rotation_period_hours,
-                sub_observer_lat_deg=sub_observer_lat_deg,
-                pole_pa_deg=session_pole_pa,
-                polar_equatorial_ratio_true=config.derotation.true_polar_equatorial_ratio,
-                scale=scale,
-                flip_direction=forward_flip,
-                flip_pole_axis=flip_pole_axis,
-            )
+            # This sweep deliberately calls spherical_derotation_warp_3d()
+            # with scale != 1.0 at every non-config_scale grid point -- the
+            # whole point of an NCC sweep is to probe a range of scales, so
+            # every such call trips that function's "scale=X (!= 1.0) is a
+            # diagnostic signal, not a normal calibration knob" UserWarning.
+            # That warning is real and correct for the ACTUAL production
+            # warp path (derotate_filter(), which always passes the fixed
+            # config warp_scale -- 1.0 for every real true-reprojection
+            # session, see project_derotation_warp_scale_ncc_invalid memory
+            # -- so a non-1.0 value showing up THERE would mean a genuine
+            # bug and must keep warning). Here it's expected noise: this
+            # confidence sweep's own result is diagnostic-only and never
+            # feeds back into warp_scale (see this function's own docstring/
+            # the "does not change warp_scale" comment at its call site) --
+            # 2026-08-17, flagged after promoting use_true_reprojection to
+            # the permanent default made this sweep run on every real
+            # session instead of only when a user had opted in, surfacing
+            # up to len(sweep_scales) near-identical warnings per window
+            # (the module's own "surfaced once" comment assumed Python's
+            # default warning dedup, which keys on the exact formatted
+            # message text -- doesn't dedupe here since the scale value is
+            # interpolated into it, so it doesn't actually collapse these).
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                warped = spherical_derotation_warp_3d(
+                    lum_e, dt, cx, cy, semi_a,
+                    period_hours=config.derotation.rotation_period_hours,
+                    sub_observer_lat_deg=sub_observer_lat_deg,
+                    pole_pa_deg=session_pole_pa,
+                    polar_equatorial_ratio_true=config.derotation.true_polar_equatorial_ratio,
+                    scale=scale,
+                    flip_direction=forward_flip,
+                    flip_pole_axis=flip_pole_axis,
+                )
         else:
             warped = spherical_derotation_warp(
                 lum_e, dt, cx, cy, semi_a,
